@@ -1,0 +1,39 @@
+# Condition A (REST) — GitHub's official MCP Server over stdio (Docker).
+#
+# This is a TEMPLATE. run_benchmark.py injects the task prompt (as an indented
+# block scalar) into runs/<...>/recipe.yaml before invoking goose. Token / model
+# settings are study constants and are hard-coded; GOOSE_MODEL env overrides the
+# model if MODEL is set in .env. Toolset scope (A1 default vs A2 minimal) and the
+# PAT are supplied by the runner via the GITHUB_TOOLSETS / GITHUB_PERSONAL_ACCESS_TOKEN
+# environment variables (never written to disk).
+version: "1.0.0"
+title: "Benchmark — Condition A (REST via GitHub MCP Server)"
+description: "Answer the task using GitHub's official MCP server (REST API underneath), over stdio."
+instructions: |
+  You are a developer assistant. Answer the user's request using ONLY the GitHub
+  MCP tools available to you. Be concise: once you have the answer, state it
+  directly as a list. Do not ask follow-up questions.
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: claude-sonnet-4-6
+  temperature: 0
+  max_turns: 25
+extensions:
+  github:
+    type: stdio
+    command: docker
+    args:
+      - run
+      - -i
+      - --rm
+      - -e
+      - GITHUB_PERSONAL_ACCESS_TOKEN
+      - -e
+      - GITHUB_TOOLSETS
+      - ghcr.io/github/github-mcp-server
+    env:
+      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
+      GITHUB_TOOLSETS: "${GITHUB_TOOLSETS}"
+    timeout: 300

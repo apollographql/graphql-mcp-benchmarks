@@ -1,0 +1,35 @@
+# Condition B (GraphQL) — Apollo MCP Server's dynamic introspection tools over
+# stdio, pointed at GitHub's native GraphQL API.
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (block scalar) and fills the
+# command/args with absolute paths to the apollo-mcp-server binary (bin/) and the
+# rendered Apollo config (config/apollo-mcp.github.local.yaml) before invoking
+# goose. The PAT is supplied via the GITHUB_TOKEN env var, which the Apollo config
+# reads as ${env.GITHUB_TOKEN}.
+version: "1.0.0"
+title: "Benchmark — Condition B (GraphQL via Apollo MCP Server)"
+description: "Answer the task using the Apollo MCP Server's dynamic tools against GitHub's GraphQL API."
+instructions: |
+  You are a developer assistant connected to GitHub's GraphQL API through the
+  Apollo MCP Server. Your tools: `search` (find schema types/fields by keyword),
+  `introspect` (inspect a type), `validate` (check a GraphQL operation), and
+  `execute` (run a GraphQL operation). Write your own GraphQL queries to answer
+  the request — there are no pre-made operations. Prefer a single query that
+  fetches everything you need via nested fields. Be concise: once you have the
+  answer, state it directly as a list. Do not ask follow-up questions.
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: claude-sonnet-4-6
+  temperature: 0
+  max_turns: 25
+extensions:
+  apollo:
+    type: stdio
+    command: "@@APOLLO_BIN@@"
+    args:
+      - "@@APOLLO_CONFIG@@"
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    timeout: 300

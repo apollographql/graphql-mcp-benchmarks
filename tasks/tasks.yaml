@@ -1,0 +1,33 @@
+# Canonical benchmark tasks — the single source of truth for task wording.
+#
+# run_benchmark.py renders the {{repo}} / {{window_start}} / {{window_end}} /
+# {{file_path}} placeholders from .env, producing one fully-resolved task_prompt
+# string that is injected — IDENTICAL, word-for-word — into every condition's
+# recipe. Edit wording here only; never per-condition. That identical-string
+# guarantee is what makes the A/B/C comparison fair.
+#
+# Task mix is deliberately balanced (see NOTES.md): T1 forces many sequential
+# REST calls vs one GraphQL query (the core differential); T2 and T3 are
+# roughly call-count-neutral controls so the suite isn't stacked toward GraphQL.
+tasks:
+  - id: T1
+    title: Merged PRs with author and CI status
+    prompt: |
+      List the pull requests in {{repo}} that were merged between {{window_start}}
+      and {{window_end}} (inclusive, UTC). For each pull request, report its title,
+      its PR number, the author's login, and its CI/checks status (for example:
+      passing, failing, or none). Present the results as a list.
+  - id: T2
+    title: Open issues mentioning a keyword, with assignees and labels
+    prompt: |
+      Find open issues in {{repo}} that mention "performance" and were updated
+      between {{window_start}} and {{window_end}} (inclusive, UTC). For each issue,
+      report its title, its issue number, the assignee logins (if any), and its
+      labels. Present the results as a list.
+  - id: T3
+    title: Recent commits to a specific file
+    prompt: |
+      List the 20 most recent commits to the file {{file_path}} on the default
+      branch of {{repo}}. For each commit, report the short SHA, the author's
+      login, the commit date, and the first line of the commit message. Present
+      the results as a list.

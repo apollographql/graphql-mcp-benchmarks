@@ -1,0 +1,33 @@
+# Condition C (STRETCH / Phase 1b) — GraphQL via the rover CLI, no MCP server.
+#
+# A different paradigm: the agent drives rover (and curl) as shell tools through
+# Goose's built-in `developer` extension. Reported SEPARATELY from the MCP
+# conditions — it is making a different argument (CLI-as-tool vs MCP-as-tool).
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (block scalar). The PAT is
+# available to the shell as $GITHUB_TOKEN (exported by the runner).
+version: "1.0.0"
+title: "Benchmark — Condition C (GraphQL via rover CLI, no MCP)"
+description: "Stretch: the agent drives the rover CLI and curl directly as shell tools — no MCP server."
+instructions: |
+  You are a developer assistant with shell access. There is NO MCP server. Use
+  the `rover` CLI to explore GitHub's GraphQL schema — for example:
+    rover graph introspect https://api.github.com/graphql \
+      --header "Authorization: Bearer $GITHUB_TOKEN"
+  (and check `rover schema --help` for describe/search subcommands if your rover
+  version has them). Then run your own GraphQL queries against
+  https://api.github.com/graphql with curl, using the $GITHUB_TOKEN environment
+  variable for auth. Be concise: once you have the answer, state it directly as a
+  list. Do not ask follow-up questions.
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: claude-sonnet-4-6
+  temperature: 0
+  max_turns: 25
+extensions:
+  developer:
+    type: builtin
+    name: developer
+    timeout: 300

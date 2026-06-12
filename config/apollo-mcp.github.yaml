@@ -1,0 +1,33 @@
+# Apollo MCP Server config — dynamic GraphQL against GitHub's API over stdio.
+#
+# TEMPLATE. lib/setup.sh replaces @@SDL_PATH@@ with the absolute path to the
+# downloaded GitHub SDL (config/github.graphql) and writes the result to
+# config/apollo-mcp.github.local.yaml (gitignored), which is what the server
+# actually reads. Apollo MCP has no live-introspection mode — schema.source must
+# be `local`; `execute` still runs against the live `endpoint`.
+endpoint: https://api.github.com/graphql
+
+# Sent on every introspection + execute request to the endpoint. ${env.VAR} is
+# Apollo MCP's own env-expansion syntax; GITHUB_TOKEN is provided by the recipe.
+headers:
+  Authorization: "Bearer ${env.GITHUB_TOKEN}"
+  User-Agent: "graphql-mcp-benchmarks"
+
+transport:
+  type: stdio
+
+schema:
+  source: local
+  path: "@@SDL_PATH@@"
+
+# Enable ONLY the four dynamic tools — no pre-baked `operations`, so the agent
+# must write its own queries.
+introspection:
+  execute:
+    enabled: true
+  introspect:
+    enabled: true
+  search:
+    enabled: true
+  validate:
+    enabled: true
