@@ -73,7 +73,7 @@ def main():
 
     report = {"label": args.label, "server_cmd": cmd, "ok": False}
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                            stderr=subprocess.DEVNULL, env=dict(os.environ))
+                            stderr=subprocess.PIPE, env=dict(os.environ))
     try:
         send(proc, {"jsonrpc": "2.0", "id": 1, "method": "initialize",
                     "params": {"protocolVersion": "2025-06-18", "capabilities": {},
@@ -115,6 +115,12 @@ def main():
             proc.wait(timeout=5)
         except Exception:
             proc.kill()
+        try:  # surface the server's own error output (e.g. Docker daemon down)
+            tail = (proc.stderr.read() or b"")[-1500:].decode("utf-8", "replace") if proc.stderr else ""
+            if tail.strip():
+                report["stderr_tail"] = tail
+        except Exception:
+            pass
 
     os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
     with open(args.out, "w") as f:
@@ -124,6 +130,8 @@ def main():
           f"calls={len(report.get('calls', []))} -> {args.out}")
     if not report.get("ok"):
         print(f"  capture error: {report.get('error')}", file=sys.stderr)
+        if report.get("stderr_tail"):
+            print("  server stderr:\n    " + report["stderr_tail"].replace("\n", "\n    "), file=sys.stderr)
 
 
 if __name__ == "__main__":

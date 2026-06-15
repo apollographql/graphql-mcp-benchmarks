@@ -18,6 +18,14 @@ ensure_token() {
   export GITHUB_TOKEN="$GITHUB_PERSONAL_ACCESS_TOKEN"   # Apollo config reads ${env.GITHUB_TOKEN}
 }
 
+ensure_docker() {
+  command -v docker >/dev/null 2>&1 || { echo "ERROR: docker not found (needed for conditions A1/A2)"; return 1; }
+  docker info >/dev/null 2>&1 || {
+    echo "ERROR: the Docker daemon is not running — start Docker Desktop and retry."
+    echo "       (Conditions A1/A2 run GitHub's MCP server as a Docker container.)"
+    return 1; }
+}
+
 ensure_prereqs_min() {
   [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "ERROR: ANTHROPIC_API_KEY is not set (put it in .env)"; return 1; }
   _need uv "Install: https://docs.astral.sh/uv/" || return 1
@@ -31,6 +39,7 @@ do_setup() {
   echo "== setup =="
   [ -n "${ANTHROPIC_API_KEY:-}" ] || { echo "ERROR: ANTHROPIC_API_KEY is not set (put it in .env)"; return 1; }
   _need docker "Install Docker Desktop" || return 1
+  ensure_docker || return 1
   _need gh "Install GitHub CLI and run: gh auth login" || return 1
   _need rover "Install: https://www.apollographql.com/docs/rover/getting-started" || return 1
   _need uv "Install: https://docs.astral.sh/uv/" || return 1
@@ -65,7 +74,7 @@ do_setup() {
   # --- Apollo MCP Server binary (Apple Silicon) ---
   mkdir -p "$PROJECT_ROOT/bin"
   if [ ! -x "$PROJECT_ROOT/bin/apollo-mcp-server" ]; then
-    local ver="${APOLLO_MCP_VERSION:-v1.14.0}"
+    local ver="${APOLLO_BIN_VERSION:-v1.14.0}"
     local tarball="apollo-mcp-server-${ver}-aarch64-apple-darwin.tar.gz"
     local url="https://github.com/apollographql/apollo-mcp-server/releases/download/${ver}/${tarball}"
     echo "Downloading Apollo MCP Server ${ver} ..."

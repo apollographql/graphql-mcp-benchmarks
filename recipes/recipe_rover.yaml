@@ -25,9 +25,8 @@ settings:
   goose_provider: anthropic
   goose_model: claude-sonnet-4-6
   temperature: 0
-  max_turns: 25
+  max_turns: 50
 extensions:
-  developer:
-    type: builtin
+  - type: builtin
     name: developer
     timeout: 300

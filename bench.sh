@@ -17,7 +17,23 @@ export PROJECT_ROOT
 cd "$PROJECT_ROOT"
 
 # --- config ---
-if [ -f "$PROJECT_ROOT/.env" ]; then set -a; . "$PROJECT_ROOT/.env"; set +a; fi
+# Load .env as DEFAULTS: a value already in the environment wins, so
+# `MAX_TURNS=50 ./bench.sh run` overrides the file. Inline `# comments` and
+# surrounding whitespace are stripped; values may contain '='.
+if [ -f "$PROJECT_ROOT/.env" ]; then
+  while IFS= read -r _line || [ -n "$_line" ]; do
+    _line=${_line%$'\r'}
+    _trim=${_line#"${_line%%[![:space:]]*}"}      # left-trimmed copy
+    case "$_trim" in ''|'#'*) continue ;; esac     # skip blanks / comment lines
+    [ "${_line%%=*}" = "$_line" ] && continue       # require '='
+    _k=${_line%%=*}; _k=${_k//[[:space:]]/}         # key (no spaces)
+    _v=${_line#*=}
+    _v=${_v%%" #"*}                                 # drop ' # inline comment'
+    _v="${_v#"${_v%%[![:space:]]*}"}"               # left-trim value
+    _v="${_v%"${_v##*[![:space:]]}"}"               # right-trim value
+    [ -z "${!_k+x}" ] && export "$_k=$_v"
+  done < "$PROJECT_ROOT/.env"
+fi
 : "${REPO:=graphql/graphql-js}"
 : "${WINDOW_START:=2026-03-01}"
 : "${WINDOW_END:=2026-05-31}"
@@ -25,10 +41,16 @@ if [ -f "$PROJECT_ROOT/.env" ]; then set -a; . "$PROJECT_ROOT/.env"; set +a; fi
 : "${MODEL:=}"            # blank => recipe default claude-sonnet-4-6
 : "${REPS:=3}"
 : "${PORT:=8080}"
-: "${MAX_TURNS:=25}"
+: "${MAX_TURNS:=50}"
 : "${ENABLE_ROVER:=0}"
-: "${APOLLO_MCP_VERSION:=v1.14.0}"
-export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_MCP_VERSION
+# Download version for the apollo-mcp-server binary. Deliberately NOT named with
+# the APOLLO_MCP_ prefix: the Apollo MCP server reads every APOLLO_MCP_* env var
+# as a config override, so APOLLO_MCP_VERSION parses as the unknown config key
+# "version" and the server refuses to start. Accept the old name from an existing
+# .env for back-compat, then unset it so it can't leak into the server process.
+: "${APOLLO_BIN_VERSION:=${APOLLO_MCP_VERSION:-v1.14.0}}"
+unset APOLLO_MCP_VERSION
+export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION
 
 # shellcheck source=lib/setup.sh
 . "$PROJECT_ROOT/lib/setup.sh"
@@ -51,9 +73,10 @@ settings:
   max_turns: 2
 EOF
 
-  # clear stale Goose logs
+  # clear stale Goose logs AND the per-run proxy log (proxy appends)
   local gld="${GOOSE_LOG_DIR:-$HOME/.local/state/goose/logs}"
   rm -f "$gld"/llm_request*.jsonl 2>/dev/null || true
+  rm -f "$d/proxy.jsonl" "$d"/goose_*.jsonl 2>/dev/null || true
 
   PROXY_LOG="$d/proxy.jsonl" RUN_LABEL=precheck PORT="$PORT" \
     uv run "$PROJECT_ROOT/proxy/anthropic_logging_proxy.py" >"$d/proxy_server.log" 2>&1 &
@@ -103,7 +126,8 @@ note = "cache_read_tokens" if "cache_read_tokens" in gtext else (
 print(f"goose JSONL cache field seen: {note}")
 if have_read and have_create:
     print("PASS: proxy preserves cache_read_input_tokens AND cache_creation_input_tokens.")
-    print("NOTE: the literal cache_read_input_tokens lives in the proxy log; Goose renames it to cache_read_tokens.")
+    print("NOTE: proxy is authoritative (no 10-file rotation cap). Goose's llm_request log "
+          "carries the raw field too, per the cross-check above.")
     sys.exit(0)
 print("FAIL: cache token fields absent from the raw usage object — FLAG before proceeding.")
 sys.exit(3)
@@ -117,6 +141,7 @@ PY
 do_capture() {
   echo "== capture (real MCP tool surfaces + response shapes) =="
   ensure_prereqs_min
+  ensure_docker   # A1/A2 capture the GitHub MCP server via Docker
   [ -f "$PROJECT_ROOT/config/apollo-mcp.github.local.yaml" ] || { echo "ERROR: run setup first (missing rendered Apollo config)"; return 1; }
   mkdir -p "$PROJECT_ROOT/capture"
   local owner="${REPO%%/*}" name="${REPO##*/}"
@@ -128,18 +153,20 @@ import json, os
 o, n, fp, repo = os.environ["OWNER"], os.environ["NAME"], os.environ["FILE_PATH"], os.environ["REPO"]
 print(json.dumps([
   {"name": "list_pull_requests", "arguments": {"owner": o, "repo": n, "state": "closed", "perPage": 5}},
-  {"name": "search_issues", "arguments": {"query": f"repo:{repo} is:issue is:open performance", "perPage": 5}},
+  {"name": "search_issues", "arguments": {"q": f"repo:{repo} is:issue is:open performance", "perPage": 5}},
   {"name": "list_commits", "arguments": {"owner": o, "repo": n, "path": fp, "perPage": 5}},
 ]))
 PY
 )
-  # A1 (default) and A2 (minimal) — different toolset scope, same calls.
-  GITHUB_TOOLSETS=default python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+  # A1 (all = the server's default) and A2 (minimal) — same calls, different --toolsets.
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label A1 --out "$PROJECT_ROOT/capture/A1.json" --calls "$rest_calls" \
-    -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN -e GITHUB_TOOLSETS ghcr.io/github/github-mcp-server || true
-  GITHUB_TOOLSETS=repos,issues,pull_requests python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server \
+       ./github-mcp-server stdio --read-only --toolsets all || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label A2 --out "$PROJECT_ROOT/capture/A2.json" --calls "$rest_calls" \
-    -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN -e GITHUB_TOOLSETS ghcr.io/github/github-mcp-server || true
+    -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server \
+       ./github-mcp-server stdio --read-only --toolsets repos,issues,pull_requests || true
 
   # B (GraphQL) — execute representative queries via the Apollo MCP server.
   local gql_calls
@@ -187,6 +214,10 @@ PY
 do_run() {
   echo "== run matrix =="
   ensure_prereqs_min
+  # GitHub MCP (A1/A2) needs Docker; skip the check only if the filter excludes them.
+  if [ -z "${CONDITIONS:-}" ] || [[ ",$CONDITIONS," == *",A1,"* ]] || [[ ",$CONDITIONS," == *",A2,"* ]]; then
+    ensure_docker
+  fi
   uv run "$PROJECT_ROOT/run_benchmark.py"
 }
 

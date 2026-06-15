@@ -16,6 +16,12 @@ headers:
 transport:
   type: stdio
 
+# Redirect startup logs to a file — Apollo writes plain-text log lines to
+# stdout by default, which corrupts Goose's JSON-RPC parser before the MCP
+# handshake even begins. This keeps stdout clean for protocol traffic only.
+logging:
+  path: /tmp/apollo-mcp-server.log
+
 schema:
   source: local
   path: "@@SDL_PATH@@"

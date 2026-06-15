@@ -173,6 +173,10 @@ async def app(scope, receive, send):
 
     req_headers = [(k.decode("latin-1"), v.decode("latin-1")) for k, v in scope["headers"]]
     fwd_headers = {k: v for k, v in req_headers if k.lower() not in _DROP_REQ}
+    # Force identity: otherwise httpx auto-negotiates gzip and we'd forward
+    # compressed bytes (which we then mislabel by dropping content-encoding),
+    # breaking both the client's decode and our tee parser.
+    fwd_headers["accept-encoding"] = "identity"
 
     url = UPSTREAM + path
     if raw_qs:
@@ -192,7 +196,10 @@ async def app(scope, receive, send):
             ]
             await send({"type": "http.response.start", "status": resp.status_code,
                         "headers": resp_headers})
-            async for chunk in resp.aiter_raw():
+            # aiter_bytes() yields httpx-decoded bytes (identity, given the header
+            # above) — so the body we re-stream matches the headers we forward
+            # (content-encoding stripped) and is parseable as-is.
+            async for chunk in resp.aiter_bytes():
                 buf.extend(chunk)
                 await send({"type": "http.response.body", "body": chunk, "more_body": True})
             await send({"type": "http.response.body", "body": b"", "more_body": False})

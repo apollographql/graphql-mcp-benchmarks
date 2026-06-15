@@ -11,25 +11,26 @@ title: "Benchmark — Condition B (GraphQL via Apollo MCP Server)"
 description: "Answer the task using the Apollo MCP Server's dynamic tools against GitHub's GraphQL API."
 instructions: |
   You are a developer assistant connected to GitHub's GraphQL API through the
-  Apollo MCP Server. Your tools: `search` (find schema types/fields by keyword),
-  `introspect` (inspect a type), `validate` (check a GraphQL operation), and
-  `execute` (run a GraphQL operation). Write your own GraphQL queries to answer
-  the request — there are no pre-made operations. Prefer a single query that
-  fetches everything you need via nested fields. Be concise: once you have the
-  answer, state it directly as a list. Do not ask follow-up questions.
+  Apollo MCP Server. Your tools: `search` (find schema fields/types by keyword),
+  `validate` (check a GraphQL operation), and `execute` (run a GraphQL operation).
+  Do NOT call `introspect` — it loads entire type trees and is too expensive.
+  Use `search` for schema discovery instead: search for the field names you need,
+  then write a query directly. Prefer a single query that fetches everything via
+  nested fields. Be concise: once you have the answer, state it directly as a
+  list. Do not ask follow-up questions.
 prompt: |
   @@TASK_PROMPT@@
 settings:
   goose_provider: anthropic
-  goose_model: claude-sonnet-4-6
+  goose_model: @@MODEL@@
   temperature: 0
-  max_turns: 25
+  max_turns: 50
 extensions:
-  apollo:
-    type: stdio
-    command: "@@APOLLO_BIN@@"
+  - type: stdio
+    name: apollo
+    cmd: "@@APOLLO_BIN@@"
     args:
       - "@@APOLLO_CONFIG@@"
-    env:
-      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    env_keys:
+      - GITHUB_TOKEN
     timeout: 300

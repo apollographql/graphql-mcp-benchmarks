@@ -3,9 +3,13 @@
 # This is a TEMPLATE. run_benchmark.py injects the task prompt (as an indented
 # block scalar) into runs/<...>/recipe.yaml before invoking goose. Token / model
 # settings are study constants and are hard-coded; GOOSE_MODEL env overrides the
-# model if MODEL is set in .env. Toolset scope (A1 default vs A2 minimal) and the
-# PAT are supplied by the runner via the GITHUB_TOOLSETS / GITHUB_PERSONAL_ACCESS_TOKEN
-# environment variables (never written to disk).
+# model if MODEL is set in .env. The runner fills --toolsets via the
+# @@GH_TOOLSETS@@ token (A1=all, A2=repos,issues,pull_requests); the PAT is
+# supplied via the GITHUB_PERSONAL_ACCESS_TOKEN env var (never written to disk).
+# --read-only keeps the agent to read operations. NOTE: this image's default
+# Cmd is `./github-mcp-server stdio`; we pass an explicit command to add flags,
+# and the comma-separated --toolsets flag is used (the GITHUB_TOOLSETS env var
+# did not split commas in this version).
 version: "1.0.0"
 title: "Benchmark — Condition A (REST via GitHub MCP Server)"
 description: "Answer the task using GitHub's official MCP server (REST API underneath), over stdio."
@@ -17,23 +21,25 @@ prompt: |
   @@TASK_PROMPT@@
 settings:
   goose_provider: anthropic
-  goose_model: claude-sonnet-4-6
+  goose_model: @@MODEL@@
   temperature: 0
-  max_turns: 25
+  max_turns: 50
 extensions:
-  github:
-    type: stdio
-    command: docker
+  - type: stdio
+    name: github
+    cmd: docker
     args:
       - run
       - -i
       - --rm
       - -e
       - GITHUB_PERSONAL_ACCESS_TOKEN
-      - -e
-      - GITHUB_TOOLSETS
       - ghcr.io/github/github-mcp-server
-    env:
-      GITHUB_PERSONAL_ACCESS_TOKEN: "${GITHUB_PERSONAL_ACCESS_TOKEN}"
-      GITHUB_TOOLSETS: "${GITHUB_TOOLSETS}"
+      - ./github-mcp-server
+      - stdio
+      - --read-only
+      - --toolsets
+      - "@@GH_TOOLSETS@@"
+    env_keys:
+      - GITHUB_PERSONAL_ACCESS_TOKEN
     timeout: 300

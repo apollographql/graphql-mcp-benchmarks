@@ -11,6 +11,7 @@ stdlib only. Usage: python3 parse_logs.py [runs_dir]
 """
 import csv
 import json
+import os
 import statistics
 import sys
 from pathlib import Path
@@ -18,6 +19,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 RUNS = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "runs"
 RESULTS = ROOT / "results"
+# The configured benchmark model. Calls on any OTHER model (e.g. Goose's
+# session-title generation, which uses Haiku) are auxiliary, not part of the
+# task, and are excluded from the headline metrics (disclosed in the audit).
+PRIMARY_MODEL = os.environ.get("MODEL") or "claude-sonnet-4-6"
 
 # The metrics, in report order. cache_* kept distinct from input_tokens by design.
 METRICS = [
@@ -37,15 +42,53 @@ COND_LABEL = {
 }
 
 
+# Anthropic pricing (USD per 1M tokens) by model prefix.
+# Source: https://www.anthropic.com/pricing (as of 2026-06)
+# Keyed by the model-ID prefix so any version suffix still matches.
+_PRICING: list[tuple[str, dict]] = [
+    ("claude-haiku-4-5",   {"input": 1.00, "output":  5.00, "cache_create": 1.25, "cache_read": 0.10}),
+    ("claude-sonnet-4-6",  {"input": 3.00, "output": 15.00, "cache_create": 3.75, "cache_read": 0.30}),
+    ("claude-opus-4",      {"input": 5.00, "output": 25.00, "cache_create": 6.25, "cache_read": 0.50}),
+    # fallback — Sonnet rates
+    ("",                   {"input": 3.00, "output": 15.00, "cache_create": 3.75, "cache_read": 0.30}),
+]
+
+
+def _price_for(model: str) -> dict:
+    for prefix, p in _PRICING:
+        if not prefix or (model or "").startswith(prefix):
+            return p
+    return _PRICING[-1][1]
+
+
+def cost_usd(row: dict, model: str = "") -> float:
+    p = _price_for(model or PRIMARY_MODEL)
+    return (
+        row.get("proxy_input_tokens", 0)                  * p["input"]        / 1_000_000
+        + row.get("proxy_output_tokens", 0)               * p["output"]       / 1_000_000
+        + row.get("proxy_cache_creation_input_tokens", 0) * p["cache_create"] / 1_000_000
+        + row.get("proxy_cache_read_input_tokens", 0)     * p["cache_read"]   / 1_000_000
+    )
+
+
 def _num(x):
     return x if isinstance(x, (int, float)) else 0
 
 
-def parse_proxy(p: Path) -> dict:
-    """Sum the primary metrics from one run's proxy.jsonl."""
+def parse_proxy(p: Path, task_model: str = "") -> dict:
+    """Sum metrics from one run's proxy.jsonl. Task-model calls feed the headline
+    metrics; auxiliary calls (a different model — e.g. Goose's title generation)
+    and any unparsed call are counted separately and disclosed in the audit.
+
+    task_model: the model used for this specific run (from meta.json). Falls back to
+    PRIMARY_MODEL so parse_proxy can still be called standalone in tests.
+    """
     agg = {k: 0 for k, _ in METRICS}
+    extra = {"aux_calls": 0, "aux_tokens": 0, "unparsed_calls": 0, "agent_active_s": 0.0}
     if not p.exists():
-        return agg
+        return {**agg, **extra}
+    filter_model = task_model or PRIMARY_MODEL
+    ts_vals = []
     for line in p.read_text().splitlines():
         try:
             r = json.loads(line)
@@ -53,13 +96,30 @@ def parse_proxy(p: Path) -> dict:
             continue
         if not r.get("is_messages"):
             continue
+        model = r.get("model")
+        if model is None:
+            extra["unparsed_calls"] += 1
+            continue
+        if not model.startswith(filter_model):
+            extra["aux_calls"] += 1
+            extra["aux_tokens"] += (_num(r.get("input_tokens")) + _num(r.get("output_tokens"))
+                                    + _num(r.get("cache_read_input_tokens"))
+                                    + _num(r.get("cache_creation_input_tokens")))
+            continue
+        if r.get("ts"):
+            ts_vals.append(r["ts"])
         agg["n_inference_calls"] += 1
         agg["n_tool_calls"] += _num(r.get("n_tool_use"))
         agg["input_tokens"] += _num(r.get("input_tokens"))
         agg["output_tokens"] += _num(r.get("output_tokens"))
         agg["cache_read_input_tokens"] += _num(r.get("cache_read_input_tokens"))
         agg["cache_creation_input_tokens"] += _num(r.get("cache_creation_input_tokens"))
-    return agg
+    # Span of task-model inference activity: excludes MCP server initialization.
+    # With ≥2 calls this is first-response → last-response. With 1 call it's 0 (one
+    # round-trip, no inter-call waiting). Both are meaningful: 0 means the agent
+    # resolved the task in a single query with no back-and-forth.
+    extra["agent_active_s"] = round(max(ts_vals) - min(ts_vals), 1) if len(ts_vals) >= 2 else 0.0
+    return {**agg, **extra}
 
 
 def _find_usage(obj):
@@ -106,10 +166,18 @@ def completed(meta: Path, stdout: Path) -> bool:
         m = json.loads(meta.read_text())
     except Exception:
         return False
+    if m.get("budget_killed"):
+        return False
     if m.get("timed_out") or m.get("goose_exit") not in (0, None):
         if m.get("goose_exit") not in (0,):
             pass  # goose exits 0 even on failure; rely mostly on stdout
     text = stdout.read_text() if stdout.exists() else ""
+    # Turn-cap truncation: the agent ran out of --max-turns before answering.
+    # Such a run is NOT a valid "tokens to complete" measurement.
+    trunc = ("maximum number of actions", "reached the maximum",
+             "Would you like me to continue")
+    if any(mk in text for mk in trunc):
+        return False
     # Heuristic only — see NOTES.md correctness gate. Final answer must be non-trivial.
     return not m.get("timed_out") and len(text.strip()) > 40
 
@@ -119,20 +187,29 @@ def collect():
     for meta_path in sorted(RUNS.glob("*/*/rep*/meta.json")):
         run_dir = meta_path.parent
         meta = json.loads(meta_path.read_text())
-        proxy = parse_proxy(run_dir / "proxy.jsonl")
         goose = parse_goose(run_dir)
-        rows.append({
+        # Resolve the actual model used: meta["model"] is set by the runner.
+        # Strip the "(recipe default)" annotation if present.
+        run_model = meta.get("model", PRIMARY_MODEL).split(" ")[0]
+        proxy = parse_proxy(run_dir / "proxy.jsonl", task_model=run_model)
+        row = {
             "condition": meta["condition"], "task_id": meta["task_id"], "rep": meta["rep"],
+            "model": run_model,
             "toolsets": meta.get("toolsets"), "goose_exit": meta.get("goose_exit"),
-            "timed_out": meta.get("timed_out"), "duration_s": meta.get("duration_s"),
+            "timed_out": meta.get("timed_out"), "budget_killed": meta.get("budget_killed", False),
+            "duration_s": meta.get("duration_s"), "agent_active_s": proxy.get("agent_active_s", 0.0),
             "rotation_truncated": meta.get("rotation_truncated"),
             "completed": completed(meta_path, run_dir / "stdout.txt"),
             **{f"proxy_{k}": proxy[k] for k, _ in METRICS},
+            "aux_calls": proxy["aux_calls"], "aux_tokens": proxy["aux_tokens"],
+            "unparsed_calls": proxy["unparsed_calls"],
             "goose_input_tokens": goose["input_tokens"],
             "goose_output_tokens": goose["output_tokens"],
             "goose_cache_read_input_tokens": goose["cache_read_input_tokens"],
             "goose_n_inference_calls": goose["n_inference_calls"],
-        })
+        }
+        row["cost_usd"] = cost_usd(row, run_model)
+        rows.append(row)
     return rows
 
 
@@ -210,26 +287,83 @@ def write_summary(rows):
         for t in tasks:
             lines += task_table(t, ["C"], f"Task {t}")
 
+    # --- cost summary ---
+    models_used = sorted({r.get("model", PRIMARY_MODEL) for r in rows})
+    pricing_note = "; ".join(
+        f"{m}: input ${_price_for(m)['input']}/1M out ${_price_for(m)['output']}/1M "
+        f"cc ${_price_for(m)['cache_create']}/1M cr ${_price_for(m)['cache_read']}/1M"
+        for m in models_used
+    )
+    lines.append("\n## Estimated cost (USD)\n")
+    lines.append(f"Pricing per model (USD/1M tokens) — {pricing_note}.\n")
+    lines.append("| Condition | Task | Reps | mean $/run | total $ (all reps) |")
+    lines.append("|---|---|---|---|---|")
+    grand_total = 0.0
+    for c in mcp:
+        for t in tasks:
+            sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+            if not sub:
+                continue
+            run_costs = [r["cost_usd"] for r in sub]
+            mean_cost = statistics.mean(run_costs)
+            total_cost = sum(run_costs)
+            grand_total += total_cost
+            lines.append(f"| **{c}** — {COND_LABEL[c]} | {t} | {len(sub)} | "
+                         f"${mean_cost:.4f} | ${total_cost:.4f} |")
+    lines.append(f"\n**Grand total across all conditions/tasks/reps: ${grand_total:.4f}**\n")
+
+    # --- timing summary ---
+    lines.append("\n## Timing (seconds)\n")
+    lines.append("`wall_s` = total run duration including MCP server cold-start. "
+                 "`active_s` = first inference response → last inference response — "
+                 "excludes initialization overhead. In persistent-server deployments "
+                 "(the typical MCP usage pattern) `active_s` is the operative metric.\n")
+    lines.append("| Condition | Task | wall_s (mean ± sd) | active_s (mean ± sd) |")
+    lines.append("|---|---|---|---|")
+    for c in mcp:
+        for t in tasks:
+            sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+            if not sub:
+                continue
+            w_m, w_sd = agg_stats(r["duration_s"] for r in sub if r["duration_s"] is not None)
+            a_m, a_sd = agg_stats(r["agent_active_s"] for r in sub)
+            lines.append(f"| **{c}** — {COND_LABEL[c]} | {t} | "
+                         f"{fmt(w_m, w_sd)}s | {fmt(a_m, a_sd)}s |")
+
     # --- audit / cross-check ---
     lines.append("\n## Audit — proxy vs Goose JSONL cross-check & completion\n")
+    lines.append(f"Headline metrics count only **task-model** (`{PRIMARY_MODEL}`) calls. "
+                 "`aux` = auxiliary calls on a different model (e.g. Goose session-title "
+                 "generation on Haiku) — excluded from the headline, shown here for full "
+                 "disclosure. `unparsed` should be 0.\n")
     lines.append("| Cond | Task | Rep | proxy calls | goose calls | proxy in | goose in | "
-                 "proxy cache-read | goose cache-read | completed | exit | rot? |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
+                 "proxy cache-read | goose cache-read | cost $ | wall_s | active_s | "
+                 "aux calls | aux tok | unparsed | completed | exit | rot? |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
+        done_cell = "**$killed**" if r.get("budget_killed") else ("yes" if r["completed"] else "**NO**")
         lines.append("| {condition} | {task_id} | {rep} | {pc} | {gc} | {pi} | {gi} | "
-                     "{prc} | {grc} | {done} | {exit} | {rot} |".format(
+                     "{prc} | {grc} | {cost} | {wall} | {active} | "
+                     "{aux} | {auxt} | {unp} | {done} | {exit} | {rot} |".format(
                          pc=r["proxy_n_inference_calls"], gc=r["goose_n_inference_calls"],
                          pi=r["proxy_input_tokens"], gi=r["goose_input_tokens"],
                          prc=r["proxy_cache_read_input_tokens"],
                          grc=r["goose_cache_read_input_tokens"],
-                         done="yes" if r["completed"] else "**NO**",
+                         cost=f"${r['cost_usd']:.3f}",
+                         wall=f"{r['duration_s']}s" if r["duration_s"] is not None else "—",
+                         active=f"{r['agent_active_s']}s",
+                         aux=r["aux_calls"], auxt=r["aux_tokens"],
+                         unp=("**%d**" % r["unparsed_calls"]) if r["unparsed_calls"] else "0",
+                         done=done_cell,
                          exit=r["goose_exit"], rot="!" if r["rotation_truncated"] else "",
                          **r))
-    lines.append("\n*proxy = authoritative (raw `usage`, no rotation). goose = cross-check "
-                 "(Goose renames `cache_read_input_tokens`→`cache_read_tokens`; only 10 request "
-                 "files kept, so `rot?` = `!` means the Goose snapshot under-counts and the "
-                 "proxy figure stands). `completed=NO` runs should be re-run or excluded — a "
-                 "bailout is not 'cheaper'.*\n")
+    lines.append("\n*proxy = authoritative (raw `usage`, no rotation cap). goose = cross-check "
+                 "(its `llm_request.*.jsonl` logs the raw response, so it carries the literal "
+                 "`cache_read_input_tokens`; but only 10 request files are kept, so `rot?`=`!` "
+                 "means the Goose snapshot under-counts and the proxy figure stands). "
+                 "`completed=NO` = goose bailed early. `$killed` = runner killed goose when "
+                 "per-run cost exceeded `PER_RUN_BUDGET_USD` — the partial cost is real and "
+                 "reported; the answer is incomplete. Both should be re-run or excluded.*\n")
 
     (RESULTS / "summary.md").write_text("\n".join(lines) + "\n")
 

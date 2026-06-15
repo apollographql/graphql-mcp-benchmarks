@@ -35,9 +35,9 @@ stay in `runs/` for audit.
 
 | ID | Underneath | Server |
 |----|-----------|--------|
-| **A1** | REST, default toolset (`context,repos,issues,pull_requests,users`) | GitHub MCP Server (Docker, stdio) — headline REST number |
-| **A2** | REST, minimal toolset (`repos,issues,pull_requests`) | GitHub MCP Server — sensitivity check |
-| **B**  | GraphQL, dynamic | Apollo MCP Server (`search`/`introspect`/`validate`/`execute`); the agent writes its own queries |
+| **A1** | REST, all toolsets (server default, `--read-only` → 22 tools) | GitHub MCP Server (Docker, stdio) — headline REST number |
+| **A2** | REST, minimal toolset (`--toolsets repos,issues,pull_requests` → 17 tools) | GitHub MCP Server — sensitivity check |
+| **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); agent is instructed to use `search` for schema discovery and avoid `introspect` (loads full type trees — too expensive); writes its own queries |
 | **C**  | GraphQL via `rover` CLI, **no MCP** | stretch; `ENABLE_ROVER=1`; reported **separately** |
 
 ## Tasks (constant, word-for-word, across conditions — `tasks/tasks.yaml`)
