@@ -1,0 +1,26 @@
+flowchart LR
+    GOOSE["Goose\n(agent)"]
+
+    subgraph MCP ["MCP Server (stdio)"]
+        REST["GitHub MCP\n(Docker)\nA1 / A2"]
+        GQL["Apollo MCP\n(binary)\nB / B2"]
+    end
+
+    subgraph PROXY_BOX ["anthropic_logging_proxy.py  ·  localhost:808x"]
+        PROXY["forward verbatim\n(headers + body unchanged)"]
+        TEE["tee SSE stream\nparse usage fields"]
+    end
+
+    ANTHROPIC["api.anthropic.com"]
+
+    PROXY_LOG[("proxy.jsonl\n— authoritative —\ninput_tokens\noutput_tokens\ncache_read_input_tokens\ncache_creation_input_tokens\nn_tool_use")]
+
+    GOOSE_LOG[("goose_llm_request.jsonl\n— cross-check —\n(renames cache fields,\n10-file rotation cap)")]
+
+    GOOSE -->|"stdio\ntool calls"| MCP
+    GOOSE -->|"HTTP\nANTHROPIC_HOST"| PROXY
+    PROXY -->|"request"| ANTHROPIC
+    ANTHROPIC -->|"SSE stream"| TEE
+    TEE -->|"stream\nunchanged"| GOOSE
+    TEE -->|"one JSON line\nper call"| PROXY_LOG
+    GOOSE -.->|"snapshot\nafter run"| GOOSE_LOG

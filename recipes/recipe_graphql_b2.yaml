@@ -1,0 +1,45 @@
+# Condition B2 (GraphQL via Rover Schema MCP) — thin Python MCP server wrapping
+# `rover schema search` / `rover schema describe` for schema discovery, plus a
+# direct HTTP call for GraphQL execution.
+#
+# TEMPLATE. run_benchmark.py fills @@B2_BIN@@ (abs path to bin/rover-schema-mcp),
+# @@B2_SDL@@ (abs path to config/github.graphql), and @@MODEL@@ before invoking
+# goose. GITHUB_TOKEN is supplied via env_keys.
+version: "1.0.0"
+title: "Benchmark — Condition B2 (GraphQL via Rover Schema MCP)"
+description: "Answer the task using Rover Schema MCP tools against GitHub's GraphQL API."
+instructions: |
+  You are a developer assistant connected to GitHub's GraphQL API.
+  Your tools: `schema_search` (keyword search over field/type names),
+  `schema_describe` (inspect a specific type or field by schema coordinate), and
+  `graphql_execute` (run a GraphQL query).
+
+  Schema discovery workflow:
+  1. Use `schema_describe` with a FIELD coordinate (always `Type.field` form,
+     never a bare type name). Bare type describes dump 100+ fields and are far
+     too large. Example of the correct form: `User.email`, not `User`.
+     Use depth=1 to inline the return type.
+  2. The GitHub API root is: query { repository(owner: String!, name: String!) { ... } }
+
+  In schema_search: space-separated terms are AND (avoid these — they usually
+  return nothing); comma-separated terms are OR (use these for broad discovery).
+  Prefer a single query that fetches everything via nested fields. Be concise:
+  once you have the answer, state it directly as a list. Do not ask follow-up
+  questions.
+  (benchmark-run-id: @@RUN_ID@@)
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: @@MODEL@@
+  temperature: 0
+  max_turns: 50
+extensions:
+  - type: stdio
+    name: rover
+    cmd: "@@B2_BIN@@"
+    args:
+      - "@@B2_SDL@@"
+    env_keys:
+      - GITHUB_TOKEN
+    timeout: 60

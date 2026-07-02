@@ -43,6 +43,8 @@ fi
 : "${PORT:=8080}"
 : "${MAX_TURNS:=50}"
 : "${ENABLE_ROVER:=0}"
+: "${CONDITIONS:=}"   # comma-separated subset, e.g. A1,B2 — empty means all
+: "${TASKS:=}"        # comma-separated subset, e.g. T2    — empty means all
 # Download version for the apollo-mcp-server binary. Deliberately NOT named with
 # the APOLLO_MCP_ prefix: the Apollo MCP server reads every APOLLO_MCP_* env var
 # as a config override, so APOLLO_MCP_VERSION parses as the unknown config key
@@ -50,7 +52,7 @@ fi
 # .env for back-compat, then unset it so it can't leak into the server process.
 : "${APOLLO_BIN_VERSION:=${APOLLO_MCP_VERSION:-v1.14.0}}"
 unset APOLLO_MCP_VERSION
-export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION
+export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION CONDITIONS TASKS
 
 # shellcheck source=lib/setup.sh
 . "$PROJECT_ROOT/lib/setup.sh"

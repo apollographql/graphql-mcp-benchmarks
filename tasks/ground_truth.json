@@ -1,0 +1,91 @@
+{
+  "_meta": {
+    "repo": "graphql/graphql-js",
+    "fetched": "2026-06-26",
+    "note": "PR data is stable — re-fetch only if repo changes. PR numbers are hardcoded in task prompts."
+  },
+  "T1": {
+    "description": "Title, author login, and changed file paths (up to 10) for five specific PRs",
+    "prs": [
+      {
+        "number": 4742,
+        "title": "docs: add v17 API docs lint coverage",
+        "author": "yaacovCR",
+        "merged_at": "2026-05-18",
+        "changed_files_total": 176,
+        "first_10_files": [
+          "cspell.yml",
+          "eslint.config.mjs",
+          "package-lock.json",
+          "package.json",
+          "resources/build-npm.ts",
+          "resources/eslint-internal-rules/index.js",
+          "resources/eslint-internal-rules/jsdoc-utils.js",
+          "resources/eslint-internal-rules/require-graphql-public-api-docs.js",
+          "resources/eslint-internal-rules/require-public-api-exports.js",
+          "src/devMode.ts"
+        ]
+      },
+      {
+        "number": 4731,
+        "title": "refactor(execution): extract buildResolveInfo helper",
+        "author": "yaacovCR",
+        "merged_at": "2026-05-10",
+        "changed_files_total": 3,
+        "first_10_files": [
+          "src/execution/Executor.ts",
+          "src/execution/buildResolveInfo.ts",
+          "src/execution/execute.ts"
+        ]
+      },
+      {
+        "number": 4729,
+        "title": "subscribe: replace perEventExecutor with mapSourceToResponseEvent",
+        "author": "yaacovCR",
+        "merged_at": "2026-05-09",
+        "changed_files_total": 5,
+        "first_10_files": [
+          "src/execution/Executor.ts",
+          "src/execution/__tests__/subscribe-test.ts",
+          "src/execution/execute.ts",
+          "src/execution/index.ts",
+          "src/index.ts"
+        ]
+      },
+      {
+        "number": 4704,
+        "title": "refactor: add executionMode/serially argument to executeRootSelectionSet",
+        "author": "yaacovCR",
+        "merged_at": "2026-05-01",
+        "changed_files_total": 4,
+        "first_10_files": [
+          "src/execution/Executor.ts",
+          "src/execution/ExecutorThrowingOnIncremental.ts",
+          "src/execution/execute.ts",
+          "src/execution/incremental/IncrementalExecutor.ts"
+        ]
+      },
+      {
+        "number": 4700,
+        "title": "Demote createSourceEventStream to helper taking ValidatedExecutionArgs",
+        "author": "yaacovCR",
+        "merged_at": "2026-05-01",
+        "changed_files_total": 2,
+        "first_10_files": [
+          "src/execution/__tests__/subscribe-test.ts",
+          "src/execution/execute.ts"
+        ]
+      }
+    ],
+    "required_pr_numbers": [4742, 4731, 4729, 4704, 4700]
+  },
+  "T2": {
+    "description": "Title, author login, and merge date for PR #4742",
+    "pr": {
+      "number": 4742,
+      "title": "docs: add v17 API docs lint coverage",
+      "author": "yaacovCR",
+      "merged_at": "2026-05-18"
+    }
+  }
+}

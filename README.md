@@ -27,7 +27,7 @@ stay in `runs/` for audit.
 | `./bench.sh setup`    | Install/verify Goose; fetch the Apollo MCP binary (`bin/`); pull the GitHub MCP Docker image; download GitHub's GraphQL SDL via `rover`; render the Apollo config; mint a GitHub token via `gh`. Idempotent. |
 | `./bench.sh precheck` | **Step-1 gate.** A single probe call confirms the proxy logs `cache_read_input_tokens` and `cache_creation_input_tokens`. Aborts `all` if absent. |
 | `./bench.sh capture`  | Records each server's real tool surface (count + `tools/list` bytes) and representative tool-call response shapes → `capture/`. Grounds claims in actual MCP output. |
-| `./bench.sh run`      | Runs the matrix `A1, A2, B [,C] × T1,T2,T3 × REPS`, sequentially and isolated. |
+| `./bench.sh run`      | Runs the matrix `A1, A2, B, B2 [,C] × T1,T2,T3 × REPS`. Filter with `CONDITIONS=A1,B2` and/or `TASKS=T2`. |
 | `./bench.sh parse`    | Aggregates logs → `results/summary.md` + CSVs. |
 | `./bench.sh clean`    | Removes `runs/`, `results/`, `capture/*.json`. |
 
@@ -38,13 +38,14 @@ stay in `runs/` for audit.
 | **A1** | REST, all toolsets (server default, `--read-only` → 22 tools) | GitHub MCP Server (Docker, stdio) — headline REST number |
 | **A2** | REST, minimal toolset (`--toolsets repos,issues,pull_requests` → 17 tools) | GitHub MCP Server — sensitivity check |
 | **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); agent is instructed to use `search` for schema discovery and avoid `introspect` (loads full type trees — too expensive); writes its own queries |
+| **B2** | GraphQL, dynamic | Rover Schema MCP (`bin/rover-schema-mcp` — thin Python wrapper, 3 tools: `schema_search`/`schema_describe`/`graphql_execute`); uses `rover schema search` + `rover schema describe` for schema discovery |
 | **C**  | GraphQL via `rover` CLI, **no MCP** | stretch; `ENABLE_ROVER=1`; reported **separately** |
 
 ## Tasks (constant, word-for-word, across conditions — `tasks/tasks.yaml`)
 
-- **T1** Merged PRs in the window with author + CI status. *(REST: list PRs, then per-PR status/check calls; GraphQL: one nested query — the core differential.)*
-- **T2** Open issues mentioning "performance" with assignees + labels. *(roughly call-count-neutral — honest control.)*
-- **T3** 20 most recent commits to a file with sha/author/date/message. *(roughly call-count-neutral — honest control.)*
+- **T1** 10 most recent commits to a file with associated PR info and changed file paths. *(REST: list_commits (1) + list_pulls_for_commit × 10 + list_pull_request_files × 10 ≈ 21 calls; GraphQL: one nested query via `history → associatedPullRequests → files` — the core N+1 differential.)*
+- **T2** Open issues updated in the window with comment count + most recent commenter login. *(REST: list issues, then per-issue comments call = N+1; GraphQL: one nested query — same differential as T1 on a different relationship.)*
+- **T3** 10 most recent commits to a file on or before the window end, with sha/author/date/message. *(roughly call-count-neutral — honest control.)*
 
 ## Metrics (per condition per task, mean ± stdev over reps)
 
@@ -95,3 +96,24 @@ See **`NOTES.md`** — Goose renames the cache field and keeps only 10 request l
 gate); Apollo MCP has no live introspection (hence the downloaded SDL); the GitHub
 MCP server returns filtered, not raw, REST payloads (hence the `capture` stage). The
 time window is fixed and closed to prevent drift between runs.
+
+### Observed failure pattern: REST minimal (A2) hallucination on relational fields
+
+The REST minimal condition (A2) is prone to **confident hallucination** on tasks that
+require traversing a relationship to answer a sub-field. The pattern: `list_issues`
+returns a `comments` integer count but not commenter identity; the agent skips the
+follow-up `get_issue_comments` call (perhaps because the integer count looks like
+sufficient signal) and fabricates commenter logins from thin air. The result looks
+complete — correct issue titles, correct comment counts, plausible-looking usernames —
+but the relational fields are invented.
+
+This is a structural risk for minimal REST toolsets: when a tool response contains a
+*count* of a related resource but not the resource itself, the model may treat the
+count as evidence that it already has the data. GraphQL conditions (B, B2) are not
+susceptible here because a single nested query fetches the relation in one pass —
+there is no intermediate "count only" response to misread.
+
+This benchmark does not include an automated correctness gate beyond checking that
+Goose exited with output. Manual spot-checking against ground truth (via `gh api
+graphql`) is recommended before publishing results, especially for A2 on any task
+involving nested or relational data.

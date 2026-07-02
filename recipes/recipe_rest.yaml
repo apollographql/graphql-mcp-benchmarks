@@ -17,6 +17,7 @@ instructions: |
   You are a developer assistant. Answer the user's request using ONLY the GitHub
   MCP tools available to you. Be concise: once you have the answer, state it
   directly as a list. Do not ask follow-up questions.
+  (benchmark-run-id: @@RUN_ID@@)
 prompt: |
   @@TASK_PROMPT@@
 settings:

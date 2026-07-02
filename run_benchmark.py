@@ -5,7 +5,9 @@
 """Benchmark orchestrator — invoked by bench.sh (run stage).
 
 Conditions run in parallel (one thread per condition); tasks and reps within each
-condition run sequentially so prompt-cache hits from prior reps are preserved.
+condition run sequentially. Each recipe includes a unique @@RUN_ID@@ token in its
+instructions block, which changes the Anthropic cache prefix per run and ensures
+every rep starts cold — no warm-cache carryover from prior reps of the same task.
 Each run gets its own proxy port (BASE_PORT + condition_index) and its own
 GOOSE_LOG_DIR under run_dir, so parallel conditions never share mutable state.
 
@@ -24,7 +26,12 @@ Matrix:
   A1  REST,  GITHUB_TOOLSETS=default                    (headline)
   A2  REST,  GITHUB_TOOLSETS=repos,issues,pull_requests (sensitivity)
   B   GraphQL via Apollo MCP
+  B2  GraphQL via Rover Schema MCP
   C   GraphQL via rover CLI (only if ENABLE_ROVER=1; reported separately)
+
+Filtering:
+  CONDITIONS=A1,A2   run only these conditions (default: all)
+  TASKS=T1,T2        run only these tasks      (default: all)
 """
 import json
 import os
@@ -59,10 +66,15 @@ PORT = env("PORT", "8080")
 MAX_TURNS = env("MAX_TURNS", "50")
 RUN_TIMEOUT = int(env("RUN_TIMEOUT", "420"))
 ENABLE_ROVER = env("ENABLE_ROVER", "0") == "1"
-GOOSE_LOG_DIR = Path(env("GOOSE_LOG_DIR", str(Path.home() / ".local/state/goose/logs")))
+# Goose does not honour GOOSE_LOG_DIR; it always writes llm_request.*.jsonl
+# to this XDG path. We clear it before each run and copy after.
+GOOSE_LOG_DIR = Path.home() / ".local/state/goose/logs"
 APOLLO_BIN = str((ROOT / env("APOLLO_BIN", "bin/apollo-mcp-server")).resolve())
 APOLLO_CONFIG = str((ROOT / env("APOLLO_CONFIG", "config/apollo-mcp.github.local.yaml")).resolve())
-ONLY = [c.strip() for c in env("CONDITIONS", "").split(",") if c.strip()]  # optional filter
+B2_BIN = str((ROOT / env("B2_BIN", "bin/rover-schema-mcp")).resolve())
+B2_SDL = str((ROOT / env("B2_SDL", "config/github.graphql")).resolve())
+ONLY = [c.strip() for c in env("CONDITIONS", "").split(",") if c.strip()]   # optional condition filter
+ONLY_TASKS = [t.strip() for t in env("TASKS", "").split(",") if t.strip()]  # optional task filter
 # Per-run cost ceiling in USD. When > 0, the runner kills Goose mid-run if the
 # running cost (read from proxy.jsonl every POLL_INTERVAL seconds) exceeds this
 # value and marks the run budget_killed=True. 0 = disabled.
@@ -119,7 +131,8 @@ TASKS_YAML = ROOT / "tasks" / "tasks.yaml"
 CONDITIONS = {
     "A1": ("recipe_rest.yaml", {"toolsets": "all"}),
     "A2": ("recipe_rest.yaml", {"toolsets": "repos,issues,pull_requests"}),
-    "B": ("recipe_graphql.yaml", {}),
+    "B":  ("recipe_graphql.yaml", {}),
+    "B2": ("recipe_graphql_b2.yaml", {}),
 }
 if ENABLE_ROVER:
     CONDITIONS["C"] = ("recipe_rover.yaml", {})
@@ -148,19 +161,19 @@ def render_recipe(template_text: str, task_prompt: str, tokens: dict) -> str:
     return "\n".join(out_lines) + "\n"
 
 
-def clear_goose_logs(log_dir: Path):
-    if log_dir.is_dir():
-        for f in log_dir.glob("llm_request*.jsonl"):
+def clear_goose_logs():
+    if GOOSE_LOG_DIR.is_dir():
+        for f in GOOSE_LOG_DIR.glob("llm_request*.jsonl"):
             try:
                 f.unlink()
             except OSError:
                 pass
 
 
-def snapshot_goose_logs(run_dir: Path, log_dir: Path) -> int:
+def snapshot_goose_logs(run_dir: Path) -> int:
     n = 0
-    if log_dir.is_dir():
-        for f in sorted(log_dir.glob("llm_request*.jsonl")):
+    if GOOSE_LOG_DIR.is_dir():
+        for f in sorted(GOOSE_LOG_DIR.glob("llm_request*.jsonl")):
             shutil.copy2(f, run_dir / ("goose_" + f.name))
             n += 1
     return n
@@ -212,6 +225,9 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
         "@@APOLLO_BIN@@": APOLLO_BIN,
         "@@APOLLO_CONFIG@@": APOLLO_CONFIG,
         "@@GH_TOOLSETS@@": cond_env.get("toolsets", "all"),
+        "@@B2_BIN@@": B2_BIN,
+        "@@B2_SDL@@": B2_SDL,
+        "@@RUN_ID@@": label,  # unique per run — busts Anthropic's prompt cache across reps
     }
     recipe_text = render_recipe((RECIPES / recipe_tmpl).read_text(), task_prompt, tokens)
     recipe_path = run_dir / "recipe.yaml"
@@ -221,18 +237,15 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
     proxy_log = run_dir / "proxy.jsonl"
     if proxy_log.exists():
         proxy_log.unlink()  # proxy appends — start each run clean so re-runs don't double-count
-    goose_log_dir = run_dir / "goose_logs"
-    goose_log_dir.mkdir(exist_ok=True)
     run_env = dict(base_env)  # toolsets are baked into the recipe, not env
     run_env["ANTHROPIC_HOST"] = f"http://127.0.0.1:{port}"
     run_env["PROXY_LOG"] = str(proxy_log)
     run_env["RUN_LABEL"] = label
     run_env["PORT"] = str(port)
-    run_env["GOOSE_LOG_DIR"] = str(goose_log_dir)
     # Model is injected into the rendered recipe via @@MODEL@@; no env override needed.
 
     print(f"  → {label} ...", flush=True)
-    clear_goose_logs(goose_log_dir)
+    clear_goose_logs()
 
     proxy = subprocess.Popen(
         ["uv", "run", str(ROOT / "proxy" / "anthropic_logging_proxy.py")],
@@ -292,7 +305,7 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
         except subprocess.TimeoutExpired:
             proxy.kill()
 
-    n_goose_files = snapshot_goose_logs(run_dir, goose_log_dir)
+    n_goose_files = snapshot_goose_logs(run_dir)
     n_messages = count_messages(proxy_log)
     meta = {
         "condition": cond, "task_id": task["id"], "task_title": task["title"], "rep": rep,
@@ -322,8 +335,11 @@ def main():
     if not TASKS_YAML.exists():
         sys.exit(f"missing {TASKS_YAML}")
     tasks = yaml.safe_load(TASKS_YAML.read_text())["tasks"]
-    if SMOKE:
-        tasks = [t for t in tasks if t["id"] != "T3"]
+    if ONLY_TASKS:
+        tasks = [t for t in tasks if t["id"] in ONLY_TASKS]
+    if not tasks:
+        ids = [t["id"] for t in yaml.safe_load(TASKS_YAML.read_text())["tasks"]]
+        sys.exit(f"no tasks selected (TASKS={ONLY_TASKS}, available in yaml: {','.join(ids)})")
     conds = [c for c in CONDITIONS if not ONLY or c in ONLY]
     if not conds:
         sys.exit(f"no conditions selected (CONDITIONS={ONLY}, available={list(CONDITIONS)})")
@@ -334,7 +350,7 @@ def main():
     base_env["PATH"] = f"{ROOT / 'bin'}{os.pathsep}{base_env.get('PATH', '')}"
 
     total = len(conds) * len(tasks) * REPS
-    smoke_note = f" [SMOKE MODE: model={MODEL}, reps={REPS}, T3 skipped]" if SMOKE else ""
+    smoke_note = f" [SMOKE MODE: model={MODEL}, reps={REPS}]" if SMOKE else ""
     par_note = f" [parallel: {len(conds)} condition(s)]" if len(conds) > 1 else ""
     print(f"Matrix: conditions={conds} tasks={[t['id'] for t in tasks]} reps={REPS} "
           f"→ {total} runs | repo={REPO} window={WINDOW_START}..{WINDOW_END}"

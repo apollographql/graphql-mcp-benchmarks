@@ -1,33 +1,34 @@
 # Canonical benchmark tasks — the single source of truth for task wording.
 #
-# run_benchmark.py renders the {{repo}} / {{window_start}} / {{window_end}} /
-# {{file_path}} placeholders from .env, producing one fully-resolved task_prompt
-# string that is injected — IDENTICAL, word-for-word — into every condition's
-# recipe. Edit wording here only; never per-condition. That identical-string
-# guarantee is what makes the A/B/C comparison fair.
+# run_benchmark.py renders the {{repo}} placeholder from .env, producing one
+# fully-resolved task_prompt string injected — IDENTICAL, word-for-word — into
+# every condition's recipe. Edit wording here only; never per-condition.
 #
-# Task mix is deliberately balanced (see NOTES.md): T1 forces many sequential
-# REST calls vs one GraphQL query (the core differential); T2 and T3 are
-# roughly call-count-neutral controls so the suite isn't stacked toward GraphQL.
+# Task design:
+# T1 is the differential task: fetching nested data (files changed) for five
+# known PRs. REST must call get_pull_request + get_pull_request_files per PR
+# (up to 10 tool calls for 5 PRs, possibly batched into 2 inference rounds).
+# GraphQL fetches all five PRs with their files in a single aliased query.
+# Both conditions can answer correctly; the comparison is call count and
+# payload token efficiency.
+#
+# T2 is the neutral control: a single known-entity lookup that both REST and
+# GraphQL can answer in one tool call. REST returns a large JSON blob with
+# ~100 fields; GraphQL returns exactly the three requested fields. GraphQL
+# conditions still incur schema-discovery overhead (several inference calls
+# before the execute), so REST wins on call count here — the honest tradeoff
+# for a simple lookup.
 tasks:
   - id: T1
-    title: Merged PRs with author and CI status
+    title: PR details and changed files for five known pull requests
     prompt: |
-      List the 10 most recently merged pull requests in {{repo}} that were merged on
-      or before {{window_end}}. For each pull request, report its title, its PR
-      number, the author's login, and its CI/checks status (for example: passing,
-      failing, or none). Present the results as a list.
+      For each of the following pull requests in {{repo}} — #4742, #4731, #4729,
+      #4704, and #4700 — report the PR title, the author's GitHub login, and the
+      file paths changed in the PR (up to 10 files per PR). Present the results
+      as a numbered list, one PR per section.
   - id: T2
-    title: Open issues mentioning a keyword, with assignees and labels
+    title: Single PR lookup — title, author, and merge date
     prompt: |
-      Find open issues in {{repo}} that mention "performance" and were updated
-      between {{window_start}} and {{window_end}} (inclusive, UTC). For each issue,
-      report its title, its issue number, the assignee logins (if any), and its
-      labels. Present the results as a list.
-  - id: T3
-    title: Recent commits to a specific file
-    prompt: |
-      List the 10 most recent commits to the file {{file_path}} on the default
-      branch of {{repo}}. For each commit, report the short SHA, the author's
-      login, the commit date, and the first line of the commit message. Present
-      the results as a list.
+      For pull request #4742 in {{repo}}, report the PR title, the author's
+      GitHub login, and the date it was merged (YYYY-MM-DD). Present the
+      results as a list.

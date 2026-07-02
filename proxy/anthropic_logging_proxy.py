@@ -1,6 +1,6 @@
 # /// script
 # requires-python = ">=3.10"
-# dependencies = ["uvicorn>=0.30", "httpx>=0.27"]
+# dependencies = ["uvicorn>=0.30", "httpx>=0.27", "tiktoken>=0.7"]
 # ///
 """Transparent logging reverse-proxy for the Anthropic Messages API.
 
@@ -39,6 +39,18 @@ import time
 import httpx
 import uvicorn
 
+# cl100k_base is the BPE encoding Anthropic uses for Claude models.
+# Loaded once at startup; if tiktoken is somehow unavailable, _tok_count
+# returns 0 and tool_result_tokens will be 0 in all log lines.
+try:
+    import tiktoken as _tiktoken
+    _ENCODER = _tiktoken.get_encoding("cl100k_base")
+    def _tok_count(s: str) -> int:
+        return len(_ENCODER.encode(s))
+except Exception:
+    def _tok_count(s: str) -> int:  # type: ignore[misc]
+        return 0
+
 UPSTREAM = os.environ.get("ANTHROPIC_UPSTREAM", "https://api.anthropic.com").rstrip("/")
 PROXY_LOG = os.environ.get("PROXY_LOG", "proxy.jsonl")
 RUN_LABEL = os.environ.get("RUN_LABEL", "")
@@ -74,6 +86,43 @@ async def _get_client() -> httpx.AsyncClient:
             if _client is None:
                 _client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0))
     return _client
+
+
+def _tool_result_tokens(body: bytes) -> int:
+    """Count tokens in the most-recent tool_result blocks sent to the model.
+
+    Each API call carries the full conversation history. We look only at the
+    last user message — that's where the newest tool results appear. Prior user
+    messages were already counted in earlier proxy log entries, so this gives
+    per-call tool-payload tokens without double-counting.
+
+    Content can be a plain string or a list of typed blocks (Anthropic's
+    multi-part tool_result format). Both are handled.
+    """
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return 0
+    messages = parsed.get("messages") or []
+    for msg in reversed(messages):
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content") or []
+        if isinstance(content, str):
+            return 0  # plain-text user message, no tool results
+        total = 0
+        for block in content:
+            if not isinstance(block, dict) or block.get("type") != "tool_result":
+                continue
+            rc = block.get("content") or ""
+            if isinstance(rc, str):
+                total += _tok_count(rc)
+            elif isinstance(rc, list):
+                for part in rc:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        total += _tok_count(part.get("text") or "")
+        return total  # stop after the last user message (total may be 0)
+    return 0
 
 
 def _parse_sse(raw: bytes) -> dict:
@@ -232,6 +281,7 @@ async def app(scope, receive, send):
         "status": status,
         "request_id": request_id,
         "duration_s": round(time.time() - started, 3),
+        "tool_result_tokens": _tool_result_tokens(body) if is_messages else 0,
     }
     rec.update(parsed)
     await _write_log(rec)
