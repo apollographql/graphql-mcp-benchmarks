@@ -191,6 +191,26 @@ PY
     --label B --out "$PROJECT_ROOT/capture/B.json" --calls "$gql_calls" \
     -- "$PROJECT_ROOT/bin/apollo-mcp-server" "$PROJECT_ROOT/config/apollo-mcp.github.local.yaml" || true
 
+  # B2 (GraphQL via Rover Schema MCP) — schema_search / schema_describe / graphql_execute.
+  [ -f "$PROJECT_ROOT/config/github.graphql" ] || { echo "ERROR: run setup first (missing downloaded SDL)"; return 1; }
+  local b2_calls
+  b2_calls=$(REPO="$REPO" OWNER="$owner" NAME="$name" python3 - <<'PY'
+import json, os
+o, n = os.environ["OWNER"], os.environ["NAME"]
+prs = ('{ repository(owner:"%s", name:"%s"){ pullRequests(first:5, states:MERGED){ nodes{ '
+       'number title author{ login } commits(last:1){ nodes{ commit{ '
+       'statusCheckRollup{ state } } } } } } } }') % (o, n)
+print(json.dumps([
+  {"name": "schema_search", "arguments": {"query": "pullRequests"}},
+  {"name": "schema_describe", "arguments": {"coord": "Repository.pullRequests"}},
+  {"name": "graphql_execute", "arguments": {"query": prs}},
+]))
+PY
+)
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label B2 --out "$PROJECT_ROOT/capture/B2.json" --calls "$b2_calls" \
+    -- "$PROJECT_ROOT/servers/rover_schema_mcp.py" "$PROJECT_ROOT/config/github.graphql" || true
+
   # Summarize into capture/SUMMARY.md (referenced by NOTES.md).
   python3 - "$PROJECT_ROOT/capture" <<'PY'
 import json, glob, os, sys

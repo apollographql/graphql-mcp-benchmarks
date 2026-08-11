@@ -16,97 +16,40 @@ Cross-check each run's `stdout.txt` against live GitHub ground truth fetched via
 
 ## Fallback: ground truth queries (only if tasks/ground_truth.json is missing)
 
-### T1 — 10 most recent commits to `src/execution/execute.ts` on or before 2026-05-31, with associated PR info and file paths
+Current task design (see `tasks/tasks.yaml`) pins five fixed PR numbers — no window or
+path filter is involved, so these queries are simple direct lookups, not history scans.
+
+### T1 — title, author login, and changed file paths (up to 10) for five known PRs
 
 ```graphql
 {
   repository(owner: "graphql", name: "graphql-js") {
-    defaultBranchRef {
-      target {
-        ... on Commit {
-          history(
-            first: 10
-            path: "src/execution/execute.ts"
-            until: "2026-05-31T23:59:59Z"
-          ) {
-            nodes {
-              abbreviatedOid
-              committedDate
-              author { user { login } name }
-              messageHeadline
-              associatedPullRequests(first: 1) {
-                nodes {
-                  number
-                  title
-                  files(first: 10) {
-                    nodes { path }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }
+    pr4742: pullRequest(number: 4742) { title author { login } files(first: 10) { nodes { path } } }
+    pr4731: pullRequest(number: 4731) { title author { login } files(first: 10) { nodes { path } } }
+    pr4729: pullRequest(number: 4729) { title author { login } files(first: 10) { nodes { path } } }
+    pr4704: pullRequest(number: 4704) { title author { login } files(first: 10) { nodes { path } } }
+    pr4700: pullRequest(number: 4700) { title author { login } files(first: 10) { nodes { path } } }
   }
 }
 ```
 
-Required tokens: each commit's short SHA (9c35473, d7c9f92, 07e4a99, 0cd2890, cf0de41, 3cc8bf5, 2df627d, 3fe3b20, 37a6299, 6e87945) AND each associated PR number (4742, 4460, 4731, 4729, 4704, 4703, 4702, 4700, 4672, 4658). Author login `yaacovCR` should appear. File paths are best-effort.
+Required tokens per PR (see `tasks/ground_truth.json` for the full expected values):
+the PR number, its title, author login `yaacovCR`, and its `first_10_files` entries
+(best-effort — flag if fewer than the ground-truth count appear, not if a PR has fewer
+than 10 changed files total).
 
-### T2 — Open issues updated between 2026-03-01 and 2026-05-31 with comment count and most recent commenter
+### T2 — title, author login, and merge date for PR #4742
 
 ```graphql
 {
   repository(owner: "graphql", name: "graphql-js") {
-    issues(
-      states: OPEN
-      filterBy: { since: "2026-03-01T00:00:00Z" }
-      orderBy: { field: UPDATED_AT, direction: DESC }
-      first: 50
-    ) {
-      nodes {
-        number
-        title
-        updatedAt
-        comments(last: 1) {
-          totalCount
-          nodes {
-            author { login }
-          }
-        }
-      }
-    }
+    pullRequest(number: 4742) { title author { login } mergedAt }
   }
 }
 ```
 
-Filter to issues where `updatedAt <= "2026-05-31T23:59:59Z"`. For each matching issue: check issue number present in output, check commenter login present (flag HALLUCINATION if a *different* login appears in the output for that issue rather than simply missing).
-
-### T3 — 10 most recent commits to `src/execution/execute.ts`
-
-```graphql
-{
-  repository(owner: "graphql", name: "graphql-js") {
-    defaultBranchRef {
-      target {
-        ... on Commit {
-          history(first: 10, path: "src/execution/execute.ts") {
-            nodes {
-              abbreviatedOid
-              author { user { login } name }
-              committedDate
-              messageHeadline
-            }
-          }
-        }
-      }
-    }
-  }
-}
-```
-
-Required tokens: each commit's short SHA (first 7 chars of `abbreviatedOid`). Author logins best-effort (some commits have no associated GitHub user).
+Required tokens: title "docs: add v17 API docs lint coverage", author login `yaacovCR`,
+and merge date `2026-05-18` (accept any reasonable date formatting of that day).
 
 ---
 
@@ -114,7 +57,7 @@ Required tokens: each commit's short SHA (first 7 chars of `abbreviatedOid`). Au
 
 - **PASS**: all required tokens found in stdout.
 - **FAIL – MISSING**: one or more required tokens absent. List them.
-- **FAIL – HALLUCINATION**: a field that should contain value X contains a clearly different value Y (wrong commenter login, wrong author). Call this out explicitly — it's more serious than missing data.
+- **FAIL – HALLUCINATION**: a field that should contain value X contains a clearly different value Y (wrong author login, wrong title, wrong merge date, wrong file path). Call this out explicitly — it's more serious than missing data.
 - **SKIP**: stdout.txt doesn't exist or is empty.
 
-Be precise in the report: quote the offending line from stdout when flagging a hallucination. At the end, note any structural patterns (e.g. "A2 consistently hallucinated T2 commenter logins").
+Be precise in the report: quote the offending line from stdout when flagging a hallucination. At the end, note any structural patterns (e.g. "A2 consistently hallucinated the T2 merge date").

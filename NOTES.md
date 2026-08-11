@@ -71,16 +71,22 @@ built the way it is). The second group is **filled empirically** by `./bench.sh`
    (the image's default Cmd is `./github-mcp-server stdio`, no entrypoint); and we run
    `--read-only` (these tasks only read — safe and still a large tool surface).
 
-7. **Fixed, closed time window.** `WINDOW_START..WINDOW_END` is an absolute past range
-   (default `2026-03-01..2026-05-31`), not "last 30 days", so repeated runs and the two
-   conditions see identical data — no drift.
+7. **Fixed, closed time window (superseded by the PR-number pivot for T1/T2 wording).**
+   `WINDOW_START..WINDOW_END` is an absolute past range (default `2026-03-01..2026-05-31`),
+   not "last 30 days" — this was the original no-drift mechanism. Since the task design
+   pivot below, T1/T2 pin fixed PR numbers directly and no longer reference the window at
+   all (`tasks/tasks.yaml` only substitutes `{{repo}}`); fixed PR numbers are now what
+   keeps repeated runs and conditions seeing identical data. The window env vars remain
+   live for two things: the `capture` stage's representative `list_commits` call (which
+   still uses `FILE_PATH`), and per-run provenance in `meta.json`.
 
 ## Filled empirically by `./bench.sh`
 
-- **`capture/SUMMARY.md`** (+ `capture/{A1,A2,B}.json`) — the real tool counts,
+- **`capture/SUMMARY.md`** (+ `capture/{A1,A2,B,B2}.json`) — the real tool counts,
   `tools/list` byte sizes, and representative response shapes/sizes per condition.
-  Confirm here that the REST tool surface is large and the GraphQL one is 4 tools,
-  and record the actual `list_pull_requests` shape (does this graphql-js snapshot
+  Confirm here that the REST tool surface is large and Apollo MCP (B) exposes 4 tools
+  vs. Rover Schema MCP's (B2) 3, and record the actual `list_pull_requests` shape (does
+  this graphql-js snapshot
   include check status inline or not?).
 - **`results/summary.md`** — the five required metrics + cache-creation, per condition
   per task, mean ± stdev; plus the proxy-vs-Goose audit/cross-check table.

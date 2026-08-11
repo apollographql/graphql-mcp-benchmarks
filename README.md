@@ -38,7 +38,7 @@ stay in `runs/` for audit.
 | **A1** | REST, all toolsets (server default, `--read-only` → 22 tools) | GitHub MCP Server (Docker, stdio) — headline REST number |
 | **A2** | REST, minimal toolset (`--toolsets repos,issues,pull_requests` → 17 tools) | GitHub MCP Server — sensitivity check |
 | **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); `introspect` banned (loads full type trees — too expensive); agent writes its own queries using training knowledge of the GitHub GraphQL schema |
-| **B2** | GraphQL, dynamic | Rover Schema MCP (`bin/rover-schema-mcp` — thin Python wrapper, 3 tools: `schema_search`/`schema_describe`/`graphql_execute`); uses `rover schema search` + `rover schema describe` for schema discovery |
+| **B2** | GraphQL, dynamic | Rover Schema MCP (`servers/rover_schema_mcp.py` — thin Python wrapper, 3 tools: `schema_search`/`schema_describe`/`graphql_execute`); uses `rover schema search` + `rover schema describe` for schema discovery |
 | **C**  | GraphQL via `rover` CLI, **no MCP** | stretch; `ENABLE_ROVER=1`; reported **separately** |
 
 ## Tasks (constant, word-for-word, across conditions — `tasks/tasks.yaml`)
@@ -48,7 +48,7 @@ stay in `runs/` for audit.
 
 ## Metrics (per condition per task, mean ± stdev over reps)
 
-`input_tokens`, `output_tokens`, **`cache_read_input_tokens`** (separate), **`cache_creation_input_tokens`** (separate), **# inference calls**, **# tool calls**. Cache tokens are never folded into `input_tokens` — they bill differently, and the REST condition's large tool schema inflates first-call cache writes, which is part of the story.
+`input_tokens`, `output_tokens`, **`cache_read_input_tokens`** (separate), **`cache_creation_input_tokens`** (separate), **# inference calls**, **# tool calls**, **`tool_result_tokens`** (tokens in the tool-response payloads the model actually reads — the direct measure of REST's ~100-field objects vs. GraphQL's exact-fields responses). Cache tokens are never folded into `input_tokens` — they bill differently, and the REST condition's large tool schema inflates first-call cache writes, which is part of the story. `results/summary.md` also derives an **estimated cost (USD)** section (per-model published pricing × the above token counts) and a **timing** section (`wall_s` / `agent_active_s`) from the same per-call data.
 
 ## How measurement works
 
@@ -80,6 +80,7 @@ lib/setup.sh              idempotent setup (sourced by bench.sh)
 proxy/anthropic_logging_proxy.py   logging reverse-proxy (uv script)
 recipes/recipe_{rest,graphql,rover}.yaml   condition templates (runner renders them)
 config/apollo-mcp.github.yaml      Apollo MCP config template (→ .local.yaml after setup)
+servers/rover_schema_mcp.py        Rover Schema MCP server (condition B2 — schema_search/schema_describe/graphql_execute)
 tasks/tasks.yaml          canonical task wording (single source)
 capture/capture_mcp.py    MCP stdio client for the capture stage
 run_benchmark.py          orchestrator
@@ -93,8 +94,11 @@ NOTES.md                  surprises in MCP response shapes vs expectations
 See **`NOTES.md`** — Goose renames the cache field and keeps only 10 request logs
 (hence the proxy); Goose can exit 0 on failure (hence the stdout-based correctness
 gate); Apollo MCP has no live introspection (hence the downloaded SDL); the GitHub
-MCP server returns filtered, not raw, REST payloads (hence the `capture` stage). The
-time window is fixed and closed to prevent drift between runs.
+MCP server returns filtered, not raw, REST payloads (hence the `capture` stage).
+`WINDOW_START`/`WINDOW_END` are recorded per run for provenance and still shape the
+`capture` stage's representative `list_commits` call, but T1/T2 no longer reference
+them — both tasks pin fixed PR numbers (see below), which is what actually keeps
+repeated runs seeing identical data.
 
 ### Observed finding: recipe framing was the dominant driver of GraphQL agent cost
 
@@ -114,3 +118,7 @@ schema discovery mechanism.
 
 Ground truth for both tasks is in `tasks/ground_truth.json`. Spot-check agent output
 against it before publishing; `parse_logs.py` flags runs where the agent didn't complete.
+
+## License
+
+MIT — see [`LICENSE`](LICENSE).

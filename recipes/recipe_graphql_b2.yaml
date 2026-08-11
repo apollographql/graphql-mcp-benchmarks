@@ -2,7 +2,7 @@
 # `rover schema search` / `rover schema describe` for schema discovery, plus a
 # direct HTTP call for GraphQL execution.
 #
-# TEMPLATE. run_benchmark.py fills @@B2_BIN@@ (abs path to bin/rover-schema-mcp),
+# TEMPLATE. run_benchmark.py fills @@B2_BIN@@ (abs path to servers/rover_schema_mcp.py),
 # @@B2_SDL@@ (abs path to config/github.graphql), and @@MODEL@@ before invoking
 # goose. GITHUB_TOKEN is supplied via env_keys.
 version: "1.0.0"

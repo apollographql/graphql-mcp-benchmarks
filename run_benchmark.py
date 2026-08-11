@@ -71,7 +71,7 @@ ENABLE_ROVER = env("ENABLE_ROVER", "0") == "1"
 GOOSE_LOG_DIR = Path.home() / ".local/state/goose/logs"
 APOLLO_BIN = str((ROOT / env("APOLLO_BIN", "bin/apollo-mcp-server")).resolve())
 APOLLO_CONFIG = str((ROOT / env("APOLLO_CONFIG", "config/apollo-mcp.github.local.yaml")).resolve())
-B2_BIN = str((ROOT / env("B2_BIN", "bin/rover-schema-mcp")).resolve())
+B2_BIN = str((ROOT / env("B2_BIN", "servers/rover_schema_mcp.py")).resolve())
 B2_SDL = str((ROOT / env("B2_SDL", "config/github.graphql")).resolve())
 ONLY = [c.strip() for c in env("CONDITIONS", "").split(",") if c.strip()]   # optional condition filter
 ONLY_TASKS = [t.strip() for t in env("TASKS", "").split(",") if t.strip()]  # optional task filter

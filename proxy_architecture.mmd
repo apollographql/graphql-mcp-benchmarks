@@ -3,7 +3,8 @@ flowchart LR
 
     subgraph MCP ["MCP Server (stdio)"]
         REST["GitHub MCP\n(Docker)\nA1 / A2"]
-        GQL["Apollo MCP\n(binary)\nB / B2"]
+        APOLLO["Apollo MCP\n(binary)\nB"]
+        ROVER["Rover Schema MCP\n(Python + rover CLI)\nB2"]
     end
 
     subgraph PROXY_BOX ["anthropic_logging_proxy.py  ·  localhost:808x"]
