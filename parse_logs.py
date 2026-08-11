@@ -569,6 +569,8 @@ def _write_charts(rows, conds, tasks):
     ax = axes[n_task_charts]
     group_w = 0.72
     bar_w = group_w / len(tasks_sorted)
+    max_token_val = 0.0
+    all_token_series = []
     for ti, task in enumerate(tasks_sorted):
         offsets = [xi - group_w / 2 + bar_w * (ti + 0.5) for xi in x]
         vals = []
@@ -577,20 +579,25 @@ def _write_charts(rows, conds, tasks):
             vals.append(
                 statistics.mean(r["proxy_tool_result_tokens"] for r in sub) if sub else 0
             )
+        all_token_series.append((offsets, vals, task, ti))
+        max_token_val = max(max_token_val, max(v for v in vals if v > 0), 1)
+
+    for offsets, vals, task, ti in all_token_series:
         ax.bar(offsets, vals, width=bar_w * 0.9,
                color=TASK_COLORS[ti % len(TASK_COLORS)],
                label=f"Task {task}", alpha=0.88)
         for off, v in zip(offsets, vals):
             if v > 0:
-                # Place label above bar; on log scale multiply instead of add
                 ax.text(off, v * 1.4, f"{v:,.0f}",
                         ha="center", va="bottom", fontsize=7)
 
     ax.set_yscale("log")
+    # Set explicit top so bar labels don't crowd the title
+    ax.set_ylim(bottom=10, top=max_token_val * 12)
     ax.set_xticks(x)
     ax.set_xticklabels(x_labels, fontsize=8)
     ax.set_ylabel("Tool-response size (tokens, log scale)")
-    ax.set_title("Tool-Response Size per Task\n(tokens returned by API — lower is more selective)",
+    ax.set_title("Tool-Response Size per Task\n(lower = more selective)",
                  fontsize=10)
     ax.legend(fontsize=8)
     ax.grid(axis="y", alpha=0.3, linestyle="--", which="both")
@@ -731,7 +738,7 @@ def write_summary(rows):
     lines.append("| Cond | Task | Rep | proxy calls | goose calls | proxy in | goose in | "
                  "proxy cache-read | goose cache-read | cost $ | wall_s | active_s | "
                  "aux calls | aux tok | unparsed | completed | exit | rot? |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
         done_cell = "**$killed**" if r.get("budget_killed") else ("yes" if r["completed"] else "**NO**")
         lines.append("| {condition} | {task_id} | {rep} | {pc} | {gc} | {pi} | {gi} | "

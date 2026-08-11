@@ -27,7 +27,7 @@ stay in `runs/` for audit.
 | `./bench.sh setup`    | Install/verify Goose; fetch the Apollo MCP binary (`bin/`); pull the GitHub MCP Docker image; download GitHub's GraphQL SDL via `rover`; render the Apollo config; mint a GitHub token via `gh`. Idempotent. |
 | `./bench.sh precheck` | **Step-1 gate.** A single probe call confirms the proxy logs `cache_read_input_tokens` and `cache_creation_input_tokens`. Aborts `all` if absent. |
 | `./bench.sh capture`  | Records each server's real tool surface (count + `tools/list` bytes) and representative tool-call response shapes → `capture/`. Grounds claims in actual MCP output. |
-| `./bench.sh run`      | Runs the matrix `A1, A2, B, B2 [,C] × T1,T2,T3 × REPS`. Filter with `CONDITIONS=A1,B2` and/or `TASKS=T2`. |
+| `./bench.sh run`      | Runs the matrix `A1, A2, B, B2 [,C] × T1, T2 × REPS`. Filter with `CONDITIONS=A1,B2` and/or `TASKS=T2`. |
 | `./bench.sh parse`    | Aggregates logs → `results/summary.md` + CSVs. |
 | `./bench.sh clean`    | Removes `runs/`, `results/`, `capture/*.json`. |
 
@@ -37,15 +37,14 @@ stay in `runs/` for audit.
 |----|-----------|--------|
 | **A1** | REST, all toolsets (server default, `--read-only` → 22 tools) | GitHub MCP Server (Docker, stdio) — headline REST number |
 | **A2** | REST, minimal toolset (`--toolsets repos,issues,pull_requests` → 17 tools) | GitHub MCP Server — sensitivity check |
-| **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); agent is instructed to use `search` for schema discovery and avoid `introspect` (loads full type trees — too expensive); writes its own queries |
+| **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); `introspect` banned (loads full type trees — too expensive); agent writes its own queries using training knowledge of the GitHub GraphQL schema |
 | **B2** | GraphQL, dynamic | Rover Schema MCP (`bin/rover-schema-mcp` — thin Python wrapper, 3 tools: `schema_search`/`schema_describe`/`graphql_execute`); uses `rover schema search` + `rover schema describe` for schema discovery |
 | **C**  | GraphQL via `rover` CLI, **no MCP** | stretch; `ENABLE_ROVER=1`; reported **separately** |
 
 ## Tasks (constant, word-for-word, across conditions — `tasks/tasks.yaml`)
 
-- **T1** 10 most recent commits to a file with associated PR info and changed file paths. *(REST: list_commits (1) + list_pulls_for_commit × 10 + list_pull_request_files × 10 ≈ 21 calls; GraphQL: one nested query via `history → associatedPullRequests → files` — the core N+1 differential.)*
-- **T2** Open issues updated in the window with comment count + most recent commenter login. *(REST: list issues, then per-issue comments call = N+1; GraphQL: one nested query — same differential as T1 on a different relationship.)*
-- **T3** 10 most recent commits to a file on or before the window end, with sha/author/date/message. *(roughly call-count-neutral — honest control.)*
+- **T1** Five specific PRs (#4742, #4731, #4729, #4704, #4700) — for each, the title, author login, and changed file paths (up to 10). *(REST: up to 10 sequential tool calls — 5 `get_pull_request` + 5 `get_pull_request_files` — or 2 batched rounds; GraphQL: one aliased query fetching all five in a single round trip. Core N+1 differential.)*
+- **T2** Single-entity lookup — title, author login, and merge date for one known PR (#4742). *(Both REST and GraphQL answer in one tool call. The comparison is payload precision: REST returns the full ~100-field JSON object; GraphQL returns exactly the three requested fields.)*
 
 ## Metrics (per condition per task, mean ± stdev over reps)
 
@@ -97,23 +96,21 @@ gate); Apollo MCP has no live introspection (hence the downloaded SDL); the GitH
 MCP server returns filtered, not raw, REST payloads (hence the `capture` stage). The
 time window is fixed and closed to prevent drift between runs.
 
-### Observed failure pattern: REST minimal (A2) hallucination on relational fields
+### Observed finding: recipe framing was the dominant driver of GraphQL agent cost
 
-The REST minimal condition (A2) is prone to **confident hallucination** on tasks that
-require traversing a relationship to answer a sub-field. The pattern: `list_issues`
-returns a `comments` integer count but not commenter identity; the agent skips the
-follow-up `get_issue_comments` call (perhaps because the integer count looks like
-sufficient signal) and fabricates commenter logins from thin air. The result looks
-complete — correct issue titles, correct comment counts, plausible-looking usernames —
-but the relational fields are invented.
+Early B runs used recipe instructions that named the `search` tool and described a
+schema discovery workflow. This caused the model to run 7–12 `search` calls per task
+before executing — even when the mandate was softened to "if you need to discover
+field names." Removing all tool references and discovery framing from the recipe
+(leaving only the `introspect` ban) eliminated the search loop entirely: B now goes
+straight to `execute` in a single call, identical to B2. Both GraphQL conditions use
+the model's training-time knowledge of the GitHub GraphQL schema to compose correct
+queries with no schema discovery round trips.
 
-This is a structural risk for minimal REST toolsets: when a tool response contains a
-*count* of a related resource but not the resource itself, the model may treat the
-count as evidence that it already has the data. GraphQL conditions (B, B2) are not
-susceptible here because a single nested query fetches the relation in one pass —
-there is no intermediate "count only" response to misread.
+The structural protocol difference on T1 is therefore clean: REST requires 10
+sequential tool calls (5 `get_pull_request` + 5 `get_pull_request_files`); GraphQL
+requires 1 batched aliased query. This gap is a property of the protocol, not of any
+schema discovery mechanism.
 
-This benchmark does not include an automated correctness gate beyond checking that
-Goose exited with output. Manual spot-checking against ground truth (via `gh api
-graphql`) is recommended before publishing results, especially for A2 on any task
-involving nested or relational data.
+Ground truth for both tasks is in `tasks/ground_truth.json`. Spot-check agent output
+against it before publishing; `parse_logs.py` flags runs where the agent didn't complete.

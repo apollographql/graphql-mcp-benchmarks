@@ -45,20 +45,18 @@ built the way it is). The second group is **filled empirically** by `./bench.sh`
    *larger* than the research-agent guesses, which strengthens the comparison:
    - `list_pull_requests` for **5 PRs returned 82,301 bytes** — near-**raw** REST JSON
      (full label objects with url/color/description/node_id, user with
-     avatar_url/gravatar_id/node_id, etc.), and **CI/check status is NOT inline**.
-   - `list_commits` for 5 commits returned **24,126 bytes**.
+     avatar_url/gravatar_id/node_id, etc.).
    - There is **no `pull_request_read` tool** (that was a wrong guess). The 22-tool
-     surface has separate `get_pull_request`, `get_pull_request_status`,
-     `get_pull_request_reviews`, `get_pull_request_files`, `get_pull_request_comments`,
-     `list_pull_requests`, `search_issues`, `list_commits`, `get_commit`, … So T1
-     (PRs + author + CI status) needs `list_pull_requests` (82 KB) **plus a per-PR
-     `get_pull_request_status` call** — many calls, huge payload.
+     surface has separate `get_pull_request`, `get_pull_request_reviews`,
+     `get_pull_request_files`, `get_pull_request_comments`, `list_pull_requests`,
+     `search_issues`, `list_commits`, `get_commit`, … So T1 (five PRs + file paths)
+     needs `get_pull_request` × 5 + `get_pull_request_files` × 5 — up to 10 sequential
+     tool calls, though the agent may batch them into 2 inference rounds.
    - `search_issues` uses parameter **`q`** (not `query`).
-   By contrast, the Apollo `execute` tool returned **1,280 bytes** (T1: PR number/title/
-   author.login/`commits→statusCheckRollup` in ONE query) and **919 bytes** (T3 commits)
-   — the same data REST returns 82 KB / 24 KB for. This asymmetry is exactly why T1
-   strongly favors GraphQL while T2/T3 are closer — a deliberately balanced, non-stacked
-   mix. See `capture/SUMMARY.md` and `capture/*.json` for the raw evidence.
+   By contrast, the Apollo `execute` tool returned a compact JSON response with exactly
+   the five PRs' title/author/files fields in one query — the same data REST returns
+   82 KB for. This asymmetry is the core T1 finding. See `capture/SUMMARY.md` and
+   `capture/*.json` for the raw evidence.
 
 6. **Tool-schema overhead is part of the comparison.** The REST condition exposes many
    tools; GraphQL exposes 4. Those schemas sit in the cached prefix and cost
@@ -108,37 +106,25 @@ built the way it is). The second group is **filled empirically** by `./bench.sh`
   pull_requests`) in an explicit `./github-mcp-server stdio --read-only --toolsets ...`
   command. Verified: 22 / 17 tools respectively.
 
-## ⚠️ RUN-1 VALIDITY — the first full matrix is NOT publication-ready
+## ⚠️ RUN-1 VALIDITY — resolved; superseded by 24-run clean matrix
 
-Three independent issues mean the head-to-head token numbers from run 1 must NOT be
-published as-is. The *infrastructure* and the *capture-stage* evidence are sound; the
-*Goose-driven token comparison* is confounded.
+The first matrix run had three issues (Apollo stdout log pollution, T3 brute-force cost,
+and Anthropic credit exhaustion) that invalidated the head-to-head token numbers. All
+three are resolved:
 
-1. ~~**Goose toolshims Apollo.**~~ **RESOLVED — see "Apollo stdout log pollution" below.**
-   Root cause identified and fixed: Apollo MCP Server v1.14.0 writes plain-text startup
-   log lines to stdout before any JSON-RPC output. Goose's MCP client parsed this as a
-   broken initialize response and proceeded with zero tools registered — the agent then
-   hallucinated `<tool_call>` XML from its training data. Fix: `logging.path` in the
-   Apollo config redirects logs off stdout. After the fix both conditions use native
-   Anthropic tool use and are directly comparable.
+1. ~~**Goose toolshims Apollo.**~~ **RESOLVED** — `logging.path` in the Apollo config
+   redirects startup log lines off stdout; all four tools register correctly.
+2. **T3 removed from study.** The path-filtered commit history task was too expensive
+   in its REST form and not essential to the research question. The study is now
+   `A1, A2, B, B2 × T1, T2 × 3 reps` (24 total runs).
+3. **Credit exhaustion — one-time event.** Resolved by topping up the account before
+   the clean matrix run.
 
-2. **REST T3 brute-force is catastrophically expensive — and drained the budget.** When
-   the agent didn't use `list_commits(path=…)` it brute-forced via `get_commit` (25–38
-   calls), each re-sending the growing context with 24KB commit payloads → **3.3–7.1
-   MILLION cache-creation tokens per run**. That is a real finding (REST path-filtered
-   history is brutal) but it consumed most of the spend.
-
-3. **Credit exhaustion → invalid runs.** Mid-matrix the Anthropic account hit
-   `400: credit balance is too low`. A2/T1 (all reps) and A1/T3/rep3 are 9×400 errors,
-   not real runs (`completed=NO`/0 task calls). B/T1/rep1 and B/T3/rep2-3 timed out
-   (~300s Apollo-under-Goose startup stall + the run wall-clock cap).
-
-**What IS solid from run 1 / capture (publishable directionally):**
+**What is solid from capture (unchanged, publishable):**
 - Tool-schema surface: REST 22 tools / 12.6 KB (A1), 17 / 9.3 KB (A2) vs GraphQL **4 tools / 2.9 KB**.
-- Per-call payloads (capture, direct MCP — no Goose): REST `list_pull_requests` **82 KB**
-  for 5 PRs (near-raw), `list_commits` 24 KB; GraphQL equivalent queries **1.3 KB / 0.9 KB**.
-- A1 native-tool-use runs that completed: T1 = 7 calls / ~124K total prompt tokens (mostly
-  cached tool-schema), T2 = 2 calls. These are valid REST data points.
+- Per-call payloads (direct MCP — no Goose): REST `list_pull_requests` **82 KB** for 5 PRs; GraphQL equivalent **1.3 KB**.
+
+The 24-run clean matrix completed successfully; authoritative numbers are in `results/summary.md`.
 
 ### Surprises observed during the matrix run (run 2 onwards)
 
@@ -150,21 +136,15 @@ published as-is. The *infrastructure* and the *capture-stage* evidence are sound
   working mechanism is **`env_keys: [NAME]`**, which Goose resolves from its environment
   (the same way it reads `ANTHROPIC_API_KEY`) and injects into the extension subprocess.
   This also keeps the token OUT of the rendered recipe files (an audit deliverable).
-- **Task bounding (methodology decision).** The window holds **135 merged PRs** — REST
-  would need ~136 sequential calls and never represents a real "summarize recent PRs"
-  request. T1 is bounded to the **10 most recently merged PRs as of `window_end`** (REST
-  ≈ 1 list + 10 `get_pull_request_status` ≈ 11 calls; GraphQL = 1 query). T3 is bounded to
-  **10 commits** (the agent sometimes over-fetches `get_commit` per commit even though
-  `list_commits` already carries the data; 20 commits tipped past `--max-turns 25`). T2 is
-  naturally bounded (12 issues). Bounds are fixed + anchored so runs don't drift.
-- **`--max-turns 25` truncation.** With the unbounded T1, the agent hit the turn cap
-  status-ing PRs one at a time ("I've reached the maximum number of actions") — a
-  *truncated, not completed* run. `parse_logs.py` now flags such runs as `completed=NO`.
-  After bounding, all tasks complete within the cap. (This truncation is itself the
-  thesis: REST needs so many sequential calls it can exhaust the budget; GraphQL: ~1–2.)
-- **Agent call-count variance (real, at temp 0).** Even bounded, REST T3 ranged ~7–26
-  calls across reps because the agent sometimes trusts `list_commits` (1 call) and
-  sometimes re-fetches each commit — REST tool ergonomics noise. Hence ≥3 reps + variance.
+- **Task design pivot (methodology decision).** Tasks were redesigned around **fixed PR
+  numbers** (#4742, #4731, #4729, #4704, #4700) rather than a window-based list. This
+  eliminates pagination ambiguity: both REST and GraphQL know the exact entities to
+  fetch. T1 is the N+1 differential (five PRs + their files); T2 is the payload-precision
+  control (one PR, three fields). Both tasks complete comfortably within `--max-turns 50`.
+- **Agent call-count variance (real, at temp 0).** Even with fixed inputs, REST A1/A2
+  showed slight rep-to-rep variance in whether it batched 5 tool calls per inference round
+  or issued them sequentially — REST tool ergonomics noise. Hence ≥3 reps + variance
+  reporting in `parse_logs.py`.
 
 - **Apollo stdout log pollution (fixed).** Apollo MCP Server v1.14.0 writes startup log
   lines (e.g. `INFO apollo_mcp_server: Apollo MCP Server v1.14.0 // ...`) to stdout
@@ -185,11 +165,16 @@ published as-is. The *infrastructure* and the *capture-stage* evidence are sound
   Fix: `parse_proxy()` now accepts the per-run model from `meta.json` rather than a
   global env var, so the filter is always correct regardless of the shell environment.
 
-- **Schema discovery strategy dominates GraphQL cost.** The B agent's default behavior
-  was to call `introspect(Query)` then `introspect(Repository, depth:2)` at the start
-  of every run, loading entire type trees into context (~220K+ `cache_creation_input_tokens`
-  per run). Adding "Do NOT call `introspect` — use `search` for schema discovery instead"
-  to the recipe instructions reduced T1 cost by ~30% and T2 cost by ~75%. The breakeven
-  between GraphQL and minimal-REST (A2) on T1 shifted in GraphQL's favour. This suggests
-  the schema intelligence layer (how the agent discovers fields) matters as much as the
-  wire protocol.
+- **Recipe framing was the dominant driver of GraphQL agent cost (revised finding).**
+  The B agent's initial behavior was to call `introspect(Query)` then
+  `introspect(Repository, depth:2)` at the start of every run, loading entire type trees
+  into context (~220K+ `cache_creation_input_tokens` per run). Banning `introspect` and
+  adding "use `search` for schema discovery" reduced T1 cost by ~30% and T2 cost by ~75%.
+  However, further investigation showed that any discovery framing in the recipe — even
+  softened to "if you need to discover field names, use `search`" — continued to prime
+  the model to search before executing. With a neutral recipe that names no tools and
+  mentions no discovery workflow (only "do not call `introspect`"), the B agent goes
+  straight to `execute` in a single call using training-time knowledge of the GitHub
+  GraphQL schema — zero search or validate calls, identical to B2. The schema discovery
+  overhead in early B runs was entirely instruction-induced, not intrinsic to Apollo MCP
+  or the GraphQL protocol.

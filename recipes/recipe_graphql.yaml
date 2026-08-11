@@ -10,14 +10,11 @@ version: "1.0.0"
 title: "Benchmark — Condition B (GraphQL via Apollo MCP Server)"
 description: "Answer the task using the Apollo MCP Server's dynamic tools against GitHub's GraphQL API."
 instructions: |
-  You are a developer assistant connected to GitHub's GraphQL API through the
-  Apollo MCP Server. Your tools: `search` (find schema fields/types by keyword),
-  `validate` (check a GraphQL operation), and `execute` (run a GraphQL operation).
+  You are a developer assistant connected to GitHub's GraphQL API.
   Do NOT call `introspect` — it loads entire type trees and is too expensive.
-  Use `search` for schema discovery instead: search for the field names you need,
-  then write a query directly. Prefer a single query that fetches everything via
-  nested fields. Be concise: once you have the answer, state it directly as a
-  list. Do not ask follow-up questions.
+  Prefer a single query that fetches everything via nested fields. Be concise:
+  once you have the answer, state it directly as a list. Do not ask follow-up
+  questions.
   (benchmark-run-id: @@RUN_ID@@)
 prompt: |
   @@TASK_PROMPT@@
