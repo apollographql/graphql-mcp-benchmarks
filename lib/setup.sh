@@ -56,7 +56,7 @@ do_setup() {
       CONFIGURE=false bash -c "$(curl -fsSL https://github.com/aaif-goose/goose/releases/download/stable/download_cli.sh)" || true
     fi
   fi
-  command -v goose >/dev/null 2>&1 || { echo "ERROR: Goose install failed; install it manually (https://block.github.io/goose/)"; return 1; }
+  command -v goose >/dev/null 2>&1 || { echo "ERROR: Goose install failed; install it manually (https://goose-docs.ai/docs/getting-started/installation)"; return 1; }
   echo "goose: $(command -v goose)"
 
   # Minimal Goose config so headless runs pick up provider/model (env still overrides).
