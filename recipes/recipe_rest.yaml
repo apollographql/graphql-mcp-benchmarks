@@ -6,8 +6,9 @@
 # model if MODEL is set in .env. The runner fills --toolsets via the
 # @@GH_TOOLSETS@@ token (A1=all, A2=repos,issues,pull_requests); the PAT is
 # supplied via the GITHUB_PERSONAL_ACCESS_TOKEN env var (never written to disk).
-# --read-only keeps the agent to read operations. NOTE: this image's default
-# Cmd is `./github-mcp-server stdio`; we pass an explicit command to add flags,
+# --read-only keeps the agent to read operations. NOTE: this image sets
+# ENTRYPOINT=/server/github-mcp-server with Cmd=[stdio]; args are appended to that
+# entrypoint, so we pass `stdio --read-only --toolsets ...` WITHOUT a binary name,
 # and the comma-separated --toolsets flag is used (the GITHUB_TOOLSETS env var
 # did not split commas in this version).
 version: "1.0.0"
@@ -36,7 +37,6 @@ extensions:
       - -e
       - GITHUB_PERSONAL_ACCESS_TOKEN
       - ghcr.io/github/github-mcp-server
-      - ./github-mcp-server
       - stdio
       - --read-only
       - --toolsets
