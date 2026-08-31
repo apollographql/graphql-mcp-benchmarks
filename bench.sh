@@ -155,7 +155,7 @@ import json, os
 o, n, fp, repo = os.environ["OWNER"], os.environ["NAME"], os.environ["FILE_PATH"], os.environ["REPO"]
 print(json.dumps([
   {"name": "list_pull_requests", "arguments": {"owner": o, "repo": n, "state": "closed", "perPage": 5}},
-  {"name": "search_issues", "arguments": {"q": f"repo:{repo} is:issue is:open performance", "perPage": 5}},
+  {"name": "search_issues", "arguments": {"query": f"repo:{repo} is:issue is:open performance", "perPage": 5}},
   {"name": "list_commits", "arguments": {"owner": o, "repo": n, "path": fp, "perPage": 5}},
 ]))
 PY
@@ -164,11 +164,11 @@ PY
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label A1 --out "$PROJECT_ROOT/capture/A1.json" --calls "$rest_calls" \
     -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server \
-       ./github-mcp-server stdio --read-only --toolsets all || true
+       stdio --read-only --toolsets all || true
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label A2 --out "$PROJECT_ROOT/capture/A2.json" --calls "$rest_calls" \
     -- docker run -i --rm -e GITHUB_PERSONAL_ACCESS_TOKEN ghcr.io/github/github-mcp-server \
-       ./github-mcp-server stdio --read-only --toolsets repos,issues,pull_requests || true
+       stdio --read-only --toolsets repos,issues,pull_requests || true
 
   # B (GraphQL) — execute representative queries via the Apollo MCP server.
   local gql_calls
