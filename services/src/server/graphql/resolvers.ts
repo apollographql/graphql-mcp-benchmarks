@@ -147,7 +147,13 @@ const personnelResolvers = {
 
     assignments: (
       _: unknown,
-      args: { flightId?: string | null; flightIds?: string[] | null; crewId?: string | null; limit?: number | null },
+      args: {
+        flightId?: string | null;
+        flightIds?: string[] | null;
+        crewId?: string | null;
+        roles?: string[] | null;
+        limit?: number | null;
+      },
     ) => personnel.searchAssignments(args, SURFACE),
   },
 
@@ -173,8 +179,22 @@ const personnelResolvers = {
    */
   Flight: {
     __resolveReference: (ref: { id: string }) => ({ id: ref.id }),
-    assignments: (flight: { id: string }, _args: unknown, ctx: Ctx) =>
-      ctx.loaders.assignmentsByFlight.load(flight.id),
+    /**
+     * `roles` is filtered AFTER the loader rather than pushed into it, so the
+     * batch key stays the flight id. Narrowing the key by role would give every
+     * distinct role set its own batch and undo the batching that keeps
+     * `backend_requests` flat in N.
+     */
+    assignments: async (
+      flight: { id: string },
+      args: { roles?: string[] | null },
+      ctx: Ctx,
+    ) => {
+      const rows = await ctx.loaders.assignmentsByFlight.load(flight.id);
+      if (!args.roles?.length) return rows;
+      const wanted = new Set(args.roles);
+      return rows.filter((r) => wanted.has(String(r['role'])));
+    },
   },
 };
 

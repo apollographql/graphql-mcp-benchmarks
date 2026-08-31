@@ -320,6 +320,7 @@ function personnelRoutes(): Handler {
           flightId: url.searchParams.get('flightId'),
           flightIds: csv(url.searchParams.get('flightIds')),
           crewId: url.searchParams.get('crewId'),
+          roles: csv(url.searchParams.get('roles')),
           limit: intParam(url.searchParams.get('limit'), 50),
         },
         SURFACE,

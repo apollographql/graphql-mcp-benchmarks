@@ -159,6 +159,12 @@ export interface RefFieldDef {
   targetService: ServiceName;
   /** The request a REST client must make instead. Documented for the writeup. */
   restEquivalent: string;
+  /**
+   * GraphQL argument list in SDL syntax, e.g. `roles: [CrewRole!]`. Must have a
+   * REST counterpart on the equivalent endpoint — a traversal argument GraphQL
+   * has and REST lacks would be an information asymmetry, not a protocol finding.
+   */
+  args?: string;
   description?: string;
 }
 

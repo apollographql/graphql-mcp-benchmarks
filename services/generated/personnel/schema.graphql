@@ -95,8 +95,8 @@ type Assignment @key(fields: "id") {
 # Adds crew rostering to the Flight type owned by Scheduling.
 type Flight @key(fields: "id") {
   id: ID!
-  """REST equivalent: GET /v2/assignments?flightId={id}"""
-  assignments: [Assignment!]!
+  """REST equivalent: GET /v2/assignments?flightId={id}&roles=CAPTAIN,FIRST_OFFICER"""
+  assignments(roles: [CrewRole!]): [Assignment!]!
 }
 
 type Query {
@@ -107,5 +107,5 @@ type Query {
   """Filtered crew search."""
   crewSearch(base: String, rank: CrewRank, status: CrewStatus, limit: Int = 50, cursor: String): [CrewMember!]!
   """Roster lookups by flight or crew member."""
-  assignments(flightId: ID, flightIds: [ID!], crewId: ID, limit: Int = 50): [Assignment!]!
+  assignments(flightId: ID, flightIds: [ID!], crewId: ID, roles: [CrewRole!], limit: Int = 50): [Assignment!]!
 }

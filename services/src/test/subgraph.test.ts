@@ -204,3 +204,73 @@ test('batching keeps backend reads flat as fan-out grows', async () => {
     `expected <=3 batched reads for 20 flights, got ${m.requests.graphql}`,
   );
 });
+
+// ── the roles filter, on both GraphQL entry points ──────────────────────────
+// Added with the `roles` filter itself (2026-08-31). `Flight.assignments` filters
+// AFTER the DataLoader — to keep the batch key the flight id, so batching still
+// holds `backend_requests` flat in N — which makes it a genuinely separate code
+// path from `Query.assignments`. Two paths, one semantics, so both get tested.
+
+const PILOTS = ['CAPTAIN', 'FIRST_OFFICER'];
+
+test('personnel: Query.assignments(roles:) returns only those roles', async () => {
+  const all = await run('personnel', '{ assignments(flightId: "FL-0001") { id role } }');
+  const pilots = await run(
+    'personnel',
+    '{ assignments(flightId: "FL-0001", roles: [CAPTAIN, FIRST_OFFICER]) { id role } }',
+  );
+  const allRows = all['assignments'] as { id: string; role: string }[];
+  const pilotRows = pilots['assignments'] as { id: string; role: string }[];
+
+  assert.equal(allRows.length, 4, 'fixture flights carry a four-person roster');
+  assert.equal(pilotRows.length, 2);
+  assert.ok(pilotRows.every((r) => PILOTS.includes(r.role)));
+  assert.deepEqual(
+    pilotRows.map((r) => r.id).sort(),
+    allRows.filter((r) => PILOTS.includes(r.role)).map((r) => r.id).sort(),
+  );
+});
+
+test('personnel: Flight.assignments(roles:) agrees with Query.assignments(roles:)', async () => {
+  const viaQuery = await run(
+    'personnel',
+    '{ assignments(flightId: "FL-0001", roles: [CAPTAIN, FIRST_OFFICER]) { id } }',
+  );
+  const viaFlight = await run(
+    'personnel',
+    '{ _entities(representations: [{ __typename: "Flight", id: "FL-0001" }]) ' +
+      '{ ... on Flight { assignments(roles: [CAPTAIN, FIRST_OFFICER]) { id } } } }',
+  );
+  const a = (viaQuery['assignments'] as { id: string }[]).map((r) => r.id).sort();
+  const entities = viaFlight['_entities'] as { assignments: { id: string }[] }[];
+  const b = entities[0]!.assignments.map((r) => r.id).sort();
+
+  assert.deepEqual(b, a, 'the two entry points must not diverge on filter semantics');
+});
+
+test('personnel: omitting roles returns the full roster', async () => {
+  const d = await run(
+    'personnel',
+    '{ _entities(representations: [{ __typename: "Flight", id: "FL-0001" }]) ' +
+      '{ ... on Flight { assignments { id role } } } }',
+  );
+  const entities = d['_entities'] as { assignments: { role: string }[] }[];
+  assert.equal(entities[0]!.assignments.length, 4);
+});
+
+test('roles filtering does not break DataLoader batching', async () => {
+  // The whole reason roles is filtered post-loader. If it were pushed into the
+  // batch key, each distinct role set would get its own backend read.
+  resetMetrics('personnel');
+  await run(
+    'personnel',
+    '{ _entities(representations: [' +
+      '{ __typename: "Flight", id: "FL-0001" }, { __typename: "Flight", id: "FL-0002" }' +
+      ']) { ... on Flight { assignments(roles: [CAPTAIN, FIRST_OFFICER]) { id } } } }',
+  );
+  assert.equal(
+    metricsFor('personnel').requests.graphql,
+    1,
+    'two flights, one batched assignments read',
+  );
+});

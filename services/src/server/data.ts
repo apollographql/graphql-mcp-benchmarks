@@ -380,6 +380,8 @@ export interface AssignmentFilter {
   flightId?: string | null;
   flightIds?: string[] | null;
   crewId?: string | null;
+  /** Roster slots to include. Empty/absent means every role. */
+  roles?: string[] | null;
   limit?: number | null;
 }
 
@@ -435,6 +437,13 @@ export const personnel = {
       rows = _assignmentsByCrew.get(filter.crewId) ?? [];
     } else {
       rows = assignments().all;
+    }
+
+    // Applied identically for both surfaces — this is the shared repository, so a
+    // `roles` filter cannot mean one thing over REST and another over GraphQL.
+    if (filter.roles?.length) {
+      const wanted = new Set(filter.roles);
+      rows = rows.filter((r) => wanted.has(String(r['role'])));
     }
 
     rows = [...rows].sort((a, b) => String(a['id']).localeCompare(String(b['id'])));

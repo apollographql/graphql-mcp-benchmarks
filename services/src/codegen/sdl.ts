@@ -70,7 +70,7 @@ function renderEntityType(entity: EntityDef): string {
       ? `${ref.description} REST equivalent: ${ref.restEquivalent}`
       : `REST equivalent: ${ref.restEquivalent}`;
     lines.push(docComment(note, '  '));
-    lines.push(`  ${ref.name}: ${ref.gqlType}`);
+    lines.push(`  ${ref.name}${ref.args ? `(${ref.args})` : ''}: ${ref.gqlType}`);
   }
 
   lines.push('}');
@@ -119,7 +119,8 @@ function renderQueryRoot(service: ServiceName): string {
       );
       q.push('  """Roster lookups by flight or crew member."""');
       q.push(
-        '  assignments(flightId: ID, flightIds: [ID!], crewId: ID, limit: Int = 50): [Assignment!]!',
+        '  assignments(flightId: ID, flightIds: [ID!], crewId: ID, roles: [CrewRole!], ' +
+          'limit: Int = 50): [Assignment!]!',
       );
       break;
   }
@@ -172,7 +173,7 @@ export function renderSubgraphSdl(service: ServiceName): string {
     out.push(`  ${ext.keyField}: ID!`);
     for (const ref of ext.refFields) {
       out.push(`  """REST equivalent: ${ref.restEquivalent}"""`);
-      out.push(`  ${ref.name}: ${ref.gqlType}`);
+      out.push(`  ${ref.name}${ref.args ? `(${ref.args})` : ''}: ${ref.gqlType}`);
     }
     out.push('}');
     out.push('');

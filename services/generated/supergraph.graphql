@@ -211,8 +211,10 @@ type Flight
 {
   id: ID!
 
-  """REST equivalent: GET /v2/assignments?flightId={id}"""
-  assignments: [Assignment!]! @join__field(graph: PERSONNEL)
+  """
+  REST equivalent: GET /v2/assignments?flightId={id}&roles=CAPTAIN,FIRST_OFFICER
+  """
+  assignments(roles: [CrewRole!]): [Assignment!]! @join__field(graph: PERSONNEL)
   flightNumber: String! @join__field(graph: SCHEDULING)
 
   """Operating carrier IATA code."""
@@ -329,7 +331,7 @@ type Query
   crewSearch(base: String, rank: CrewRank, status: CrewStatus, limit: Int = 50, cursor: String): [CrewMember!]! @join__field(graph: PERSONNEL)
 
   """Roster lookups by flight or crew member."""
-  assignments(flightId: ID, flightIds: [ID!], crewId: ID, limit: Int = 50): [Assignment!]! @join__field(graph: PERSONNEL)
+  assignments(flightId: ID, flightIds: [ID!], crewId: ID, roles: [CrewRole!], limit: Int = 50): [Assignment!]! @join__field(graph: PERSONNEL)
 
   """A single flight leg by id."""
   flight(id: ID!): Flight @join__field(graph: SCHEDULING)

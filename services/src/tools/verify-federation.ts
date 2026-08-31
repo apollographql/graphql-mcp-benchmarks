@@ -187,6 +187,26 @@ function pickFlights(n: number): Record_[] {
   return FLIGHTS.filter((f) => AIRCRAFT.has(String(f['aircraftId']))).slice(0, n);
 }
 
+/**
+ * M2/M3 ask about PILOTS (§5), and since 2026-08-31 BOTH surfaces can say so:
+ * `GET /v2/assignments?roles=CAPTAIN,FIRST_OFFICER` and
+ * `assignments(roles: [CAPTAIN, FIRST_OFFICER])`.
+ *
+ * Before that filter existed the asymmetry favored REST — it could fetch the full
+ * roster, filter client-side, and then request crew for the two pilots only, while
+ * a single GraphQL traversal had no way to narrow and resolved crew for all four.
+ * Modelling REST as fetching all four crew instead overstated its cost by ~30% at
+ * N=20 and pushed M3 at N=50 `-fat` past a 200k context window.
+ */
+const PILOT_ROLES = ['CAPTAIN', 'FIRST_OFFICER'] as const;
+const PILOT_ROLE_SET: ReadonlySet<string> = new Set(PILOT_ROLES);
+const PILOT_ROLES_QS = `&roles=${PILOT_ROLES.join(',')}`;
+const PILOT_ROLES_GQL = `(roles: [${PILOT_ROLES.join(', ')}])`;
+
+function pilotsOnly(assignments: Record_[]): Record_[] {
+  return assignments.filter((a) => PILOT_ROLE_SET.has(String(a['role'])));
+}
+
 function assignmentsFor(flightIds: Set<string>): Record_[] {
   return ASSIGNMENTS.filter((a) => flightIds.has(String(a['flightId'])));
 }
@@ -218,7 +238,7 @@ function m1(n: number): TaskReport {
 function m2(): TaskReport {
   const flight = pickFlights(1)[0]!;
   const ac = AIRCRAFT.get(String(flight['aircraftId']))!;
-  const asg = assignmentsFor(new Set([String(flight['id'])]));
+  const asg = pilotsOnly(assignmentsFor(new Set([String(flight['id'])])));
   const crew = asg.map((a) => CREW.get(String(a['crewId']))!).filter(Boolean);
   const leanFields = {
     flight: ['aircraftId'],
@@ -228,7 +248,7 @@ function m2(): TaskReport {
 
   const flightPath = `/v2/flights/${flight['id']}?fields=${leanFields.flight.join(',')}`;
   const acPath = `/v2/aircraft/${ac['id']}?fields=${leanFields.aircraft.join(',')}`;
-  const asgPath = `/v2/assignments?flightId=${flight['id']}`;
+  const asgPath = `/v2/assignments?flightId=${flight['id']}${PILOT_ROLES_QS}`;
   const crewPath =
     `/v2/crew?ids=${crew.map((c) => c['id']).join(',')}&limit=${crew.length}` +
     `&fields=${leanFields.crew.join(',')}`;
@@ -238,7 +258,7 @@ function m2(): TaskReport {
     description: 'are the assigned pilots type-rated and current for the aircraft model',
     graphqlQuery:
       `{ flight(id: "${flight['id']}") { aircraft { model } ` +
-      `assignments { role crew { name typeRatings { model expiresAt } } } } }`,
+      `assignments${PILOT_ROLES_GQL} { role crew { name typeRatings { model expiresAt } } } } }`,
     leanFields,
     restCalls: (profile) => [
       {
@@ -272,8 +292,12 @@ function m2(): TaskReport {
 function m3(n: number): TaskReport {
   const flights = pickFlights(n);
   const ids = [...new Set(flights.map((f) => String(f['id'])))];
-  const acs = flights.map((f) => AIRCRAFT.get(String(f['aircraftId']))!);
-  const asg = assignmentsFor(new Set(ids));
+  // Deduped: flights share airframes (2 duplicates at N=50), and no agent requests
+  // the same id twice. Not deduping inflates REST only.
+  const acs = [...new Set(flights.map((f) => String(f['aircraftId'])))].map(
+    (id) => AIRCRAFT.get(id)!,
+  );
+  const asg = pilotsOnly(assignmentsFor(new Set(ids)));
   const crewIds = [...new Set(asg.map((a) => String(a['crewId'])))];
   const crew = crewIds.map((id) => CREW.get(id)!);
   const leanFields = {
@@ -286,7 +310,8 @@ function m3(n: number): TaskReport {
   const acPath =
     `/v2/aircraft?ids=${acs.map((a) => a['id']).join(',')}&limit=${acs.length}` +
     `&fields=${leanFields.aircraft.join(',')}`;
-  const asgPath = `/v2/assignments?flightIds=${ids.join(',')}&limit=${asg.length}`;
+  const asgPath =
+    `/v2/assignments?flightIds=${ids.join(',')}${PILOT_ROLES_QS}&limit=${asg.length}`;
   const crewPath =
     `/v2/crew?ids=${crewIds.join(',')}&limit=${crew.length}&fields=${leanFields.crew.join(',')}`;
 
@@ -295,7 +320,7 @@ function m3(n: number): TaskReport {
     description: 'M2 over N flights — breadth x depth',
     graphqlQuery:
       `{ flightsByIds(ids: ${JSON.stringify(ids)}) { flightNumber aircraft { model } ` +
-      `assignments { role crew { name typeRatings { model expiresAt } } } } }`,
+      `assignments${PILOT_ROLES_GQL} { role crew { name typeRatings { model expiresAt } } } } }`,
     leanFields,
     restCalls: (profile) => [
       {
@@ -326,11 +351,27 @@ function m3(n: number): TaskReport {
   };
 }
 
-function m4(): TaskReport {
+/**
+ * N is `limit` on the flight list — the candidate set the agent must evaluate.
+ *
+ * Two things about M4's sweep differ from M3's, both forced by the data:
+ *
+ * 1. It only runs at the HIGH end (20/50/103). Only 3.7% of airframes carry an
+ *    open grounding advisory, so at N<=5 the correct answer is "none" and an agent
+ *    that calls nothing and says so scores a perfect `answer_f1`. 103 is the full
+ *    SFO departure list, not an arbitrary cap.
+ * 2. There is no `date` filter, despite the prompt sketch that once said "on
+ *    <date>". The fixtures span 14 days at 7.4 SFO departures/day, so a single
+ *    date leaves ~10 candidates and zero hits on most days.
+ *
+ * The interesting metric here is `pass_through_tokens`, not payload ratio: at
+ * N=103 REST fetches 103 flights and ~90 airframes to return 8 rows.
+ */
+function m4(n: number): TaskReport {
   const origin = 'SFO';
   const candidates = FLIGHTS.filter(
     (f) => f['origin'] === origin && AIRCRAFT.has(String(f['aircraftId'])),
-  ).slice(0, 40);
+  ).slice(0, n);
   // Deduped: several SFO flights share an airframe, and an agent would not fetch
   // the same id twice. Not deduping would inflate REST's payload unfairly.
   const acIds = [...new Set(candidates.map((f) => String(f['aircraftId'])))];
@@ -344,10 +385,10 @@ function m4(): TaskReport {
     `&fields=${leanFields.aircraft.join(',')}`;
 
   return {
-    id: 'M4',
+    id: `M4 (N=${candidates.length})`,
     description: `flights from ${origin} whose aircraft has an open grounding advisory`,
     graphqlQuery:
-      `{ flights(origin: "${origin}", limit: 40) { flightNumber ` +
+      `{ flights(origin: "${origin}", limit: ${candidates.length}) { flightNumber ` +
       `aircraft { advisories { severity requiresGrounding resolvedAt } } } }`,
     leanFields,
     restCalls: (profile) => [
@@ -486,7 +527,7 @@ async function main(): Promise<void> {
     }
   }
 
-  for (const task of [m1(12), m2(), m3(20), m4()]) {
+  for (const task of [m1(12), m2(), m3(20), m4(20), m4(50), m4(103)]) {
     await reportTask(task);
   }
 

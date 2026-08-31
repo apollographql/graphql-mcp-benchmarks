@@ -239,6 +239,26 @@ rather than a post-hoc explanation.
    GraphQL because seven operations cover the domain where nine endpoints do not compose.
    The 2×2 exists to test exactly that, so a result in either direction is a finding.
 
+7. **Model: `claude-haiku-4-5`** (decided 2026-08-31), the same task model as the phase-1
+   matrix, so phase-2 numbers sit on the same pricing and capability baseline. Note the open
+   question this leaves: a collaborator reproducing phase 1 on `claude-sonnet-4-6` could not
+   reproduce the zero-discovery finding for B2 (PR #3). If discovery behaviour is
+   model-dependent, expectation 1 above needs a model qualifier — worth resolving before
+   the results are written up, not after.
+
+8. **M3/M4 at N=50 on `-fat` will run close to the context window, and REST will hit a
+   ceiling before GraphQL does.** Measured payloads at N=50 `-fat`: ~423 KB (~121k tokens
+   at 3.5 B/token) against haiku's 200k window, and the payload is cumulative because every
+   inference call re-sends the conversation. Extrapolating ~8.5 KB per flight, REST-over-MCP
+   exhausts a 200k window somewhere around **N≈80**, where the federated query is still
+   using ~35k tokens.
+
+   Two things to watch, because they are different results: a clean API error is a
+   reportable ceiling, whereas Goose silently truncating tool results would produce a
+   plausible wrong answer that `answer_f1` scores as agent incompetence with no visible
+   cause. **Establish which happens with one deliberate high-N `-fat` run during the step-7
+   smoke test**, before committing to 200+ runs. They need different columns.
+
 ## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
 
 Real MCP `tools/list` responses, captured with `capture/capture_mcp.py`. These are the
@@ -409,3 +429,45 @@ tool-design effect.
     confirmed to FAIL when fed a stale file — an unfired guard is decoration. Writer and
     checker share `src/codegen/artifacts.ts` for the same reason `links.ts` exists
     (surprise 7).
+
+20. **A missing filter can be asymmetric, and the asymmetry ran the other way than expected.**
+    Neither surface had a `role` filter on assignments, and the pilot-scoped tasks (M2/M3)
+    therefore looked like they cost REST four crew records per flight. But REST splits the
+    join across calls, so it could fetch the full roster, filter client-side, and request
+    crew for the two pilots only. A single GraphQL traversal had no way to narrow and paid
+    for all four. **The missing filter was quietly favoring REST**, and modelling REST as
+    fetching all four crew was a strawman — an agent fetching flight attendants' type
+    ratings to answer a question about pilots.
+
+    Added `roles` to BOTH surfaces on 2026-08-31 (PHASE2_PLAN.md §3 records the reasoning,
+    since adding filters after tasks are sketched is what the anti-strawman rule watches
+    for). Effect: the M3 `-fat` ratio rose 17.6x -> 20.3x, and absolute payload fell 31% on
+    both sides. That second number is the useful one — it moved M3 at N=50 `-fat` from ~174k
+    tokens to ~121k, i.e. from probably-exceeds-context to comfortably measurable.
+
+    Two lessons worth keeping: an over-fetch that looks like it penalises one surface may be
+    penalising the other once you account for what the agent can do between calls; and
+    prompted by "seems like a huge token load for a contrived scenario" — that instinct was
+    right, and the cause was a missing filter rather than inflated fixtures. For the record
+    on fixture realism: a full `-fat` Flight is 2.8 KB, against the 16.5 KB per pull request
+    that GitHub's real API returned in phase 1.
+
+21. **Answer balance is a task property that needs a mechanical check.** Two tasks nearly
+    shipped with degenerate ground truth. M2 scoped to all four rostered crew answered "no"
+    69% of the time (surprise 9). M4 at N<=5 has NO qualifying flights, because only 11 of
+    300 airframes carry an open grounding advisory — so the correct answer is "none" and an
+    agent that issues no tool calls and says so scores a perfect `answer_f1`. Both are
+    invisible unless you compute the answer distribution and look at it.
+
+    Consequences: M4's sweep runs at N in {20, 50, 103} rather than {1, 5, 20, 50}, and its
+    prompt lost the date filter (14 fixture days at 7.4 SFO departures/day leaves ~10
+    candidates and zero hits on most days — the implementation never filtered by date, the
+    prompt sketch did, and the prompt was wrong). PHASE2_PLAN.md §7 now requires
+    `expected.ts` to fail generation on an empty or trivially skewed answer set.
+
+22. **M4's payload ratio DECLINES with N: 49.6x (N=20) -> 47.3x (N=50) -> 43.2x (N=103).**
+    Flights increasingly share airframes, so REST's deduped `?ids=` aircraft call grows
+    sublinearly while the GraphQL response grows linearly with flights. REST's batching
+    genuinely helps more at scale on this task, and only the sweep makes that visible — a
+    single-N measurement would have implied a flat multiple. Worth reporting as-is: it is a
+    real advantage of the client-side join and it costs nothing to disclose.

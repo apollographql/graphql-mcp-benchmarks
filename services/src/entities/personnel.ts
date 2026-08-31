@@ -375,7 +375,14 @@ export const FlightAssignmentsExtension: ExtensionDef = {
       gqlType: '[Assignment!]!',
       fromField: 'id',
       targetService: 'personnel',
-      restEquivalent: 'GET /v2/assignments?flightId={id}',
+      // `roles` added 2026-08-31, on BOTH surfaces at once (PHASE2_PLAN.md §3).
+      // Filtering a roster to flight-deck crew is something any competent roster
+      // API offers, and `role` is personnel-owned so §3's policy always allowed it.
+      // Its absence was an oversight, and an asymmetric one: REST could filter
+      // between calls and skip fetching cabin crew, while a single GraphQL
+      // traversal had no way to narrow and paid for all four rosters.
+      args: 'roles: [CrewRole!]',
+      restEquivalent: 'GET /v2/assignments?flightId={id}&roles=CAPTAIN,FIRST_OFFICER',
     },
   ],
 };

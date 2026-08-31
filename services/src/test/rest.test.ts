@@ -278,3 +278,46 @@ test('reads increment the REST request counter', async () => {
   assert.equal(body.surface, 'rest');
   assert.equal(body.requests.rest, 2, 'backend_requests accounting missed a REST read');
 });
+
+// ── the roles filter must mean the same thing over REST ─────────────────────
+// Added with the filter itself (2026-08-31). The point of the shared repository
+// is that a filter cannot mean one thing over REST and another over GraphQL;
+// src/test/subgraph.test.ts asserts the GraphQL half. If these two ever disagree,
+// M2/M3 stop being a protocol comparison and become a filter-semantics bug.
+
+test('assignments: ?roles= narrows the roster', async () => {
+  const all = await get('personnel', `${REST_BASE_PATH}/assignments?flightId=FL-0001`);
+  const pilots = await get(
+    'personnel',
+    `${REST_BASE_PATH}/assignments?flightId=FL-0001&roles=CAPTAIN,FIRST_OFFICER`,
+  );
+
+  assert.equal(all.status, 200);
+  assert.equal(pilots.status, 200);
+  assert.equal(all.body.data.length, 4);
+  assert.equal(pilots.body.data.length, 2);
+
+  // REST serves `role` through the `coded` shape, so the value sits at role.value.
+  const roleOf = (r: any) => r.role?.value ?? r.role;
+  assert.ok(pilots.body.data.every((r: any) => ['CAPTAIN', 'FIRST_OFFICER'].includes(roleOf(r))));
+  assert.deepEqual(
+    pilots.body.data.map((r: any) => r.id).sort(),
+    all.body.data.filter((r: any) => ['CAPTAIN', 'FIRST_OFFICER'].includes(roleOf(r)))
+      .map((r: any) => r.id).sort(),
+  );
+});
+
+test('assignments: ?roles= is documented in the OpenAPI doc', async () => {
+  // A filter the service honors but the spec omits is invisible to the
+  // OpenAPI-derived tool surfaces (M-R1/M-R2) — REST would silently lose a
+  // capability GraphQL has, which is the asymmetry this filter exists to remove.
+  const doc = renderOpenApi('personnel') as { paths: Record<string, any> };
+  const params = doc.paths[`${REST_BASE_PATH}/assignments`].get.parameters as { name: string }[];
+  assert.ok(params.some((p) => p.name === 'roles'), 'roles must be a documented parameter');
+});
+
+test('assignments: an unknown role value yields an empty set, not everything', async () => {
+  const r = await get('personnel', `${REST_BASE_PATH}/assignments?flightId=FL-0001&roles=PILOT`);
+  assert.equal(r.status, 200);
+  assert.equal(r.body.data.length, 0, 'a typo must not silently widen the result');
+});

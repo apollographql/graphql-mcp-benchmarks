@@ -339,6 +339,13 @@ const COLLECTION_FILTERS: Record<string, CollectionFilter[]> = {
     { name: 'flightId', description: 'Return assignments for this flight.', schema: { type: 'string' } },
     { name: 'flightIds', description: 'Comma-separated flight ids — the batch entry point.', schema: { type: 'string' } },
     { name: 'crewId', description: 'Return assignments for this crew member.', schema: { type: 'string' } },
+    {
+      name: 'roles',
+      description:
+        'Comma-separated roles to include, e.g. CAPTAIN,FIRST_OFFICER for flight-deck ' +
+        'crew only. Omit for the full roster.',
+      schema: { type: 'string' },
+    },
   ],
 };
 

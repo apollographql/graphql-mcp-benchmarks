@@ -281,6 +281,15 @@
             }
           },
           {
+            "name": "roles",
+            "in": "query",
+            "required": false,
+            "description": "Comma-separated roles to include, e.g. CAPTAIN,FIRST_OFFICER for flight-deck crew only. Omit for the full roster.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "fields",
             "in": "query",
             "required": false,
