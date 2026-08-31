@@ -174,7 +174,14 @@ def snapshot_goose_logs(run_dir: Path) -> int:
     n = 0
     if GOOSE_LOG_DIR.is_dir():
         for f in sorted(GOOSE_LOG_DIR.glob("llm_request*.jsonl")):
-            shutil.copy2(f, run_dir / ("goose_" + f.name))
+            # Conditions run in parallel against Goose's SHARED log dir, which Goose
+            # rotates concurrently; a file can vanish between glob and copy. This
+            # snapshot is only a cross-check (the proxy log is authoritative), so a
+            # missing file must never abort a paid run.
+            try:
+                shutil.copy2(f, run_dir / ("goose_" + f.name))
+            except (FileNotFoundError, OSError):
+                continue
             n += 1
     return n
 

@@ -42,6 +42,15 @@ do_setup() {
   ensure_docker || return 1
   _need gh "Install GitHub CLI and run: gh auth login" || return 1
   _need rover "Install: https://www.apollographql.com/docs/rover/getting-started" || return 1
+  # Condition B2 shells out to `rover schema search` / `rover schema describe`, which
+  # were added in rover v0.38/v0.40. An older rover satisfies `command -v rover` but
+  # makes B2 fail at run time, so probe the capability here instead of at first use.
+  if ! rover schema --help >/dev/null 2>&1; then
+    echo "WARNING: this rover ($(rover --version 2>/dev/null | head -1)) has no 'rover schema' subcommand."
+    echo "         Condition B2 requires 'rover schema search'/'describe' (rover >= v0.40) and will fail."
+    echo "         Upgrade rover, drop B2 with CONDITIONS=A1,A2,B, or place a newer rover in ./bin"
+    echo "         (already first on PATH, same as apollo-mcp-server)."
+  fi
   _need uv "Install: https://docs.astral.sh/uv/" || return 1
   _need python3 "Install Python 3.10+" || return 1
   ensure_token || return 1
