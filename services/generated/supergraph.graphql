@@ -1,0 +1,360 @@
+schema
+  @link(url: "https://specs.apollo.dev/link/v1.0")
+  @link(url: "https://specs.apollo.dev/join/v0.3", for: EXECUTION)
+{
+  query: Query
+}
+
+directive @join__enumValue(graph: join__Graph!) repeatable on ENUM_VALUE
+
+directive @join__field(graph: join__Graph, requires: join__FieldSet, provides: join__FieldSet, type: String, external: Boolean, override: String, usedOverridden: Boolean) repeatable on FIELD_DEFINITION | INPUT_FIELD_DEFINITION
+
+directive @join__graph(name: String!, url: String!) on ENUM_VALUE
+
+directive @join__implements(graph: join__Graph!, interface: String!) repeatable on OBJECT | INTERFACE
+
+directive @join__type(graph: join__Graph!, key: join__FieldSet, extension: Boolean! = false, resolvable: Boolean! = true, isInterfaceObject: Boolean! = false) repeatable on OBJECT | INTERFACE | UNION | ENUM | INPUT_OBJECT | SCALAR
+
+directive @join__unionMember(graph: join__Graph!, member: String!) repeatable on UNION
+
+directive @link(url: String, as: String, for: link__Purpose, import: [link__Import]) repeatable on SCHEMA
+
+"""A maintenance advisory raised against an aircraft."""
+type Advisory
+  @join__type(graph: FLEET)
+{
+  id: ID!
+  severity: AdvisorySeverity!
+
+  """True when the advisory bars the aircraft from service."""
+  requiresGrounding: Boolean!
+  category: String!
+  description: String!
+  referenceNumber: String!
+  reportedBy: String!
+  openedAt: DateTime!
+  estimatedClearanceAt: DateTime
+  resolvedAt: DateTime
+
+  """Airport whose local time the advisory timestamps are reported in."""
+  timeZoneSource: String!
+}
+
+"""Severity of a maintenance advisory."""
+enum AdvisorySeverity
+  @join__type(graph: FLEET)
+{
+  ADVISORY @join__enumValue(graph: FLEET)
+  RESTRICTION @join__enumValue(graph: FLEET)
+  GROUNDING @join__enumValue(graph: FLEET)
+}
+
+"""An airframe in the operating fleet."""
+type Aircraft
+  @join__type(graph: FLEET, key: "id")
+  @join__type(graph: SCHEDULING, key: "id", resolvable: false)
+{
+  id: ID!
+  tailNumber: String! @join__field(graph: FLEET)
+
+  """Aircraft type code. The join key for crew type-rating checks."""
+  model: String! @join__field(graph: FLEET)
+  operator: String! @join__field(graph: FLEET)
+  homeBase: String! @join__field(graph: FLEET)
+  status: AircraftStatus! @join__field(graph: FLEET)
+
+  """Actual installed seat count, which varies from the model nominal."""
+  seatCount: Int! @join__field(graph: FLEET)
+  cabinConfiguration: String! @join__field(graph: FLEET)
+  wifiEquipped: Boolean! @join__field(graph: FLEET)
+  inflightEntertainment: Boolean! @join__field(graph: FLEET)
+  etopsCertified: Boolean! @join__field(graph: FLEET)
+  deliveryDate: DateTime! @join__field(graph: FLEET)
+  totalFlightHours: Int! @join__field(graph: FLEET)
+  totalCycles: Int! @join__field(graph: FLEET)
+  lastInspectionAt: DateTime! @join__field(graph: FLEET)
+  inspectionDueAt: DateTime! @join__field(graph: FLEET)
+  hoursSinceInspection: Int! @join__field(graph: FLEET)
+  cyclesSinceInspection: Int! @join__field(graph: FLEET)
+  advisories: [Advisory!]! @join__field(graph: FLEET)
+  ownershipType: String! @join__field(graph: FLEET)
+  lessor: String @join__field(graph: FLEET)
+  leaseExpiresAt: DateTime @join__field(graph: FLEET)
+  leaseMonthlyRateUsd: Int @join__field(graph: FLEET)
+  engineManufacturer: String! @join__field(graph: FLEET)
+  engineModel: String! @join__field(graph: FLEET)
+  engineCount: Int! @join__field(graph: FLEET)
+  engineThrustLbf: Int! @join__field(graph: FLEET)
+  canAssign: Boolean! @join__field(graph: FLEET)
+  canScheduleMaintenance: Boolean! @join__field(graph: FLEET)
+  createdAt: DateTime! @join__field(graph: FLEET)
+  createdBy: String! @join__field(graph: FLEET)
+  updatedAt: DateTime! @join__field(graph: FLEET)
+  updatedBy: String! @join__field(graph: FLEET)
+  version: Int! @join__field(graph: FLEET)
+  etag: String! @join__field(graph: FLEET)
+  sourceSystem: String! @join__field(graph: FLEET)
+}
+
+enum AircraftStatus
+  @join__type(graph: FLEET)
+{
+  IN_SERVICE @join__enumValue(graph: FLEET)
+  MAINTENANCE @join__enumValue(graph: FLEET)
+  STORED @join__enumValue(graph: FLEET)
+  RETIRED @join__enumValue(graph: FLEET)
+}
+
+"""A crew member rostered to a flight in a specific role."""
+type Assignment
+  @join__type(graph: PERSONNEL, key: "id")
+{
+  id: ID!
+  flightId: ID!
+  role: CrewRole!
+
+  """Rostered crew member. Same service; see the header note."""
+  crewId: ID!
+  rosteredAt: DateTime!
+  reportTime: DateTime!
+  dutyStatus: String!
+  deadhead: Boolean!
+  createdAt: DateTime!
+  createdBy: String!
+  version: Int!
+
+  """
+  Same-service resolver. See the header note on this file. REST equivalent: GET /v2/crew?ids={crewId}
+  """
+  crew: CrewMember!
+}
+
+"""A partner carrier marketing this flight under its own number."""
+type Codeshare
+  @join__type(graph: SCHEDULING)
+{
+  carrier: String!
+  flightNumber: String!
+  marketingAgreement: String!
+}
+
+"""A member of flight or cabin crew."""
+type CrewMember
+  @join__type(graph: PERSONNEL, key: "id")
+{
+  id: ID!
+  name: String!
+  employeeNumber: String!
+  base: String!
+  rank: CrewRank!
+  status: CrewStatus!
+  typeRatings: [TypeRating!]!
+  dutyHoursLast30d: Int!
+  dutyHoursLast7d: Int!
+  seniorityDate: DateTime!
+  medicalCertExpiresAt: DateTime!
+  passportExpiresAt: DateTime!
+  languages: [String!]!
+  qualifications: [String!]!
+  contactEmail: String!
+  contactPhone: String!
+  crewRoomMailbox: String!
+  canAssign: Boolean!
+  canOverrideDuty: Boolean!
+  createdAt: DateTime!
+  createdBy: String!
+  updatedAt: DateTime!
+  updatedBy: String!
+  version: Int!
+  etag: String!
+  sourceSystem: String!
+}
+
+enum CrewRank
+  @join__type(graph: PERSONNEL)
+{
+  CAPTAIN @join__enumValue(graph: PERSONNEL)
+  FIRST_OFFICER @join__enumValue(graph: PERSONNEL)
+  PURSER @join__enumValue(graph: PERSONNEL)
+  FLIGHT_ATTENDANT @join__enumValue(graph: PERSONNEL)
+}
+
+"""Role a crew member fills on a specific flight."""
+enum CrewRole
+  @join__type(graph: PERSONNEL)
+{
+  CAPTAIN @join__enumValue(graph: PERSONNEL)
+  FIRST_OFFICER @join__enumValue(graph: PERSONNEL)
+  PURSER @join__enumValue(graph: PERSONNEL)
+  CABIN @join__enumValue(graph: PERSONNEL)
+}
+
+enum CrewStatus
+  @join__type(graph: PERSONNEL)
+{
+  ACTIVE @join__enumValue(graph: PERSONNEL)
+  LEAVE @join__enumValue(graph: PERSONNEL)
+  TRAINING @join__enumValue(graph: PERSONNEL)
+  INACTIVE @join__enumValue(graph: PERSONNEL)
+}
+
+"""An ISO-8601 timestamp."""
+scalar DateTime
+  @join__type(graph: FLEET)
+  @join__type(graph: PERSONNEL)
+  @join__type(graph: SCHEDULING)
+
+"""A scheduled flight leg."""
+type Flight
+  @join__type(graph: PERSONNEL, key: "id")
+  @join__type(graph: SCHEDULING, key: "id")
+{
+  id: ID!
+
+  """REST equivalent: GET /v2/assignments?flightId={id}"""
+  assignments: [Assignment!]! @join__field(graph: PERSONNEL)
+  flightNumber: String! @join__field(graph: SCHEDULING)
+
+  """Operating carrier IATA code."""
+  carrier: String! @join__field(graph: SCHEDULING)
+
+  """Departure airport IATA code."""
+  origin: String! @join__field(graph: SCHEDULING)
+  destination: String! @join__field(graph: SCHEDULING)
+  scheduledDeparture: DateTime! @join__field(graph: SCHEDULING)
+  scheduledArrival: DateTime! @join__field(graph: SCHEDULING)
+  estimatedDeparture: DateTime! @join__field(graph: SCHEDULING)
+  actualDeparture: DateTime @join__field(graph: SCHEDULING)
+  actualArrival: DateTime @join__field(graph: SCHEDULING)
+  status: FlightStatus! @join__field(graph: SCHEDULING)
+  statusUpdatedAt: DateTime! @join__field(graph: SCHEDULING)
+  delayMinutes: Int! @join__field(graph: SCHEDULING)
+  delayReason: String @join__field(graph: SCHEDULING)
+  gate: String @join__field(graph: SCHEDULING)
+  gateAssignedAt: DateTime @join__field(graph: SCHEDULING)
+  terminal: String @join__field(graph: SCHEDULING)
+  boardingZone: String @join__field(graph: SCHEDULING)
+
+  """Assigned aircraft. Owned by the Fleet service."""
+  aircraftId: ID! @join__field(graph: SCHEDULING)
+  crewBaseCode: String! @join__field(graph: SCHEDULING)
+  codeshares: [Codeshare!]! @join__field(graph: SCHEDULING)
+  routeCode: String! @join__field(graph: SCHEDULING)
+  distanceNauticalMiles: Int! @join__field(graph: SCHEDULING)
+  blockTimeMinutes: Int! @join__field(graph: SCHEDULING)
+  airwayPath: String! @join__field(graph: SCHEDULING)
+  fuelPlanKg: Int! @join__field(graph: SCHEDULING)
+  fuelUpliftKg: Int! @join__field(graph: SCHEDULING)
+  payloadKg: Int! @join__field(graph: SCHEDULING)
+  zeroFuelWeightKg: Int! @join__field(graph: SCHEDULING)
+  takeoffWeightKg: Int! @join__field(graph: SCHEDULING)
+  deicingRequired: Boolean! @join__field(graph: SCHEDULING)
+  slotTime: DateTime @join__field(graph: SCHEDULING)
+  curfewRestricted: Boolean! @join__field(graph: SCHEDULING)
+  cateringCode: String! @join__field(graph: SCHEDULING)
+  cabinConfiguration: String! @join__field(graph: SCHEDULING)
+  canRebook: Boolean! @join__field(graph: SCHEDULING)
+  canCancel: Boolean! @join__field(graph: SCHEDULING)
+  canReassignGate: Boolean! @join__field(graph: SCHEDULING)
+  createdAt: DateTime! @join__field(graph: SCHEDULING)
+  createdBy: String! @join__field(graph: SCHEDULING)
+  updatedAt: DateTime! @join__field(graph: SCHEDULING)
+  updatedBy: String! @join__field(graph: SCHEDULING)
+  version: Int! @join__field(graph: SCHEDULING)
+  etag: String! @join__field(graph: SCHEDULING)
+  sourceSystem: String! @join__field(graph: SCHEDULING)
+  lastSyncedAt: DateTime! @join__field(graph: SCHEDULING)
+
+  """
+  Resolved by the Fleet subgraph via @key(fields: "id"). REST equivalent: GET /v2/aircraft/{aircraftId}
+  """
+  aircraft: Aircraft @join__field(graph: SCHEDULING)
+}
+
+"""Operational state of a flight leg."""
+enum FlightStatus
+  @join__type(graph: SCHEDULING)
+{
+  SCHEDULED @join__enumValue(graph: SCHEDULING)
+  BOARDING @join__enumValue(graph: SCHEDULING)
+  DEPARTED @join__enumValue(graph: SCHEDULING)
+  DELAYED @join__enumValue(graph: SCHEDULING)
+  LANDED @join__enumValue(graph: SCHEDULING)
+  CANCELLED @join__enumValue(graph: SCHEDULING)
+}
+
+scalar join__FieldSet
+
+enum join__Graph {
+  FLEET @join__graph(name: "fleet", url: "http://localhost:5002/graphql")
+  PERSONNEL @join__graph(name: "personnel", url: "http://localhost:5003/graphql")
+  SCHEDULING @join__graph(name: "scheduling", url: "http://localhost:5001/graphql")
+}
+
+scalar link__Import
+
+enum link__Purpose {
+  """
+  `SECURITY` features provide metadata necessary to securely resolve fields.
+  """
+  SECURITY
+
+  """
+  `EXECUTION` features provide metadata necessary for operation execution.
+  """
+  EXECUTION
+}
+
+type Query
+  @join__type(graph: FLEET)
+  @join__type(graph: PERSONNEL)
+  @join__type(graph: SCHEDULING)
+{
+  """A single airframe by id."""
+  aircraft(id: ID!): Aircraft @join__field(graph: FLEET)
+
+  """Several airframes by id — the batch entry point."""
+  aircraftByIds(ids: [ID!]!): [Aircraft!]! @join__field(graph: FLEET)
+
+  """Filtered fleet search. Filters cover Fleet-owned fields only."""
+  aircraftSearch(model: String, homeBase: String, status: AircraftStatus, limit: Int = 50, cursor: String): [Aircraft!]! @join__field(graph: FLEET)
+
+  """A single crew member by id."""
+  crewMember(id: ID!): CrewMember @join__field(graph: PERSONNEL)
+
+  """Several crew members by id — the batch entry point."""
+  crewByIds(ids: [ID!]!): [CrewMember!]! @join__field(graph: PERSONNEL)
+
+  """Filtered crew search."""
+  crewSearch(base: String, rank: CrewRank, status: CrewStatus, limit: Int = 50, cursor: String): [CrewMember!]! @join__field(graph: PERSONNEL)
+
+  """Roster lookups by flight or crew member."""
+  assignments(flightId: ID, flightIds: [ID!], crewId: ID, limit: Int = 50): [Assignment!]! @join__field(graph: PERSONNEL)
+
+  """A single flight leg by id."""
+  flight(id: ID!): Flight @join__field(graph: SCHEDULING)
+
+  """Several flights by id — the batch entry point."""
+  flightsByIds(ids: [ID!]!): [Flight!]! @join__field(graph: SCHEDULING)
+
+  """Several flights by flight number."""
+  flightsByNumbers(flightNumbers: [String!]!): [Flight!]! @join__field(graph: SCHEDULING)
+
+  """Filtered flight search. Filters cover Scheduling-owned fields only."""
+  flights(date: String, origin: String, destination: String, status: FlightStatus, limit: Int = 50, cursor: String): [Flight!]! @join__field(graph: SCHEDULING)
+}
+
+"""A crew member's certification to operate a specific aircraft type."""
+type TypeRating
+  @join__type(graph: PERSONNEL)
+{
+  """Aircraft type code this rating covers. Matches Aircraft.model."""
+  model: String!
+  certifiedAt: DateTime!
+
+  """A rating is current when this is in the future."""
+  expiresAt: DateTime!
+  checkRideAt: DateTime!
+  instructorId: String!
+  simulatorHours: Int!
+}

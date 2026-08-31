@@ -1,0 +1,20 @@
+# The daily departure board for one airport.
+#
+# Flight-level fields only, which is what a board is: one row per departure, no
+# drill-down. `aircraftId` rides along because boards show which airframe is
+# flying the leg; resolving that id into fleet data is AircraftDetail's job.
+query FlightsByOrigin($origin: String!, $date: String, $limit: Int) {
+  flights(origin: $origin, date: $date, limit: $limit) {
+    id
+    flightNumber
+    carrier
+    destination
+    scheduledDeparture
+    estimatedDeparture
+    status
+    delayMinutes
+    gate
+    terminal
+    aircraftId
+  }
+}

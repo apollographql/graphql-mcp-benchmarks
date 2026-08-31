@@ -184,3 +184,228 @@ The 24-run clean matrix completed successfully; authoritative numbers are in `re
   GraphQL schema — zero search or validate calls, identical to B2. The schema discovery
   overhead in early B runs was entirely instruction-induced, not intrinsic to Apollo MCP
   or the GraphQL protocol.
+
+---
+
+# Phase 2 — synthetic multi-service backend
+
+Design and results live in [`PHASE2_PLAN.md`](PHASE2_PLAN.md); the stack lives in
+[`services/`](services/README.md). This section records what phase 2 has
+**pre-registered** and what **bit us during the build**, in the same spirit as the
+phase-1 notes above.
+
+## ⚠️ PRE-REGISTERED EXPECTATIONS (written before the matrix runs)
+
+Recorded up front so that if the results come in this way, it reads as a prediction
+rather than a post-hoc explanation.
+
+1. **Phase-2 GraphQL numbers will look WORSE than phase 1's.** In phase 1, B/B2 skipped
+   schema discovery entirely because the model already knew GitHub's schema from
+   training (see the phase-1 finding on recipe framing). Against a synthetic graph it
+   knows neither surface, so discovery becomes real and unavoidable on both sides. We
+   expect the GraphQL advantage to shrink relative to phase 1's 20×.
+
+2. **M1 will be close to a tie on `-lean` and a large GraphQL win on `-fat`.** Measured
+   payload ratios before any agent is involved: 3.5× and 28.6×. If the agent numbers
+   diverge sharply from those, the cause is agent behavior (tool-choice, retries), not
+   payload, and should be reported as such.
+
+3. **The headline claim we expect to survive the steelman is the JOIN, not over-fetch.**
+   Prediction: on `-lean`, M1's advantage largely dissolves while M2/M3/M4 hold at
+   roughly 6–8×. If M1 also holds at 6×+ on `-lean`, something is wrong with the lean
+   profile and it must be investigated before publishing.
+
+4. **`backend_requests` will favor REST at N=1 and federation at N=20+.** The router
+   makes 4 backend calls for M2 (N=1) where REST makes 4 agent calls; at N=20 the router
+   still makes 4 while REST's payload grows ~10×. We are NOT predicting the router uses
+   fewer backend calls — only that its backend work stays flat while REST's context cost
+   does not.
+
+5. **M-G2 (pre-baked operations) may need MORE tool calls than M-G1 on some tasks.** A
+   frozen operation set sized to the domain will not perfectly fit every task; M2 is
+   expected to need two operations (roster + airworthiness) where M-G1 writes one ad-hoc
+   query. That is a real property of persisted-operation deployments, not a bug.
+
+   *Sharpened 2026-08-28, once the set was frozen and readable:* M4 is the worse case.
+   `FlightsByOrigin` returns `aircraftId` but no fleet data, so filtering departures by
+   airworthiness costs **one board read plus one detail read per flight** — the same
+   1+N shape as REST, against M-G1's single query. If M-G2 loses to M-G1 on M4, that is
+   this, and it was predicted before the task existed. See
+   `services/operations/README.md`.
+
+6. **Front-loading will cost M-R1 roughly 4× M-R2's prefix, and M-G2 roughly 2× M-G1's.**
+   Measured `tools/list` bytes, below. The prediction is that this fixed prefix cost is
+   repaid — or not — by fewer discovery round-trips, and that the repayment is better for
+   GraphQL because seven operations cover the domain where nine endpoints do not compose.
+   The 2×2 exists to test exactly that, so a result in either direction is a finding.
+
+## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
+
+Real MCP `tools/list` responses, captured with `capture/capture_mcp.py`. These are the
+numbers §8.2 requires — the front-loaded-vs-on-demand comparison rests on these, not on
+the tool counts in the plan.
+
+| Condition | Packaging | Tools | `tools_list_bytes` |
+|---|---|---|---|
+| M-R1 | one tool per REST endpoint | 9 | 9,440 |
+| M-R2 | REST discovery (`rest_request` + 2) | 3 | 2,439 |
+| M-G1 | GraphQL discovery (`graphql_execute` + 2) | 3 | 2,159 |
+| M-G2 | 7 persisted operations | 7 | 4,040 |
+
+**M-R2 and M-G1 land within 13% of each other (2,439 vs 2,159 B).** That near-symmetry is
+deliberate and load-bearing: those two conditions are the clean protocol comparison, so
+they were built with the same tool count, the same discover-then-execute shape, and the
+same query grammar (AND within a clause, OR across comma-separated clauses). Any large
+asymmetry there would show up in results as a protocol effect while actually being a
+tool-design effect.
+
+## Surprises during the phase-2 build
+
+1. **Apollo subgraphs enable inline tracing by default.** It appends an `extensions`
+   block to responses when the router requests it — bytes that would land in the agent's
+   context and inflate every payload measurement. Fixed with
+   `ApolloServerPluginInlineTraceDisabled()`. APQ is off on the router for the same
+   class of reason (a cache hit would change request shape between reps).
+
+2. **`graphql@17` breaks `@apollo/server`/`@apollo/subgraph`.** Both peer-depend on
+   `^16`. Pinned to `^16.11.0`.
+
+3. **The Apollo Router image cannot health-check itself.** It ships only `/usr/bin/sh` —
+   no wget, curl, or busybox. So `docker compose up -d --wait` returns when the six app
+   containers are healthy, **not** when the router is serving. `services: pnpm health`
+   checks all seven from the host and is the real gate; `run_benchmark.py` must call it.
+   This is the same failure shape as the phase-1 Docker-down incident: a half-up stack
+   yields confident wrong answers that score as cheap successes.
+
+4. **Router config: `apq.router.cache.in_memory.limit: 0` is rejected** (minimum 1). Use
+   `apq.enabled: false`.
+
+5. **Never run `pnpm` as a container entrypoint.** Corepack re-resolves the package
+   manager at runtime and tries to download it (fails as non-root), and pnpm 11's
+   dep-status check wants to write to `/app`. Containers invoke
+   `node --import tsx <script>` directly, and `packageManager` is pinned in
+   `package.json`.
+
+6. **`.dockerignore` needs an explicit negation for `fixtures/manifest.json`.**
+   `fixtures/*.json` excluded the very manifest the build verifies against.
+
+7. **The measurement tool must share code with the server, or it lies.** The REST
+   payload figures were running 65–135 B light per call because `app.ts` built HATEOAS
+   links and the measurement tool built none. Fixed by extracting
+   `services/src/server/rest/links.ts` and having both use it. `verify-federation --live`
+   found this; it now compares the `data` payload only, because the envelope legitimately
+   differs (the server knows the pre-pagination `total` and emits a `next` cursor, which
+   a projection cannot derive without reimplementing the server).
+
+8. **Unbatched subgraphs would have understated federation.** Without DataLoader, one M2
+   query cost 5 backend reads and M3 at N=20 would have cost ~85. Batching changes no
+   token count — it exists so `backend_requests` is representative of a production
+   subgraph rather than biasing a headline metric against the condition under test.
+   Loaders are per-request; sharing them would cache across reps.
+
+9. **M2 must be scoped to PILOTS, not all crew.** Requiring all four rostered crew to be
+   current is simply a stricter conjunction than requiring two, so "every assigned crew
+   member" pushed the answer toward "no". Measured over 2,000 flights: all-crew 30.9%
+   yes, pilots-only 56.6% yes. Only the latter discriminates.
+
+   *Corrected 2026-08-28:* this note previously justified the scoping by claiming cabin
+   crew hold no type ratings. The fixtures do not work that way — all 553 cabin-rank crew
+   members hold at least one rating (`src/entities/personnel.ts` gives every crew member
+   1–3 regardless of rank). The scoping decision stands on the conjunction argument; the
+   rationale was wrong. See surprise 13. Now that pilot slots hold pilot-rank crew, cabin
+   crew holding ratings is harmless — they never occupy a slot M2 examines.
+
+10. **Fixture determinism is verified across platforms, not assumed.** The Docker build
+    regenerates on linux/arm64 (node 22.23.2) and checks against the manifest generated on
+    darwin/arm64 (node 22.22.3). Hashes match; the build fails if they ever don't.
+
+11. **A REST spec that documents `?fields=` without listing the field names makes the
+    `-lean` steelman unusable.** `?fields=` takes canonical field names; an agent reading
+    only the OpenAPI doc had no way to learn them, so it would have over-fetched on lean
+    too — and the `-fat`/`-lean` bracket, the whole point of §3.1, would have collapsed
+    for a reason having nothing to do with the protocol. `fieldsParam()` in
+    `src/codegen/openapi.ts` now enumerates them. Cost: ~1.2 KB per service spec and
+    ~600 B per affected M-R1 tool description. That cost belongs to REST's ledger —
+    publishing a field list is what offering field selection actually requires.
+
+12. **The generated OpenAPI docs had no `servers` block.** Nothing told a client that
+    scheduling is on `:4001`, so `openapi_mcp.py` would have had to hardcode a
+    service-to-port map — the REST tool surface depending on knowledge the spec never
+    gave it. Now generated from `PORTS`. Docker publishes the same ports on localhost, so
+    one URL covers both run paths.
+
+13. **The fixture generator rosters crew into roles their rank contradicts.** 59.6% of
+    CAPTAIN/FIRST_OFFICER assignment slots are filled by crew whose `rank` is PURSER or
+    FLIGHT_ATTENDANT, because `Assignment.crewId` selects on type-rating currency and
+    never on rank. **This is an M2 grading hazard, not a cosmetic one:** "every assigned
+    pilot" can be read as `role ∈ {CAPTAIN, FIRST_OFFICER}` or as
+    `rank ∈ {CAPTAIN, FIRST_OFFICER}`, the two disagree on most flights, and an agent
+    that picks the reading the ground truth didn't would be scored wrong for a reason
+    unrelated to protocol or tooling. Found while smoke-testing M-G1 on 2026-08-28 (a
+    FLIGHT_ATTENDANT rostered as CAPTAIN, holding an A359 rating). **Must be fixed before
+    step 6 authors M2.**
+
+    *Fixed 2026-08-28.* `crewId` now selects from crew whose rank matches the roster slot,
+    keeping type-rating currency as a secondary bias, and throws rather than falling back
+    to the whole roster. 0 of 8,000 mismatch; M2 stays balanced at 56.6% yes. §5.1 was
+    re-measured (M2 17.9x/7.7x, M3 17.6x/6.4x; M1 and M4 unchanged, as they touch no crew
+    data). See PHASE2_PLAN.md §5.
+
+14. **The `bench-router` container prints `Healthy` under `--wait` despite having no
+    healthcheck.** `docker inspect` confirms `.State.Health` is `null`: compose reports a
+    healthcheck-less container as ready once it is running. So the reassuring word in the
+    output means "the process started", not "the router is serving" — which is exactly the
+    inference surprise 3 warns against. `pnpm health` remains the only real gate.
+
+15. **A stale container passes every liveness probe, and `--live` could not catch it.** The
+    Docker image bakes fixtures in at BUILD time, so regenerating fixtures on the host and
+    running `docker compose up -d` (no `--build`) leaves a stack that is fully healthy and
+    serving the previous dataset. This produced a §5.1 table that mixed stale GraphQL
+    figures (from containers) with fresh REST figures (from local projections) — caught
+    only by eyeballing a crew name.
+
+    The dangerous part: `verify:federation --live` is *designed* to catch exactly this, and
+    it reported a match. It compares payload **sizes**, and swapping one fixed-width id for
+    another serializes to the same number of bytes. Sizes agreeing is not values agreeing.
+
+    Now both `/__health` endpoints report per-entity fixture hashes from the manifest, and
+    `pnpm health` plus `verify:federation` refuse to proceed on a mismatch — including when
+    an endpoint reports no hashes at all, which is itself what a stale process looks like
+    (`src/tools/provenance.ts`).
+
+16. **`docker compose up -d --build` recreates the app containers but NOT the router.** Its
+    image and config are unchanged, so it keeps connections to container IPs that no longer
+    exist and every query fails with `SUBREQUEST_HTTP_ERROR` — while all seven liveness
+    probes, including the router's own `/health`, report a healthy stack. `/health` reports
+    that the router process is alive, which is not the same as the router being able to
+    reach its subgraphs.
+
+    `pnpm health` now probes the router with a real federated query touching all three
+    subgraphs. Fix when it fires: `docker compose restart router`.
+
+17. **`results/summary.md` was hand-edited, and `./bench.sh parse` silently reverted it.**
+    Three paragraphs of the stage-cost explainer had been rewritten by hand after the
+    2026-07-03 parse — better copy than the generator's — and existed nowhere else, because
+    `results/` is gitignored. Regenerating threw them away with no warning. They are now in
+    `parse_logs.py:_concepts_section()`, and the generator reproduces the file byte-for-byte.
+    **Edits to a generated report belong in the generator**; `results/` is downstream of
+    `runs/` and should be treated as disposable.
+
+18. **The phase-1 `capture/` evidence no longer exists.** `capture/{A1,A2,B,B2}.json` and
+    `capture/SUMMARY.md` are absent from disk and gitignored, yet notes 5 and 6 above cite
+    them as the raw evidence for the 22 / 17 / 4 tool counts and the 82,301-byte
+    `list_pull_requests` payload. `./bench.sh capture` cannot restore them faithfully — it
+    would measure today's MCP server image against today's GitHub API. Treat those figures
+    as historical and unverifiable from this checkout; phase-2's equivalents avoid the
+    problem by being synthetic, local, and hash-pinned (`capture/M-*.json`, and surprise 15).
+
+19. **`services/generated/` is committed, and needed its own freshness test.** The Python
+    MCP servers read those files from disk with no build step, so committing them lets a
+    fresh clone run all four phase-2 conditions without Node or rover. But every other test
+    renders in memory and the Docker build regenerates, so nothing looked at the on-disk
+    files: an entity change without `pnpm codegen` would ship a tool surface describing a
+    service that no longer exists, with a fully green suite. `src/test/codegen.test.ts` and
+    `pnpm verify:supergraph` now diff on-disk against freshly rendered, and both were
+    confirmed to FAIL when fed a stale file — an unfired guard is decoration. Writer and
+    checker share `src/codegen/artifacts.ts` for the same reason `links.ts` exists
+    (surprise 7).

@@ -1,0 +1,22 @@
+# Departure information for a known set of flights.
+#
+# The shape behind any "where and when is my flight leaving" surface: gate
+# agents' displays, passenger notifications, the ops board's detail popover.
+# Takes flight numbers rather than ids because that is what a human quotes.
+query FlightSchedule($flightNumbers: [String!]!) {
+  flightsByNumbers(flightNumbers: $flightNumbers) {
+    id
+    flightNumber
+    carrier
+    origin
+    destination
+    scheduledDeparture
+    estimatedDeparture
+    status
+    delayMinutes
+    delayReason
+    gate
+    terminal
+    boardingZone
+  }
+}

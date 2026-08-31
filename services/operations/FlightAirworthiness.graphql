@@ -1,0 +1,34 @@
+# Can the airframe assigned to this flight legally fly it?
+#
+# The maintenance-control view of a leg: the airframe, its inspection state, and
+# every advisory raised against it. `requiresGrounding` is the field that decides
+# the question, and it lives on the advisory rather than on the aircraft — no
+# `airworthy` rollup exists, deliberately (see src/entities/fleet.ts).
+query FlightAirworthiness($flightId: ID!) {
+  flight(id: $flightId) {
+    id
+    flightNumber
+    scheduledDeparture
+    aircraft {
+      id
+      tailNumber
+      model
+      status
+      lastInspectionAt
+      inspectionDueAt
+      hoursSinceInspection
+      cyclesSinceInspection
+      advisories {
+        id
+        severity
+        requiresGrounding
+        category
+        description
+        referenceNumber
+        openedAt
+        estimatedClearanceAt
+        resolvedAt
+      }
+    }
+  }
+}

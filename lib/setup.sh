@@ -108,6 +108,22 @@ open(dst, "w").write(open(src).read().replace("@@SDL_PATH@@", os.environ["SDL_AB
 print("wrote", dst)
 PY
 
+  # --- Render the phase-2 Apollo config (M-G2) with absolute paths ---
+  # Rendered unconditionally: it costs nothing, and the phase-2 conditions fail
+  # confusingly if the file is missing. The supergraph itself is built by
+  # `cd services && pnpm build`, which is a separate (node + rover) prerequisite.
+  SUPERGRAPH_ABS="$PROJECT_ROOT/services/generated/supergraph.graphql" \
+  OPERATIONS_ABS="$PROJECT_ROOT/services/operations" \
+  python3 - "$PROJECT_ROOT/config/apollo-mcp.phase2.yaml" "$PROJECT_ROOT/config/apollo-mcp.phase2.local.yaml" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+text = text.replace("@@SUPERGRAPH_PATH@@", os.environ["SUPERGRAPH_ABS"])
+text = text.replace("@@OPERATIONS_DIR@@", os.environ["OPERATIONS_ABS"])
+open(dst, "w").write(text)
+print("wrote", dst)
+PY
+
   # --- Warm uv deps for the proxy ---
   uv run "$PROJECT_ROOT/proxy/anthropic_logging_proxy.py" --selfcheck
 

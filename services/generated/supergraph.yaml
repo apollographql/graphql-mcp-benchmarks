@@ -1,0 +1,14 @@
+federation_version: =2.5.0
+subgraphs:
+  scheduling:
+    routing_url: http://localhost:5001/graphql
+    schema:
+      file: ./scheduling/schema.graphql
+  fleet:
+    routing_url: http://localhost:5002/graphql
+    schema:
+      file: ./fleet/schema.graphql
+  personnel:
+    routing_url: http://localhost:5003/graphql
+    schema:
+      file: ./personnel/schema.graphql

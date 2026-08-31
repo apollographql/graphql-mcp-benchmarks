@@ -1,0 +1,222 @@
+/**
+ * Subgraph SDL generation — the GraphQL half of the shared definition.
+ *
+ * One EntityDef produces both this and the OpenAPI document, which is what makes
+ * information parity provable (test/parity.test.ts) rather than asserted.
+ *
+ * Federation 2 patterns used here:
+ *   - owning subgraph:     type Aircraft @key(fields: "id") { ...all fields }
+ *   - referencing a type
+ *     owned elsewhere:     type Aircraft @key(fields: "id", resolvable: false) { id: ID! }
+ *   - extending a type
+ *     owned elsewhere:     type Flight @key(fields: "id") { id: ID!  assignments: [...] }
+ */
+
+import {
+  ENUMS,
+  REGISTRY,
+  entitiesForService,
+  enumsForService,
+  extensionsForService,
+} from '../entities/index.ts';
+import type { EntityDef, ServiceName } from '../shared/types.ts';
+import { bareGqlType } from '../shared/types.ts';
+
+const FEDERATION_LINK =
+  '@link(url: "https://specs.apollo.dev/federation/v2.5", ' +
+  'import: ["@key", "@external", "@shareable"])';
+
+const SCALARS = new Set(['ID', 'String', 'Int', 'Float', 'Boolean', 'DateTime']);
+const ENUM_NAMES = new Set(ENUMS.map((e) => e.name));
+
+function docComment(text: string | undefined, indent = ''): string {
+  if (!text) return '';
+  // No trailing newline: callers join with '\n', and an extra one would put a
+  // blank line between the description and the definition it describes.
+  return `${indent}"""${text}"""`;
+}
+
+/**
+ * Every type referenced by this service's entities but owned by another service.
+ * These need `resolvable: false` key stubs so the subgraph composes.
+ */
+function foreignTypes(service: ServiceName): Set<string> {
+  const owned = new Set(entitiesForService(service).map((e) => e.name));
+  const foreign = new Set<string>();
+
+  for (const entity of entitiesForService(service)) {
+    for (const ref of entity.refFields ?? []) {
+      const target = bareGqlType(ref.gqlType);
+      if (!owned.has(target)) foreign.add(target);
+    }
+  }
+  return foreign;
+}
+
+function renderEntityType(entity: EntityDef): string {
+  const lines: string[] = [];
+  lines.push(docComment(entity.description));
+
+  const keyDirective = entity.nestedOnly ? '' : ' @key(fields: "id")';
+  lines.push(`type ${entity.name}${keyDirective} {`);
+
+  for (const field of entity.fields) {
+    lines.push(docComment(field.description, '  '));
+    lines.push(`  ${field.name}: ${field.gqlType}`);
+  }
+
+  for (const ref of entity.refFields ?? []) {
+    const note = ref.description
+      ? `${ref.description} REST equivalent: ${ref.restEquivalent}`
+      : `REST equivalent: ${ref.restEquivalent}`;
+    lines.push(docComment(note, '  '));
+    lines.push(`  ${ref.name}: ${ref.gqlType}`);
+  }
+
+  lines.push('}');
+  return lines.filter(Boolean).join('\n');
+}
+
+function renderQueryRoot(service: ServiceName): string {
+  const q: string[] = ['type Query {'];
+
+  switch (service) {
+    case 'scheduling':
+      q.push('  """A single flight leg by id."""');
+      q.push('  flight(id: ID!): Flight');
+      q.push('  """Several flights by id — the batch entry point."""');
+      q.push('  flightsByIds(ids: [ID!]!): [Flight!]!');
+      q.push('  """Several flights by flight number."""');
+      q.push('  flightsByNumbers(flightNumbers: [String!]!): [Flight!]!');
+      q.push('  """Filtered flight search. Filters cover Scheduling-owned fields only."""');
+      q.push(
+        '  flights(date: String, origin: String, destination: String, ' +
+          'status: FlightStatus, limit: Int = 50, cursor: String): [Flight!]!',
+      );
+      break;
+
+    case 'fleet':
+      q.push('  """A single airframe by id."""');
+      q.push('  aircraft(id: ID!): Aircraft');
+      q.push('  """Several airframes by id — the batch entry point."""');
+      q.push('  aircraftByIds(ids: [ID!]!): [Aircraft!]!');
+      q.push('  """Filtered fleet search. Filters cover Fleet-owned fields only."""');
+      q.push(
+        '  aircraftSearch(model: String, homeBase: String, status: AircraftStatus, ' +
+          'limit: Int = 50, cursor: String): [Aircraft!]!',
+      );
+      break;
+
+    case 'personnel':
+      q.push('  """A single crew member by id."""');
+      q.push('  crewMember(id: ID!): CrewMember');
+      q.push('  """Several crew members by id — the batch entry point."""');
+      q.push('  crewByIds(ids: [ID!]!): [CrewMember!]!');
+      q.push('  """Filtered crew search."""');
+      q.push(
+        '  crewSearch(base: String, rank: CrewRank, status: CrewStatus, ' +
+          'limit: Int = 50, cursor: String): [CrewMember!]!',
+      );
+      q.push('  """Roster lookups by flight or crew member."""');
+      q.push(
+        '  assignments(flightId: ID, flightIds: [ID!], crewId: ID, limit: Int = 50): [Assignment!]!',
+      );
+      break;
+  }
+
+  q.push('}');
+  return q.join('\n');
+}
+
+export function renderSubgraphSdl(service: ServiceName): string {
+  const out: string[] = [];
+
+  out.push(`# Subgraph: ${service}`);
+  out.push('#');
+  out.push('# GENERATED by src/codegen/sdl.ts from the shared entity definitions in');
+  out.push('# src/entities/. Do not edit by hand — edit the entity definition and');
+  out.push('# re-run `pnpm codegen`, so both surfaces stay in lockstep.');
+  out.push('');
+  out.push(`extend schema\n  ${FEDERATION_LINK}`);
+  out.push('');
+  out.push('"""An ISO-8601 timestamp."""');
+  out.push('scalar DateTime');
+  out.push('');
+
+  for (const e of enumsForService(service)) {
+    if (e.description) out.push(`"""${e.description}"""`);
+    out.push(`enum ${e.name} {`);
+    for (const v of e.values) out.push(`  ${v}`);
+    out.push('}');
+    out.push('');
+  }
+
+  for (const entity of entitiesForService(service)) {
+    out.push(renderEntityType(entity));
+    out.push('');
+  }
+
+  // Key stubs for entities this service references but does not own.
+  for (const foreign of foreignTypes(service)) {
+    out.push(`# Owned by another subgraph — referenced here for entity resolution.`);
+    out.push(`type ${foreign} @key(fields: "id", resolvable: false) {`);
+    out.push('  id: ID!');
+    out.push('}');
+    out.push('');
+  }
+
+  // Federation extensions this service contributes to types it does not own.
+  for (const ext of extensionsForService(service)) {
+    if (ext.description) out.push(`# ${ext.description}`);
+    out.push(`type ${ext.type} @key(fields: "${ext.keyField}") {`);
+    out.push(`  ${ext.keyField}: ID!`);
+    for (const ref of ext.refFields) {
+      out.push(`  """REST equivalent: ${ref.restEquivalent}"""`);
+      out.push(`  ${ref.name}: ${ref.gqlType}`);
+    }
+    out.push('}');
+    out.push('');
+  }
+
+  out.push(renderQueryRoot(service));
+  out.push('');
+
+  return out.join('\n');
+}
+
+/**
+ * Sanity check: every GraphQL type referenced by a service's fields resolves to
+ * a scalar, an enum, an owned type, or a foreign key stub. Catches typos in
+ * gqlType before `rover supergraph compose` does, with a better error message.
+ */
+export function validateServiceTypes(service: ServiceName): string[] {
+  const problems: string[] = [];
+  const owned = new Set(entitiesForService(service).map((e) => e.name));
+  const foreign = foreignTypes(service);
+
+  for (const entity of entitiesForService(service)) {
+    for (const field of entity.fields) {
+      const bare = bareGqlType(field.gqlType);
+      if (
+        !SCALARS.has(bare) &&
+        !ENUM_NAMES.has(bare) &&
+        !owned.has(bare) &&
+        !foreign.has(bare)
+      ) {
+        problems.push(
+          `${entity.name}.${field.name}: type "${bare}" is not a scalar, enum, ` +
+            `or a type owned/referenced by the ${service} service`,
+        );
+      }
+      // Nested object shapes must point at a registered entity.
+      const shape = field.restShape;
+      if ((shape?.kind === 'object' || shape?.kind === 'objectList') && !REGISTRY.has(shape.entity)) {
+        problems.push(
+          `${entity.name}.${field.name}: restShape references unregistered entity "${shape.entity}"`,
+        );
+      }
+    }
+  }
+
+  return problems;
+}

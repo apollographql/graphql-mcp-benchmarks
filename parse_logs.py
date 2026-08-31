@@ -29,7 +29,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 RUNS = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "runs"
-RESULTS = ROOT / "results"
+RESULTS = Path(os.environ.get("RESULTS_DIR") or (ROOT / "results"))
 # The configured benchmark model. Calls on any OTHER model (e.g. Goose's
 # session-title generation, which uses Haiku) are auxiliary and excluded from
 # headline metrics (disclosed in the audit).
@@ -416,22 +416,27 @@ def _concepts_section() -> list[str]:
         "description of every available tool. For REST conditions (A1/A2) that's 17–22 endpoint "
         "definitions; for GraphQL (B/B2) it's just 3–4 generic tools. Anthropic's caching "
         "system writes this description to a server-side cache once it exceeds ~1 000 tokens. "
-        "Stage 1 captures the `cache_creation` charge for that first write. A fatter tool schema "
-        "means a higher Stage 1 cost — which is why A1 and A2 consistently pay more here than "
-        "B or B2, even before the agent has made a single API call.\n",
-        "**Context growth (Stage 2)** — After each tool call, the tool's response is appended "
-        "to the conversation and the updated context is re-cached. Stage 2 sums those "
-        "subsequent `cache_creation` charges across the whole run. REST conditions accumulate "
-        "larger payloads per call (full JSON objects from the GitHub REST API); GraphQL "
-        "conditions return only the fields the query asked for, so the context grows more "
-        "slowly and Stage 2 stays lower. A run with many round-trips — e.g., REST fetching "
-        "CI status one PR at a time — pays Stage 2 costs proportional to its call count.\n",
-        "**Inference compute (Stage 3)** — The direct per-token cost at inference time: "
-        "`input_tokens` (prompt tokens read fresh, not from cache), `output_tokens` (tokens "
-        "Claude generates), and `cache_read_input_tokens` (tokens read from the cache, "
-        "cheaper but not free). This stage scales with the number of inference calls and "
-        "the portion of each prompt that isn't already cached. A low call count and a "
-        "large stable cache both push Stage 3 down.\n",
+        "Stage 1 captures the `cache_creation` charge for that first write — the one-time cost "
+        "of committing the initial context to cache. A fatter tool schema means a higher "
+        "Stage 1 cost, which is why A1 and A2 consistently pay more here than B or B2, "
+        "even before the agent has made a single API call.\n",
+        "**Context growth (Stage 2)** — Each tool call extends the conversation: the tool's "
+        "response is appended and the *now-longer* context must be written to cache again "
+        "so the next inference call can read it cheaply. Stage 2 sums those incremental "
+        "`cache_creation` charges — the cost of *maintaining* the cache as it grows, not "
+        "of using it. Two factors drive Stage 2 higher: more round trips (more re-writes) "
+        "and larger payloads per round trip (more new tokens to cache each time). REST "
+        "conditions are penalised on both axes: 10 tool calls vs. 1, and full REST API "
+        "objects (~82 KB for 5 PRs) vs. GraphQL's field-precise responses (~1 KB). "
+        "Stage 2 is where most of the REST\u2013GraphQL cost difference accumulates.\n",
+        "**Inference compute (Stage 3)** — The cost of the model *reading and generating*, "
+        "not writing. It has three components: `cache_read_input_tokens` (tokens pulled "
+        "from the cache Stages 1–2 built — cheap but not free), `input_tokens` (any "
+        "prompt tokens processed fresh, not from cache), and `output_tokens` (tokens "
+        "Claude generates). Stage 3 is roughly constant across conditions for the same "
+        "task, because the task prompt and final answer are similar in size regardless "
+        "of which API protocol answered the question. It does not include cache-write "
+        "charges — those are entirely in Stages 1 and 2.\n",
         "The three stages are additive — total cost = Stage 1 + Stage 2 + Stage 3. "
         "**One cross-condition caveat:** because GraphQL conditions (B/B2) have a smaller tool "
         "schema, their first cache write fires later in the conversation (after a few tool rounds "

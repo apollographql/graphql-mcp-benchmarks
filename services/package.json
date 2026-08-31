@@ -1,0 +1,35 @@
+{
+  "name": "@graphql-mcp-benchmarks/services",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Phase-2 synthetic multi-service backend: three services, two surfaces each, one shared field definition.",
+  "scripts": {
+    "fixtures": "tsx src/fixtures/generate.ts",
+    "codegen": "tsx src/codegen/index.ts",
+    "build": "pnpm fixtures && pnpm codegen && pnpm compose",
+    "test": "node --import tsx --test src/test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "measure": "tsx src/tools/measure.ts",
+    "compose": "rover supergraph compose --config generated/supergraph.yaml --elv2-license accept --output generated/supergraph.graphql",
+    "subgraphs": "tsx src/server/graphql/serve.ts",
+    "router": "rover dev --supergraph-config generated/supergraph.yaml --router-config router.yaml --supergraph-port 5000 --elv2-license accept",
+    "verify:federation": "tsx src/tools/verify-federation.ts",
+    "rest": "tsx src/server/rest/serve.ts",
+    "fixtures:verify": "tsx src/tools/verify-fixtures.ts",
+    "health": "tsx src/tools/health.ts",
+    "verify:supergraph": "tsx src/tools/verify-supergraph.ts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.5.1",
+    "@apollo/subgraph": "^2.14.4",
+    "dataloader": "^2.2.3",
+    "graphql": "^16.14.2"
+  },
+  "packageManager": "pnpm@10.27.0"
+}

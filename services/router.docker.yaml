@@ -1,0 +1,38 @@
+# Apollo Router configuration for the containerized stack.
+#
+# Same measurement discipline as router.yaml — nothing that appends to a GraphQL
+# response body, because those bytes would land in the agent's context and
+# inflate the token counts under measurement. See router.yaml for the reasoning.
+#
+# Two differences from the local config:
+#   1. Listens on 0.0.0.0 so the port is reachable from outside the container.
+#   2. Overrides subgraph URLs to container hostnames. The composed supergraph
+#      schema bakes in localhost:500x routing URLs from generated/supergraph.yaml;
+#      overriding here avoids maintaining a second composed schema, which would be
+#      one more thing that could silently drift.
+
+supergraph:
+  listen: 0.0.0.0:5000
+  path: /
+  introspection: true
+
+override_subgraph_url:
+  scheduling: http://scheduling-graphql:5001/
+  fleet: http://fleet-graphql:5002/
+  personnel: http://personnel-graphql:5003/
+
+health_check:
+  listen: 0.0.0.0:8088
+  enabled: true
+
+include_subgraph_errors:
+  all: true
+
+apq:
+  enabled: false
+
+homepage:
+  enabled: false
+
+sandbox:
+  enabled: false

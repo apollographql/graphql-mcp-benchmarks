@@ -12,6 +12,25 @@ results/
 capture/*.json
 capture/SUMMARY.md
 
+# macOS
+.DS_Store
+
 # python
 __pycache__/
 *.pyc
+
+# node (phase-2 services)
+services/node_modules/
+
+# Fixture bulk is regenerable from committed seeds (`pnpm fixtures`) and runs to
+# ~7 MB. manifest.json carries the per-entity sha256, so anyone can regenerate
+# and prove they got byte-identical data without the blobs in git.
+services/fixtures/*.json
+!services/fixtures/manifest.json
+
+# NOTE: services/generated/ IS committed, deliberately. The Python MCP servers
+# read those files straight from disk with no build step — openapi_mcp.py parses
+# the OpenAPI docs for the M-R1/M-R2 tool surfaces, and supergraph_mcp.py reads
+# supergraph.graphql for M-G1 — so committing them lets a fresh clone run all four
+# conditions without Node or rover. Staleness is caught by `pnpm test`
+# (src/test/codegen.test.ts) and `pnpm verify:supergraph`, not by hoping.
