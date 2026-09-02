@@ -66,7 +66,12 @@ the process starts.)
 `pnpm health` is the real gate, and it checks five things that have each already produced a
 wrong or nearly-wrong measurement:
 
-1. **All seven endpoints reachable** from the host.
+1. **All seven endpoints reachable** from the host, with up to `HEALTH_ATTEMPTS` (3) tries
+   each and a 400 ms backoff. One 3-second attempt was too brittle: `rest/fleet` once timed
+   out here while Docker's in-container healthcheck reported healthy and the host reached the
+   same URL in 4 ms a moment later. An endpoint that needs a retry is reported **FLAKY**
+   rather than silently passed — a stack that needs retries now will drop probes during a
+   long matrix, where a dropped request looks like an agent error rather than a network one.
 2. **The router can actually federate** — probed with a real query touching all three
    subgraphs, not with `/health`. `docker compose up -d --build` recreates the app
    containers but *not* the router, which then holds connections to container IPs that no

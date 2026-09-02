@@ -439,6 +439,39 @@ def grade(cell: dict, answer: str) -> dict:
 # — the metric would then report a dependency chain the agent never had.
 MIN_MATCH_LEN = 4
 
+# Tools that return SCHEMA or SPEC metadata rather than records. A chain through
+# these is real serialization — the agent cannot describe a coordinate it has not
+# searched for — but it is not a *data* dependency, and it exists only in the
+# on-demand conditions (M-R2, M-G1). Counting it inside `forced_serial_depth`
+# would make that metric track tool packaging instead of who performs the join,
+# which is the one thing the 2x2 is built to separate.
+#
+# Observed on a real M-G1 run: schema_search returned `Query.flightsByNumbers`,
+# schema_describe consumed it, and M1@5 — the deliberately batchable task where
+# REST wins — reported GraphQL at depth 2 against REST's 1.
+#
+# So the two are measured separately: `forced_serial_depth` over data only, and
+# `discovery_depth` over these. Matched on the bare tool name, since Goose
+# namespaces them (`airline__schema_search`).
+DISCOVERY_TOOLS = frozenset({
+    "schema_search", "schema_describe",      # M-G1
+    "openapi_search", "openapi_describe",    # M-R2
+})
+
+
+def _bare(name: str) -> str:
+    return (name or "").split("__")[-1]
+
+
+def _producer_names(calls: list) -> dict:
+    """tool_use_id -> the bare name of the tool that produced it."""
+    out = {}
+    for call in calls:
+        for use in call.get("tool_use") or []:
+            if use.get("id"):
+                out[use["id"]] = _bare(use.get("name") or "")
+    return out
+
 
 def read_tool_io(path: Path) -> list:
     """The sidecar, ordered by call index. Missing file -> empty."""
@@ -472,7 +505,25 @@ def _leaf_strings(obj, out=None) -> set:
     return out
 
 
-def _result_values(call: dict) -> set:
+def _result_values(call: dict, producers: dict = None, discovery: bool = False) -> set:
+    """Identifier-ish strings a call's tool results carried.
+
+    `discovery=False` skips results produced by a DISCOVERY_TOOLS call, and
+    `discovery=True` keeps only those, so a data chain and a schema chain are
+    never counted as the same thing. With no `producers` map both pass through,
+    which keeps the function usable for the grounding corpus.
+    """
+    if producers is not None:
+        kept = []
+        for res in call.get("tool_result") or []:
+            name = producers.get(res.get("tool_use_id"), "")
+            if (name in DISCOVERY_TOOLS) == discovery:
+                kept.append(res)
+        call = {**call, "tool_result": kept}
+    return _result_values_raw(call)
+
+
+def _result_values_raw(call: dict) -> set:
     """Identifier-ish strings a call's tool results carried.
 
     Results are JSON on the wire but arrive as text, so parse when possible and
@@ -541,24 +592,37 @@ def forced_serial_depth(calls: list, prompt: str = "") -> dict:
     # list's response. Both sit in the same record, so the un-shifted version
     # reported depth 1 for a genuinely 2-deep chain — and depth 1 is exactly what
     # the GraphQL side predicts, so it would have read as a confirmed hypothesis.
-    produced = [set() for _ in calls]
-    for i, c in enumerate(calls):
-        if i > 0:
-            produced[i - 1] = _result_values(c) - supplied
+    producers = _producer_names(calls)
     consumed = [_argument_values(c) - supplied for c in calls]
 
-    depth = [1] * len(calls)
-    via = [None] * len(calls)
-    for i in range(len(calls)):
-        for j in range(i):
-            if consumed[i] & produced[j] and depth[j] + 1 > depth[i]:
-                depth[i] = depth[j] + 1
-                via[i] = sorted(consumed[i] & produced[j])[:3]
-    best = max(depth) if depth else 0
-    at = depth.index(best) if depth else None
-    return {"forced_serial_depth": best,
-            "depth_chain_ends_at_call": (calls[at].get("call") if at is not None else None),
-            "depth_linked_by": (via[at] if at is not None else None)}
+    def chain(discovery: bool) -> dict:
+        produced = [set() for _ in calls]
+        for i, c in enumerate(calls):
+            if i > 0:
+                produced[i - 1] = _result_values(c, producers, discovery) - supplied
+        depth = [1] * len(calls)
+        via = [None] * len(calls)
+        for i in range(len(calls)):
+            for j in range(i):
+                link = consumed[i] & produced[j]
+                if link and depth[j] + 1 > depth[i]:
+                    depth[i] = depth[j] + 1
+                    via[i] = sorted(link)[:3]
+        best = max(depth) if depth else 0
+        at = depth.index(best) if depth else None
+        return {"depth": best,
+                "ends_at_call": calls[at].get("call") if at is not None else None,
+                "linked_by": via[at] if at is not None else None}
+
+    data, disc = chain(discovery=False), chain(discovery=True)
+    return {"forced_serial_depth": data["depth"],
+            "depth_chain_ends_at_call": data["ends_at_call"],
+            "depth_linked_by": data["linked_by"],
+            # Serialization through schema/spec lookup. Real latency, but a
+            # property of the tool surface rather than of the join, so it is
+            # reported beside the data depth and never folded into it.
+            "discovery_depth": disc["depth"],
+            "discovery_linked_by": disc["linked_by"]}
 
 
 def pass_through_tokens(calls: list, answer: str) -> dict:

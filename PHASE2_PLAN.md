@@ -12,69 +12,77 @@ surface size) into knobs we control.
 
 ## STATUS — read this first
 
-**Steps 1–6 of §9 are complete.** The backend exists, both surfaces are generated from one
-definition, the federated router composes and resolves M2 across all three services, the
-whole stack runs under `docker compose`, all four MCP tool surfaces are built and measured
-against the live stack, and the four tasks plus their computed ground truth exist. Verified
-numbers are in §5.1 (all eleven cells, re-measured 2026-09-02) and §8.1.
+**Steps 1–7 items 1–4 are complete, and the first smoke runs are in and clean** (2026-09-02).
+The backend, both generated surfaces, the federated router, `docker compose`, all four MCP tool
+surfaces, the four tasks with computed ground truth, the runner, the four recipes, the grader,
+and the report all exist and are verified. Verified numbers: §5.1 (all eleven cells) and §8.1
+(the four tool surfaces, pinned in `capture/expected-tool-surfaces.json`).
 
-**Step 7 items 1–2 are complete** (2026-09-02): `run_benchmark.py` now knows the four
-phase-2 conditions, gates on the stack via `pnpm health`, and expands the eleven cells out of
-`expected.json`; the four `recipes/recipe_m_*.yaml` exist. A dry run of both payload passes
-plans **132 + 66 = 198 runs**, matching §4 from a second direction. Details in §9 step 7.
+**NEXT: the M4@103 `-fat` run**, then the matrix.
 
-Five grading or task defects have been found and fixed by building this, not by running it:
-the role/rank fixture incoherence (step 5), three in step 6 — no reference date for "current",
-non-unique flight numbers in M1's sample, and M3@1 duplicating M2 — and one in step 7, M1's
-prompt reading "cover all 1" at the low end of its own sweep. All are recorded in §5 with the
-guard that now catches each. **Expect more of these**; the pattern is a question that reads
-one way to the grader and another to the agent, with nothing erroring to say so.
+```bash
+docker compose up -d --wait && cd services && pnpm health && cd ..
+CONDITIONS=M-R1 TASKS=M4@103 REPS=1 MODEL=claude-haiku-4-5-20251001 ./bench.sh run
+CONDITIONS=M-R1 ./bench.sh parse
+```
 
-**Steps 1–7 items 1–4 are complete** (2026-09-02). The harness runs, grades, and reports:
-four phase-2 conditions with a stack health gate, the eleven cells expanded out of
-`expected.json`, four recipes with an enforced-identical system prompt, and a report carrying
-`answer_f1` + coverage, `pass_through_tokens`, `forced_serial_depth`, and a per-fact
-`answer_grounded` gate. All four phase-2 metrics are built; `backend_requests` was cut (§6).
+One run, under a dollar. It settles three things at once: whether a **127k-token tool result**
+produces a clean API error or gets silently truncated (different findings needing different
+columns — `NOTES.md` expectation 8), and whether **`MAX_TURNS=50` and `RUN_TIMEOUT=420`**
+survive REST's 1+N pattern at N=103. Both are phase-1 constants from a phase where no task
+needed more than a handful of calls, and a cap that truncates REST would read exactly like the
+context-window finding while being an artifact of the harness. `max_turns` is recorded per run
+so the two can be told apart.
 
-Verified without spending anything: 72 synthetic runs render a full phase-2 report with
-deliberate failures planted in them — a truncated answer, an all-"yes" answer, a zero-tool-call
-answer, and **a perfect answer with no data behind it**, which the grounding gate catches at a
-would-be F1 of 1.00 (§11 item 4).
+### What the smoke runs established, and what they cost
 
-§8.3 is also done: `./bench.sh capture` records all four phase-2 tool surfaces and **fails on
-drift against a pinned baseline**. It caught drift immediately — M-R1's `tools_list_bytes` had
-moved 9,440 → 9,601 back in `14d8973` and nothing had said so (§8.1).
+**The harness works end to end on real data.** 7 runs (M-R1 and M-G1 on M1@5 ×3, M-R1 on
+M4@20), all exit 0, `answer_f1` 1.00 throughout, **7 of 7 fact-verified with 0 fabricated**,
+and no payload-completeness warning. The grader reads real model prose correctly — the one
+thing 72 synthetic runs could not tell us.
 
-**The first smoke run has happened** — 6 runs, M-R1 and M-G1 on M1@5, haiku, all exit 0, no
-timeouts. It found a **measurement bug in the proxy that predates phase 1**: tool payloads
-were undercounted by roughly 10× whenever the agent made parallel tool calls, because Goose
-appends each result as its own user message and `_tool_result_tokens` read only the last one.
-Fixed, with a regression test and the evidence, in §11 under "What the smoke run found".
-Accuracy was 1.00 on both conditions; the one run flagged as fabricated was a false positive
-caused by that same bug.
+**They also found four measurement bugs, and this is the part worth reading before trusting
+any phase-2 number.** All four are fixed; all four are in §11 under "What the smoke run found"
+with the evidence.
 
-The smoke run also found two metric bugs, both now fixed and both of which had quietly
-produced the answer the GraphQL hypothesis predicts: `tool_result_tokens` undercounted a
-fan-out by the fan-out factor, and `forced_serial_depth` read 1 for a 2-deep chain. Details in
-§11 under "What the smoke run found".
+1. **`tool_result_tokens` undercounted any fan-out by the fan-out factor**, since phase 1. It
+   took **four** attempts, because the first three were all *positional* rules and the client
+   rewrites the transcript: Goose serializes N parallel tool calls into N assistant/user turn
+   pairs *and* restructures the prefix while doing it. The fix keys on `tool_use_id`.
+   Consequence: **phase 1's `tool-payload tok` column understates REST by roughly 10× and is
+   not recoverable** — the count was computed in the proxy and only the total stored. Cost and
+   call counts come from Anthropic's `usage` verbatim and are unaffected.
+2. **`forced_serial_depth` attributed arriving results to the wrong call**, reading depth 1 for
+   M4's genuinely 2-deep chain.
+3. **`forced_serial_depth` counted schema discovery as dependency depth**, which existed only
+   in the on-demand conditions and would have made the metric track tool packaging rather than
+   the join. Now split: `forced_serial_depth` (data) and `discovery_depth`.
+4. **The health gate had a false positive** — one 3s attempt, no retry — which blocked a run on
+   a transient Docker port-forwarder stall. Now 3 attempts, with flaky endpoints reported.
 
-**NEXT: re-run the smoke cells on the fixed instrument** — the six M1@5 runs plus M-R1/M4@20,
-cents — and confirm the tool-payload, pass-through and depth numbers land where the replay
-predicts. Then the M4@103 `-fat` run for the harness caps (`MAX_TURNS=50`,
-`RUN_TIMEOUT=420`) and the 127k-token-result question. Do not start the 198-run matrix until
-those numbers are confirmed against a live run: `tool_result_tokens` feeds
-`pass_through_tokens`, one of the two headline phase-2 metrics.
+**Three of those four produced exactly the answer the GraphQL hypothesis predicts**, which is
+why they survived. The one that pointed the wrong way (#3, on M1@5 — the task deliberately
+built so REST wins) was caught within minutes. **A metric that quietly confirms the thesis is
+the one to distrust**, and tasks with predictable directions are what make a wrong one visible.
 
-The part of step 7 that is easy to skip and shouldn't be: **§7.1's `answer_grounded` gate**
-— a lucky guess on M2 or M4@20 otherwise scores as a cheap success, and phase 1 already
-produced an agent hallucinating tool calls when a handshake broke.
+This class of loss is now self-detecting: every tool call gets a result back, so
+`parse_logs.py` asserts `n_tool_results == n_tool_use` per run and excludes any run that fails
+from the payload means rather than averaging a lower bound into them.
 
-**Two planned metrics/columns were cut rather than built (2026-09-02), both simplifications.**
-`backend_requests` is out of scope — this study measures inference cost and inference calls,
-which the proxy log captures completely and per run (§6). And the proxy-vs-Goose audit
-cross-check is retired: it recorded which parallel condition cleared Goose's shared log
+### Standing decisions
+
+**Two planned metrics were cut rather than built**, both simplifications. `backend_requests` is
+out of scope — this study measures inference cost and inference calls (§6). The proxy-vs-Goose
+audit cross-check is retired: it recorded which parallel condition cleared Goose's shared log
 directory last, not corroboration (§8.2). Both of §8.2's shared-resource races are therefore
-gone by deletion rather than by design.
+gone by deletion rather than design.
+
+**Six task or grading defects have been found by building this, not by running it** — the
+role/rank fixture incoherence (step 5); no reference date for "current", non-unique flight
+numbers in M1's sample, and M3@1 duplicating M2 (step 6); M1's prompt reading "cover all 1" at
+the low end of its own sweep (step 7); plus the four measurement bugs above. §5 records each
+with the guard that now catches it. **Expect more**; the pattern is a question that reads one
+way to the grader and another to the agent, with nothing erroring to say so.
 
 Matrix size and cost are in §4 under "Matrix size": **198 runs** (6 condition cells × 11 task
 instances × 3 reps), ~$10–20 on haiku, with the context window rather than cost as the binding
@@ -82,6 +90,10 @@ constraint — the largest measured tool result is 446 KB, ~127k tokens.
 
 `tasks/expected.json` is authoritative for which cells exist. Regenerate it with
 `pnpm expected` after any fixture change; `pnpm test` fails if the committed copy has drifted.
+
+Phase 1 and phase 2 are **separate reports** in separate trees — `runs/phase1`, `runs/phase2`,
+`results/phase1`, `results/phase2`. `./bench.sh run` and `./bench.sh parse` derive the phase
+from `CONDITIONS` and refuse a mix; a bare `./bench.sh run` is phase 1 only.
 
 **Model: `claude-haiku-4-5`**, matching phase 1. See `NOTES.md` expectation 7 for the open
 question about whether discovery behaviour is model-dependent.
@@ -782,6 +794,15 @@ ID returned by call *k−1*. Distinguishes genuine dependency serialization from
 sequencing. Maps to user-perceived latency in a way call count does not. ✅ **Built
 2026-09-02** on the same `tool_io.jsonl` sidecar (§11 item 4).
 
+**It chains through data results only, with `discovery_depth` reported beside it.** The first
+clean run showed M-G1 at depth 2 on M1@5 against M-R1's 1 — backwards on the one task built so
+REST wins — because `schema_search` returned `Query.flightsByNumbers` and `schema_describe`
+consumed it. Schema lookup is real serialization but not a data dependency, and it exists only
+in the on-demand conditions, so counting it would have made this metric report M-R2 and M-G1
+as structurally deeper on every task regardless of join structure. That is the protocol/
+packaging conflation §4 exists to remove, arriving through a metric instead of a condition.
+Both are kept, neither is folded into the other.
+
 One correction the metric needs to be honest: **identifiers the prompt supplied are
 excluded.** M1 hands the agent twenty flight numbers, and using one is not a discovered
 dependency. Without that correction a list fetch whose response echoes those same ids makes
@@ -1328,28 +1349,26 @@ not. When it moves, the cost moves, the ratio moves, and the report still render
       own run directory, so the race is gone by construction) and `backend_requests` is
       descoped (§6), which removes the `/__metrics` attribution problem instead of solving
       it. Both were going to be engineering; both turned out to be scope questions.
-   5. **Smoke run — the only item left, and the first that spends anything.** Everything
-      above it is verified against 72 synthetic runs and a live local stack; nothing below
-      can be. Run it as: bring the stack up (`docker compose up -d --wait` then
-      `cd services && pnpm health`), `./bench.sh capture` to confirm the tool surfaces are
-      unmoved, then
+   5. ✅ **Smoke run** — *Done 2026-09-02.* 7 runs (M-R1 and M-G1 on M1@5 ×3, M-R1 on
+      M4@20), all exit 0, `answer_f1` 1.00, 7/7 fact-verified, no payload-completeness
+      warning. It found **four measurement bugs**, all fixed — see STATUS and §11. That is
+      the argument for a smoke run in one line: everything above this item was verified
+      against 72 synthetic runs and a live local stack, and none of it caught any of the four.
+
+      Re-run any cell with:
 
       ```bash
-      SMOKE=1 CONDITIONS=M-R1,M-G1 TASKS=M1@5 ./bench.sh run
-      RESULTS_DIR=results/phase2 python3 parse_logs.py runs
+      docker compose up -d --wait && cd services && pnpm health && cd ..
+      ./bench.sh capture                    # confirms the tool surfaces have not moved
+      CONDITIONS=M-R1,M-G1 TASKS=M1@5 REPS=3 MODEL=claude-haiku-4-5-20251001 ./bench.sh run
+      CONDITIONS=M-R1,M-G1 ./bench.sh parse
       ```
 
-      2 conditions × 1 task to prove the wiring, then **one deliberate M4@103 `-fat` run** to settle whether a 127 KB tool result produces a clean API error
-      or gets silently truncated. Those are different results needing different columns
-      (`NOTES.md` expectation 8), and it is far cheaper to learn which now than 198 runs in.
+   6. **The M4@103 `-fat` run** — one run, under a dollar, still to do. Settles whether a
+      127k-token tool result errors cleanly or truncates silently, and whether `MAX_TURNS=50`
+      and `RUN_TIMEOUT=420` survive REST's 1+N pattern at N=103. Commands in STATUS.
 
-      That run also settles two **harness caps** inherited from phase 1, where no task
-      needed more than a handful of calls: `MAX_TURNS=50` and `RUN_TIMEOUT=420`s. M4@103 on
-      REST is one board read plus 103 detail reads — comfortable if the agent batches tool
-      calls per turn, impossible if it goes one at a time. A cap that truncates REST's 1+N
-      pattern would read exactly like the context-window finding while being an artifact of
-      the harness, which is why `max_turns` is now recorded per run. Decide whether to raise
-      them from the smoke result, not from a guess.
+   7. **The matrix.** Two passes, `PAYLOAD_PROFILE=fat` then `=lean`, 198 runs total.
 
 ---
 
@@ -1417,6 +1436,13 @@ That mattered immediately: a plain `./bench.sh parse` after the smoke run would 
 phase-2 over phase-1's `results/`, which is gitignored and unrecoverable. It didn't, because
 `parse_logs.py`'s phase-mixing guard refused the merged `runs/` tree first — the guard
 catching a real accident within a day of being written.
+
+**One local directory needs explaining if you find it: `runs/_phase2-preproxyfix/`.** Those are
+the six M1@5 runs recorded before the tool-result boundary was fixed, kept as the "before" side
+of that comparison — 2 of 20 tool payloads captured where the fixed proxy captures 20 of 20.
+`results/_phase2-preproxyfix/` holds their report. Both are outside `runs/phase1` and
+`runs/phase2`, so no parse picks them up. **Do not cite any payload figure from them**; they
+exist to document the bug, not to measure anything. Delete them once the finding is written up.
 
 ### Separately: the phase-1 `capture/` evidence is gone
 

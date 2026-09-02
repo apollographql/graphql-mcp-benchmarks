@@ -318,6 +318,29 @@ gql = [
 check("ids inside a GraphQL query string are found",
       grade.forced_serial_depth(gql, prompt="")["forced_serial_depth"], 2)
 
+# A schema-discovery chain is real serialization but not a data dependency, and it
+# exists only in the on-demand conditions — so counting it as depth would make the
+# metric track tool packaging. Observed on a real M-G1 run: schema_search returned
+# `Query.flightsByNumbers`, schema_describe consumed it, and M1@5 (the deliberately
+# batchable task, where REST wins) reported GraphQL deeper than REST.
+discovery = [
+    call(1, [("schema_search", {"query": "flight departure gate"})], []),
+    call(2, [("schema_describe", {"coord": "Query.flightsByNumbers"})],
+         ['{"results":[{"coordinate":"Query.flightsByNumbers"}]}']),
+    call(3, [("graphql_execute", {"query": "query { flightsByNumbers(flightNumbers: [\"AA5751\"]) { gate } }"})],
+         ['{"Field":{"field_name":"flightsByNumbers"}}']),
+    call(4, [], ['{"data":{"flightsByNumbers":[{"gate":"B38"}]}}']),
+]
+r = grade.forced_serial_depth(discovery, prompt="... flight numbers (1 total): AA5751.")
+check("a schema-discovery chain is NOT data depth", r["forced_serial_depth"], 1)
+check("...it is reported as discovery depth", r["discovery_depth"], 2)
+check("...naming the coordinate that linked it",
+      r["discovery_linked_by"], ["Query.flightsByNumbers"])
+
+# And the converse: a data chain must not leak into discovery depth.
+r = grade.forced_serial_depth(chain, prompt=prompt_m2)
+check("a data chain does not inflate discovery depth", r["discovery_depth"], 1)
+
 print("\npass_through_tokens — the join tax")
 fat = call(1, [("getFlight", {"id": "FL-0001"})], [json.dumps({
     "id": "FL-0001", "flightNumber": "AA5751", "scheduledDeparture": "2026-03-18T13:15:00Z",

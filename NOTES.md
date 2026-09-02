@@ -1085,3 +1085,61 @@ tool-design effect.
     The general shape: when a measurement can silently under-report, look for a *conservation
     law* it has to obey — something countable on both sides of the pipeline — and assert it
     per run. Four failed fixes cost far more than this check would have.
+
+48. **The health gate's first false positive, and why a false positive is the dangerous kind
+    of failure for a gate.** A phase-2 run was blocked by `rest/fleet  DOWN  timeout` while
+    Docker's own in-container healthcheck reported that container healthy, the container had
+    been up an hour without restarting, and the host reached the very same URL in **4 ms**
+    moments later. Docker Desktop's port forwarder stalling, not a down service.
+
+    The gate had one 3-second attempt per endpoint and no retry. Two consequences, and the
+    second is worse than the lost minute:
+
+    - The advice it prints is `docker compose up -d --wait --force-recreate`, which would have
+      recreated seven containers, "fixed" the problem by coincidence, and taught nobody
+      anything.
+    - **A gate that cries wolf gets bypassed.** This one exists to catch a half-up stack —
+      the case where an agent reaches two of three services and returns a confident wrong
+      answer that scores as a cheap success. Its value is entirely in being believed.
+
+    Now each endpoint gets up to `HEALTH_ATTEMPTS` (3) tries with a 400 ms backoff, and the
+    router's federated-query probe retries too, since issuing a real query makes it the most
+    likely of the seven to be caught by a stall. Retrying does not weaken the check — verified
+    by stopping `bench-fleet-rest` and watching it report `fetch failed (3 attempts)` and exit
+    non-zero.
+
+    The part worth keeping is that a probe needing more than one attempt is reported as
+    **FLAKY**, not silently passed. A stack that needs retries now will drop probes during a
+    198-run matrix, where each run starts its own proxy and a dropped request looks like an
+    agent error rather than a network one. Suppressing the symptom and reporting nothing would
+    have traded a false positive for a false negative.
+
+49. **`forced_serial_depth` was counting schema discovery as dependency depth, which would
+    have made it measure tool packaging instead of the join.** The first clean phase-2 data
+    showed M-G1 at depth 2 on M1@5 against M-R1's 1 — backwards for the thesis on the one task
+    deliberately built so REST wins. The chain was linked by `Query.flightsByNumbers`: a
+    coordinate `schema_search` returned and `schema_describe` consumed.
+
+    That is real serialization — the agent cannot describe a coordinate it has not searched
+    for — but it is not a data dependency, and crucially **it exists only in the on-demand
+    conditions** (M-R2, M-G1). Left in, the metric would have reported the two on-demand
+    surfaces as structurally deeper on every task regardless of join structure, which is
+    precisely the confound the 2x2 exists to remove: §4 exists because phase 1 conflated
+    protocol with tool packaging, and this would have smuggled that conflation back in through
+    a metric.
+
+    Both signals are real, so neither is discarded: `forced_serial_depth` now chains only
+    through **data** results and `discovery_depth` chains only through DISCOVERY_TOOLS
+    results, matched by the `tool_use_id` of the call that produced each result. The real runs
+    now read M-G1/M1@5 as data 1 / discovery 2, M-R1/M1@5 as 1 / 1, and M-R1/M4@20 as data 2
+    (via aircraft ids) / discovery 1 — which is the correct story for all three.
+
+    Worth noting how it surfaced: not from a test, but from **a number pointing the wrong way
+    on a task whose answer was already known.** M1 was designed as the batchable case where
+    REST does well; seeing GraphQL deeper there was the tell. Building tasks with predictable
+    directions is what makes a wrong metric visible — the three earlier bugs this session all
+    pointed the *predicted* way and survived far longer.
+
+    Which conflation to make headline is a reporting choice, not a measurement one: both
+    columns are now in `raw.csv` and the summary prints `disc` beside `depth` only when it
+    exceeds 1.

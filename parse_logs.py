@@ -119,7 +119,8 @@ def expected_cells() -> dict:
 GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_coverage",
                 "graded_items", "correct_items", "missing_keys", "unparsed_values",
                 "answer_grounded", "grounded_facts", "needs_review", "grade_notes",
-                "pass_through_tokens", "pass_through_fraction", "forced_serial_depth"]
+                "pass_through_tokens", "pass_through_fraction", "forced_serial_depth",
+                "discovery_depth"]
 # Integrity fields, present on every row regardless of phase.
 INTEGRITY_FIELDS = ["tool_results_recorded", "payload_loss", "payload_complete",
                     "payload_note"]
@@ -178,6 +179,7 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
         "pass_through_tokens": pass_through,
         "pass_through_fraction": fraction,
         "forced_serial_depth": depth.get("forced_serial_depth"),
+        "discovery_depth": depth.get("discovery_depth"),
     }
 
 
@@ -663,6 +665,11 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
            "longest chain of calls where each consumed an identifier the previous one "
            "returned — ids the prompt supplied are excluded, so reading the instructions "
            "does not count as a dependency.\n",
+           "**disc** is the same measure over *schema and spec lookup* — search feeding "
+           "describe. That serialization is real latency, but it is a property of the tool "
+           "surface rather than of the join, and it exists only in the on-demand conditions. "
+           "Folding it into `depth` would make the headline metric track tool packaging "
+           "instead of who performs the join, so the two are reported side by side.\n",
            "| Condition | " + " | ".join(f"{t}" for t in tasks) + " |",
            "|" + "---|" * (len(tasks) + 1)]
     for c in conds:
@@ -682,6 +689,9 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
                 bits.append(f"({statistics.mean(fr):.0%} unused)")
             if dp:
                 bits.append(f"depth {statistics.mean(dp):.1f}")
+            dd = [r["discovery_depth"] for r in sub if r.get("discovery_depth") is not None]
+            if dd and statistics.mean(dd) > 1:
+                bits.append(f"disc {statistics.mean(dd):.1f}")
             cells.append("<br>".join(bits) or "—")
         out.append("| " + " | ".join(cells) + " |")
     out.append("\n*Token figures apportion the proxy's exact `tool_result_tokens` by the "

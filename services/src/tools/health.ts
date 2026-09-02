@@ -52,6 +52,26 @@ const WANT_PROFILE = ((): 'fat' | 'lean' | null => {
 })();
 
 const TIMEOUT_MS = 3000;
+/**
+ * Attempts per endpoint before declaring it down.
+ *
+ * A single 3s timeout is too brittle for a liveness gate. Observed 2026-09-02:
+ * `rest/fleet` timed out here while Docker's own in-container healthcheck
+ * reported healthy and the host reached the very same URL in 4ms moments later —
+ * Docker Desktop's port forwarder stalling, not a down service. That blocked a
+ * run and the advice printed below is to recreate the whole stack, which would
+ * have "fixed" nothing and hidden the real cause.
+ *
+ * Retrying does NOT weaken the gate: a genuinely unreachable service fails every
+ * attempt. What it removes is a false positive, which is the failure mode that
+ * teaches people to bypass a check. A probe that needed more than one attempt is
+ * reported as flaky rather than silently passed, because a stack that needs
+ * retries is worth knowing about before a 198-run matrix.
+ */
+const ATTEMPTS = Number(process.env['HEALTH_ATTEMPTS'] ?? 3);
+const RETRY_DELAY_MS = 400;
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 interface Check {
   label: string;
@@ -63,12 +83,14 @@ interface Check {
 interface Result extends Check {
   ok: boolean;
   info: string;
+  /** Attempts used. >1 on a success means the endpoint is flaky, not healthy. */
+  attempts: number;
 }
 
-async function probe(check: Check): Promise<Result> {
+async function probeOnce(check: Check): Promise<{ ok: boolean; info: string }> {
   try {
     const res = await fetch(check.url, { signal: AbortSignal.timeout(TIMEOUT_MS) });
-    if (!res.ok) return { ...check, ok: false, info: `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, info: `HTTP ${res.status}` };
 
     const text = await res.text();
     let body: unknown = null;
@@ -77,11 +99,24 @@ async function probe(check: Check): Promise<Result> {
     } catch {
       // Router's /health returns JSON, but don't hard-fail on a plain-text body.
     }
-    return { ...check, ok: true, info: check.detail?.(body) ?? 'up' };
+    return { ok: true, info: check.detail?.(body) ?? 'up' };
   } catch (err) {
     const msg = (err as Error).name === 'TimeoutError' ? 'timeout' : (err as Error).message;
-    return { ...check, ok: false, info: msg };
+    return { ok: false, info: msg };
   }
+}
+
+async function probe(check: Check): Promise<Result> {
+  let last = { ok: false, info: 'not attempted' };
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    last = await probeOnce(check);
+    if (last.ok) {
+      const info = attempt > 1 ? `${last.info}  (flaky: ok on attempt ${attempt})` : last.info;
+      return { ...check, ok: true, info, attempts: attempt };
+    }
+    if (attempt < ATTEMPTS) await sleep(RETRY_DELAY_MS);
+  }
+  return { ...check, ok: false, info: `${last.info} (${ATTEMPTS} attempts)`, attempts: ATTEMPTS };
 }
 
 function graphqlChecks(): Check[] {
@@ -118,7 +153,24 @@ function restChecks(): Check[] {
  * three subgraphs. Anything less can't tell "serving" from "listening".
  */
 async function routerFederationCheck(): Promise<Result> {
-  const label = 'router';
+  // Same retry policy as the other probes, and for the same reason: this one
+  // issues a real federated query, so it is the most likely of the seven to be
+  // caught by a transient stall.
+  let last: { ok: boolean; info: string } = { ok: false, info: 'not attempted' };
+  for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+    last = await routerFederationOnce();
+    if (last.ok) {
+      const info = attempt > 1 ? `${last.info}  (flaky: ok on attempt ${attempt})` : last.info;
+      return { label: 'router', url: `http://localhost:${ROUTER_PORT}/`, ok: true, info,
+               attempts: attempt };
+    }
+    if (attempt < ATTEMPTS) await sleep(RETRY_DELAY_MS);
+  }
+  return { label: 'router', url: `http://localhost:${ROUTER_PORT}/`, ok: false,
+           info: `${last.info} (${ATTEMPTS} attempts)`, attempts: ATTEMPTS };
+}
+
+async function routerFederationOnce(): Promise<{ ok: boolean; info: string }> {
   const url = `http://localhost:${ROUTER_PORT}/`;
   const query = '{ flight(id: "FL-0001") { id aircraft { id } assignments { id } } }';
 
@@ -129,7 +181,7 @@ async function routerFederationCheck(): Promise<Result> {
       body: JSON.stringify({ query }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
-    if (!res.ok) return { label, url, ok: false, info: `HTTP ${res.status}` };
+    if (!res.ok) return { ok: false, info: `HTTP ${res.status}` };
 
     const body = (await res.json()) as {
       data?: { flight?: { aircraft?: unknown; assignments?: unknown } | null };
@@ -140,19 +192,17 @@ async function routerFederationCheck(): Promise<Result> {
       const first = body.errors[0]!;
       const svc = first.extensions?.service ? ` (subgraph: ${first.extensions.service})` : '';
       return {
-        label,
-        url,
         ok: false,
         info: `federated query failed${svc}: ${(first.message ?? '').slice(0, 80)}`,
       };
     }
     if (!body.data?.flight) {
-      return { label, url, ok: false, info: 'federated query returned no data' };
+      return { ok: false, info: 'federated query returned no data' };
     }
-    return { label, url, ok: true, info: `serving on :${ROUTER_PORT} (all 3 subgraphs reachable)` };
+    return { ok: true, info: `serving on :${ROUTER_PORT} (all 3 subgraphs reachable)` };
   } catch (err) {
     const msg = (err as Error).name === 'TimeoutError' ? 'timeout' : (err as Error).message;
-    return { label, url, ok: false, info: msg };
+    return { ok: false, info: msg };
   }
 }
 
@@ -168,10 +218,13 @@ async function main(): Promise<void> {
   if (WANT_GRAPHQL) results.push(await routerFederationCheck());
   const down = results.filter((r) => !r.ok);
 
+  const flaky = results.filter((r) => r.ok && r.attempts > 1);
+
   if (!QUIET) {
     console.log('');
     for (const r of results) {
-      console.log(`  ${(r.ok ? 'ok' : 'DOWN').padEnd(6)} ${r.label.padEnd(22)} ${r.info}`);
+      const tag = r.ok ? (r.attempts > 1 ? 'FLAKY' : 'ok') : 'DOWN';
+      console.log(`  ${tag.padEnd(6)} ${r.label.padEnd(22)} ${r.info}`);
     }
   }
 
@@ -230,7 +283,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  if (!QUIET) console.log(`\nall ${results.length} endpoints up\n`);
+  if (!QUIET) {
+    if (flaky.length > 0) {
+      // Not fatal — every endpoint answered — but a stack that needs retries now
+      // will drop probes during a matrix, where each run starts its own proxy and
+      // the failure looks like an agent error rather than a network one.
+      console.log(
+        `\nall ${results.length} endpoints up, but ${flaky.length} needed a retry ` +
+          `(${flaky.map((r) => r.label).join(', ')}).\n` +
+          `Transient on Docker Desktop's port forwarder. Worth a restart before a long run:\n` +
+          `  docker compose restart ${flaky.some((r) => r.label.startsWith('rest/')) ? '<the rest service>' : '<the service>'}\n`,
+      );
+    } else {
+      console.log(`\nall ${results.length} endpoints up\n`);
+    }
+  }
 }
 
 main().catch((err) => {
