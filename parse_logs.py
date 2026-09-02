@@ -120,6 +120,9 @@ GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_covera
                 "graded_items", "correct_items", "missing_keys", "unparsed_values",
                 "answer_grounded", "grounded_facts", "needs_review", "grade_notes",
                 "pass_through_tokens", "pass_through_fraction", "forced_serial_depth"]
+# Integrity fields, present on every row regardless of phase.
+INTEGRITY_FIELDS = ["tool_results_recorded", "payload_loss", "payload_complete",
+                    "payload_note"]
 
 
 def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
@@ -323,7 +326,12 @@ def parse_proxy(p: Path, task_model: str = "") -> dict:
     tool_result_tokens counts tokens in GitHub API responses as received by the
     model (tokenized with cl100k_base in the proxy at log time)."""
     agg = {k: 0 for k, _ in METRICS}
-    extra = {"aux_calls": 0, "aux_tokens": 0, "unparsed_calls": 0, "agent_active_s": 0.0}
+    # `n_tool_results` is how many tool results the proxy actually recorded. It is
+    # not a metric — it is the integrity check on every metric derived from tool
+    # payloads. `results_field_present` distinguishes "no loss" from "the proxy
+    # that wrote this run predates the field", which must not read as a pass.
+    extra = {"aux_calls": 0, "aux_tokens": 0, "unparsed_calls": 0, "agent_active_s": 0.0,
+             "n_tool_results": 0, "results_field_present": False}
     if not p.exists():
         return {**agg, **extra}
     filter_model = task_model or PRIMARY_MODEL
@@ -349,6 +357,9 @@ def parse_proxy(p: Path, task_model: str = "") -> dict:
             ts_vals.append(r["ts"])
         agg["n_inference_calls"] += 1
         agg["n_tool_calls"] += _num(r.get("n_tool_use"))
+        if r.get("n_tool_results") is not None:
+            extra["results_field_present"] = True
+            extra["n_tool_results"] += _num(r.get("n_tool_results"))
         agg["input_tokens"] += _num(r.get("input_tokens"))
         agg["output_tokens"] += _num(r.get("output_tokens"))
         agg["cache_read_input_tokens"] += _num(r.get("cache_read_input_tokens"))
@@ -412,10 +423,47 @@ def collect():
             ),
         }
         row["cost_usd"] = cost_usd(row, run_model)
+        # Every tool call the model issued gets a result back, so a completed run
+        # must record as many results as calls. Fewer means the proxy lost
+        # payloads, which makes tool_result_tokens — and pass_through_tokens,
+        # derived from it — a lower bound rather than a measurement. This is the
+        # check that would have caught the fan-out undercount on day one instead
+        # of a human noticing an implausible grounding failure.
+        row.update(_payload_integrity(row, proxy, meta))
         if row["phase"] == 2:
             row.update(grade_row(meta, run_dir, proxy))
         rows.append(row)
     return rows
+
+
+def _payload_integrity(row: dict, proxy: dict, meta: dict) -> dict:
+    """Did the proxy record a result for every tool call this run made?
+
+    `payload_complete` is True / False / None, and None means "cannot tell" —
+    never True by default, the same rule `answer_grounded` follows. A run that
+    timed out or was budget-killed can legitimately have a call with no result,
+    so those are excused rather than flagged.
+    """
+    calls = proxy.get("n_tool_calls") or 0
+    if not proxy.get("results_field_present"):
+        return {"tool_results_recorded": None, "payload_loss": None,
+                "payload_complete": None if calls else True,
+                "payload_note": ("recorded by a proxy predating n_tool_results — "
+                                 "payload completeness unverifiable" if calls else "")}
+    recorded = proxy.get("n_tool_results") or 0
+    loss = calls - recorded
+    if loss <= 0:
+        return {"tool_results_recorded": recorded, "payload_loss": 0,
+                "payload_complete": True, "payload_note": ""}
+    if meta.get("timed_out") or meta.get("budget_killed"):
+        return {"tool_results_recorded": recorded, "payload_loss": loss,
+                "payload_complete": None,
+                "payload_note": f"{loss} call(s) without a result, but the run was "
+                                f"cut short — expected, not a measurement loss"}
+    return {"tool_results_recorded": recorded, "payload_loss": loss,
+            "payload_complete": False,
+            "payload_note": f"{loss} of {calls} tool call(s) have no recorded result — "
+                            f"tool payload figures are a LOWER BOUND for this run"}
 
 
 def agg_stats(vals):
@@ -594,8 +642,15 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
     Both are protocol-neutral by construction: they ask what crossed the wire and
     what depended on what, never how many calls a surface happened to need.
     """
-    have = [r for r in rows if r.get("pass_through_tokens") is not None
-            or r.get("forced_serial_depth") is not None]
+    all_have = [r for r in rows if r.get("pass_through_tokens") is not None
+                or r.get("forced_serial_depth") is not None]
+    # Runs where the proxy lost payloads are excluded from the means, not averaged
+    # in: their tool-payload figures are a lower bound, so including them drags the
+    # number toward zero and hides the loss inside a plausible average. Same rule as
+    # fabricated runs in the accuracy section.
+    lossy = [r for r in all_have if r.get("payload_complete") is False]
+    unknown = [r for r in all_have if r.get("payload_complete") is None]
+    have = [r for r in all_have if r.get("payload_complete") is True]
     if not have:
         return ["\n## Join tax\n",
                 "_No `tool_io.jsonl` found in these runs, so `pass_through_tokens` and "
@@ -633,6 +688,26 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
                "fraction of result bytes whose values never reach the answer, so they share "
                "units with every other token column here; the approximation is confined to "
                "that ratio. See `grade.pass_through_tokens`.*\n")
+
+    if lossy:
+        out.append(f"\n### ⚠️ {len(lossy)} run(s) with lost tool payloads — excluded above\n")
+        out.append("Every tool call the model issues gets a result back, so a completed run "
+                   "must record as many results as calls. These recorded fewer, which makes "
+                   "their payload figures a **lower bound** rather than a measurement. They "
+                   "are listed rather than averaged in, because averaging a lower bound into "
+                   "a mean hides the loss inside a plausible-looking number.\n")
+        out.append("| Condition | Task | Rep | tool calls | results recorded | note |")
+        out.append("|---|---|---|---|---|---|")
+        for r in sorted(lossy, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
+            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+                       f"{r['proxy_n_tool_calls']} | {r['tool_results_recorded']} | "
+                       f"{r['payload_note']} |")
+    if unknown:
+        out.append(f"\n{len(unknown)} run(s) could not be checked for payload completeness "
+                   f"and are also excluded; see the `payload_note` column in `raw.csv`.\n")
+    if not have:
+        out.append("\n**No run passed the payload-completeness check, so the table above is "
+                   "empty.** Re-run these cells before citing any payload figure.\n")
     return out
 
 
@@ -1176,6 +1251,12 @@ def write_summary(rows):
     incomplete = [r for r in rows if not r["completed"]]
     if incomplete:
         print(f"WARNING: {len(incomplete)} run(s) flagged incomplete — review before publishing.")
+    lossy = [r for r in rows if r.get("payload_complete") is False]
+    if lossy:
+        print(f"WARNING: {len(lossy)} run(s) recorded fewer tool results than tool calls. "
+              f"Tool-payload and pass-through figures are a LOWER BOUND for those runs and "
+              f"are excluded from the join-tax means. Affected: "
+              f"{', '.join(sorted({r['condition'] + '/' + r['task_id'] for r in lossy}))}")
 
     # Charts (optional — skips gracefully if matplotlib absent)
     _write_charts(rows, conds, tasks)

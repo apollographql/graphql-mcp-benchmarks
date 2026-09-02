@@ -1056,3 +1056,32 @@ tool-design effect.
     other), and both times the expectedness is why it survived.
 
     The fixtures now mirror the sidecar's real shape, with the M4 fan-out as an explicit case.
+
+47. **The undercount was found by a human noticing an implausible grounding failure. That is
+    not a detection mechanism, so now there is one.** Four attempts at the tool-result
+    boundary (surprise 42) all produced plausible output: fewer payload tokens than reality,
+    with nothing in the report saying so. What finally surfaced it was `answer_grounded`
+    flagging a run as fabricated for an unrelated-looking reason, and somebody going to look.
+
+    The invariant that makes it self-detecting is trivial: **every tool call the model issues
+    gets a result back, so a completed run must record as many results as calls.** The proxy
+    now logs `n_tool_results` beside `n_tool_use`, and `parse_logs.py` compares them per run.
+    On the runs already on disk it flags exactly the three that fanned out — 9 calls / 8
+    results, 9/8, 20/19 — and passes the four that did not.
+
+    Three design points, each mirroring a decision made elsewhere in this pipeline:
+
+    - **Lossy runs are excluded from the join-tax means and listed separately**, not averaged
+      in. Their payload figures are a lower bound, and averaging a lower bound into a mean
+      hides the loss inside a plausible number. Same rule as fabricated runs in the accuracy
+      section.
+    - **`payload_complete` is True / False / None, never True by default.** Runs written by a
+      proxy predating the field report None with a note, because "unverifiable" must not read
+      as "verified". Same rule as `answer_grounded`.
+    - **A run cut short by a timeout or the budget killer is excused**, since a call really can
+      lack a result there. Distinguishing an expected gap from a measurement loss is the
+      difference between a useful check and one people learn to ignore.
+
+    The general shape: when a measurement can silently under-report, look for a *conservation
+    law* it has to obey — something countable on both sides of the pipeline — and assert it
+    per run. Four failed fixes cost far more than this check would have.

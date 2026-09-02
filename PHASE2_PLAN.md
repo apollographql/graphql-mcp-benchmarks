@@ -1636,8 +1636,24 @@ wrong — so they now mirror the sidecar's actual shape.
 
 Note the direction of both errors: undercounted REST payloads and depth 1 for REST are exactly
 what the GraphQL hypothesis predicts. **A metric that quietly confirms the thesis is the one to
-distrust.** Runs recorded before these fixes (`runs/_phase2-preproxyfix`, and the M4@20 run)
-carry the old numbers and should be re-run rather than reinterpreted.
+distrust.** Runs recorded before these fixes carry the old numbers and should be re-run rather
+than reinterpreted.
+
+**And this class of loss is now self-detecting.** Every tool call gets a result back, so a
+completed run must record as many results as calls — the proxy logs `n_tool_results` beside
+`n_tool_use` and `parse_logs.py` asserts the two match per run. Runs that fail it are
+**excluded from the join-tax means and listed separately**, because their payload figures are
+a lower bound and averaging a lower bound into a mean hides the loss inside a plausible
+number. `payload_complete` is True / False / None and never True by default: runs written by a
+proxy predating the field report None with a note, and runs cut short by a timeout or the
+budget killer are excused, since a missing result is expected there. On the runs currently on
+disk it flags exactly the three that fanned out (9/8, 9/8, 20/19) and passes the four that
+did not.
+
+The undercount was originally found by a human noticing an implausible grounding failure,
+which is not a detection mechanism. The general move: when a measurement can silently
+under-report, find a **conservation law** it must obey — something countable on both sides of
+the pipeline — and assert it per run.
 
 **And the grounding gate's first real finding was a false positive — correctly.** It flagged
 `M-G1/M1@5/rep3` as fabricated: F1 1.00, 15 facts stated, 9 untraceable, three flights' times
