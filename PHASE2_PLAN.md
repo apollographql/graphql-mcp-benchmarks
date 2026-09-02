@@ -18,26 +18,33 @@ whole stack runs under `docker compose`, all four MCP tool surfaces are built an
 against the live stack, and the four tasks plus their computed ground truth exist. Verified
 numbers are in §5.1 (all eleven cells, re-measured 2026-09-02) and §8.1.
 
-Four grading defects have been found and fixed by building this, not by running it: the
-role/rank fixture incoherence (step 5) and three more in step 6 — no reference date for
-"current", non-unique flight numbers in M1's sample, and M3@1 duplicating M2. All four are
-recorded in §5 with the guard that now catches each. **Expect more of these in step 7**; the
-pattern is a question that reads one way to the grader and another to the agent, with nothing
-erroring to say so.
+**Step 7 items 1–2 are complete** (2026-09-02): `run_benchmark.py` now knows the four
+phase-2 conditions, gates on the stack via `pnpm health`, and expands the eleven cells out of
+`expected.json`; the four `recipes/recipe_m_*.yaml` exist. A dry run of both payload passes
+plans **132 + 66 = 198 runs**, matching §4 from a second direction. Details in §9 step 7.
 
-**NEXT: step 7 — harness wiring (§8) and reporting (§11).** §7.1's last block lists exactly
-what the runner side still needs: expand phase-2 tasks over N, pair phase-2 conditions with
-`phase: 2` tasks, render from `expected.json[<id>].placeholders`, and fail on any unrendered
-`{{…}}`. Grading rules live in `expected.json[<id>].grading` — `parse_logs.py` should read
-them, not re-derive them.
+Five grading or task defects have been found and fixed by building this, not by running it:
+the role/rank fixture incoherence (step 5), three in step 6 — no reference date for "current",
+non-unique flight numbers in M1's sample, and M3@1 duplicating M2 — and one in step 7, M1's
+prompt reading "cover all 1" at the low end of its own sweep. All are recorded in §5 with the
+guard that now catches each. **Expect more of these**; the pattern is a question that reads
+one way to the grader and another to the agent, with nothing erroring to say so.
 
-Three parts of step 7 are easy to skip and shouldn't be:
-**§8.2** (two shared-resource races under six parallel conditions — Goose's log directory,
-which PR #3 silenced without fixing, and `/__metrics`, which cannot attribute
-`backend_requests` per run as planned), **§7.1's `answer_grounded` gate** (a lucky guess on
-M2 or M4@20 otherwise scores as a cheap success — phase 1 already produced an agent
-hallucinating tool calls when a handshake broke), and **§11** (`parse_logs.py` drops unknown
-conditions silently rather than erroring, so every phase-2 row would vanish from the report).
+**NEXT: step 7 item 3 — `parse_logs.py`.** Start with the unknown-condition blocker (§11):
+until it is fixed, every phase-2 row is dropped from the report *silently*. Then grading from
+`expected.json[<id>].grading` — read those rules, do not re-derive them — plus the
+`answer_grounded` gate, then the two PR-#3 prose bugs.
+
+The part of step 7 that is easy to skip and shouldn't be: **§7.1's `answer_grounded` gate**
+— a lucky guess on M2 or M4@20 otherwise scores as a cheap success, and phase 1 already
+produced an agent hallucinating tool calls when a handshake broke.
+
+**Two planned metrics/columns were cut rather than built (2026-09-02), both simplifications.**
+`backend_requests` is out of scope — this study measures inference cost and inference calls,
+which the proxy log captures completely and per run (§6). And the proxy-vs-Goose audit
+cross-check is retired: it recorded which parallel condition cleared Goose's shared log
+directory last, not corroboration (§8.2). Both of §8.2's shared-resource races are therefore
+gone by deletion rather than by design.
 
 Matrix size and cost are in §4 under "Matrix size": **198 runs** (6 condition cells × 11 task
 instances × 3 reps), ~$10–20 on haiku, with the context window rather than cost as the binding
@@ -605,11 +612,11 @@ never occupy a pilot slot, but it does mean the "cabin crew hold no ratings" rat
 that once justified pilots-only scoping was never true of the fixtures. The scoping stands
 on the conjunction argument above instead.
 
-### Three grading defects found while building the tasks — ✅ fixed 2026-09-02
+### Four task defects found while building the harness — ✅ fixed 2026-09-02
 
-Step 6 turned up three more ways the ground truth and the agent could have been asked
-different questions. All three are fixed, and each now has a guard in `pnpm expected` that
-was verified to fail before it was trusted (§7).
+Steps 6 and 7 turned up four more ways the ground truth and the agent could have been asked
+different questions. All four are fixed, and each now has a guard — three in `pnpm expected`
+(§7), one in the runner — that was verified to fail before it was trusted.
 
 **1. "Current" had no reference date — the worst of the three.** M2 and M3 ask whether a type
 rating is *still current*. The fixtures are dated 2026-03-14; an agent has no way to know
@@ -633,9 +640,21 @@ unaffected — the collision starts at the 14th flight — but N=20 and N=50 bot
 
 **3. M3 at N=1 was M2.** Same flight, same predicate, same answer, 18 runs. Dropped; see §4.
 
-None of the three is exotic. All three are the same failure as the role/rank defect above:
+**4. M1's prompt was ungrammatical at its own N=1.** Found in step 7, the first time
+`run_benchmark.py` rendered every cell. M1 opened "For flight numbers {{ids}}" and closed
+"cover all {{n}}", which at N=1 reads *"For flight numbers AA5751, … and cover all 1."*
+A swept prompt is written once and read at every N, so any phrasing that assumes the plural
+is wrong at one end of the sweep — and M1@1 is the intercept of M1's slope, the 23.9× row in
+§5.1. The count is now a parenthetical the sentence never has to agree with — "the following
+flight numbers ({{n}} total)" — which reads correctly from 1 to 50. Lesson recorded in
+`tasks/tasks.yaml`'s header, next to the two other prompts that were simply wrong.
+
+None of the four is exotic. All four are the same failure as the role/rank defect above:
 a question that reads one way to the grader and another way to the agent, with no error
-anywhere to say so.
+anywhere to say so. Note where each was caught — building the generator, then building the
+runner. The generator surfaced the grading defects because it had to compute an answer; the
+runner surfaced the wording defect because it had to produce the literal string. Neither
+would have surfaced from reading the task table.
 
 ### 5.1 Verified end-to-end (`pnpm verify:federation --live`)
 
@@ -698,18 +717,22 @@ The second is the defensible claim, and it is the one the multi-service design w
 to isolate. M4 also shows the most extreme `-fat` ratio (50×) because evaluating a
 predicate the agent cannot push down means over-fetching 40 aircraft in full.
 
-**Backend fan-out is flat in N.** The router served M3 at N=20 — 20 aircraft plus 80 crew
-resolutions — in **4 backend requests**, the same as M2 at N=1, because the subgraphs
-batch entity resolution with DataLoader (`src/server/graphql/context.ts`). Batching
-changes no token count; it exists so the infrastructure-cost figure is honest. An
-unbatched subgraph would report 5 requests for M2 and ~85 for M3, which would understate
-federation for reasons that have nothing to do with the protocol.
+**Backend fan-out is flat in N — and this column is verification, not a result.** The
+router served M3 at N=20 — 20 aircraft plus 80 crew resolutions — in **4 backend requests**,
+the same as M2 at N=1, because the subgraphs batch entity resolution with DataLoader
+(`src/server/graphql/context.ts`). Batching changes no token count; it is here to show the
+GraphQL side is not secretly issuing an N+1 behind the router, since an unbatched subgraph
+would report 5 requests for M2 and ~85 for M3.
+
+That is the column's whole job. `backend_requests` was cut as a reported metric (§6) — the
+study measures inference cost and calls — so read this row as evidence that the comparison
+is fair, and do not promote it into the report.
 
 ---
 
 ## 6. Metrics
 
-Existing per-call proxy capture is unchanged. Four additions:
+Existing per-call proxy capture is unchanged. Three additions:
 
 **`pass_through_tokens`** — tool-result tokens that never appear in the final answer.
 Computable because we own the fixtures: per tool result, count tokens of fields absent
@@ -721,12 +744,18 @@ ID returned by call *k−1*. Distinguishes genuine dependency serialization from
 sequencing. Derivable from `proxy.jsonl` by matching IDs across `tool_use` / `tool_result`
 blocks. Maps to user-perceived latency in a way call count does not.
 
-**`backend_requests`** — HTTP hits per service, from per-service access logs. The router
-will likely make *more* backend calls than the REST agent while using far less context.
-Publish that. Without it the first reviewer says the cost was moved from the token bill to
-the infrastructure bill; with it the claim becomes "same backend work, less agent context."
-**`/__metrics` is a global counter and the six conditions run in parallel, so this cannot be
-attributed per run as currently planned — see §8.2 before wiring it up.**
+**`backend_requests` was cut — ✂️ descoped 2026-09-02.** It was going to count HTTP hits
+per service to pre-empt "you just moved the cost to the infrastructure bill." That question
+is out of scope: this study measures **inference cost and inference calls**, both of which
+the proxy log captures completely and per run. Speculating about someone's infrastructure
+bill from a synthetic local stack would not answer it anyway.
+
+Two things follow, and both are simplifications. The `/__metrics` attribution problem
+disappears rather than needing a design (it was §8.2's second race). And `/__metrics` itself
+stays as a *harness* facility only — `pnpm verify:federation` uses it to prove DataLoader
+batches subgraph reads, which is evidence that the GraphQL side is not secretly N+1, not a
+reported result. The "backend fan-out" column in §5.1 is that verification, and it should
+not be promoted into the report.
 
 **`answer_f1`** — field-level precision/recall against computed expected results,
 replacing phase 1's binary completion gate. Required at M3 / N=50, where the interesting
@@ -893,8 +922,8 @@ deflates cost at the same time.
 
 Two properties make this the right instrument rather than a heuristic:
 
-- **It is per-run by construction.** `proxy.jsonl` is written per run; no shared state, so no
-  attribution problem (unlike `backend_requests` — see §8.2).
+- **It is per-run by construction.** `proxy.jsonl` is written per run, with no shared state,
+  so it has no attribution problem — which is exactly what sank `backend_requests` (§6).
 - **It is protocol-neutral.** It asks whether the data entered the context, not how many calls
   it took. Call counts differ between REST and GraphQL *by design* — that difference is the
   measurement, so it cannot also be the validity gate.
@@ -918,11 +947,11 @@ Small, additive changes:
 
 | File | Change |
 |---|---|
-| `run_benchmark.py` | Add `M-*` entries to `CONDITIONS` (~line 131); add a `services_up()` health gate beside the existing `docker info` check; expand phase-2 tasks over N and render from `expected.json` placeholders (§7.1) |
+| ~~`run_benchmark.py`~~ | ✅ Done in step 7 — four `M-*` conditions, a `services_up()` gate that delegates to `pnpm health`, N expansion out of `expected.json`, and five new pre-flight guards (§9 step 7) |
 | ~~`tasks/tasks.yaml`~~ | ✅ Done in step 6 — M1–M4 with `phase:`, `ns:`, and `{{ids}}` / `{{n}}` / `{{as_of}}` / `{{origin}}` placeholders |
-| `recipes/` | New: `recipe_m_r1.yaml`, `recipe_m_r2.yaml`, `recipe_m_g1.yaml`, `recipe_m_g2.yaml` |
-| `parse_logs.py` | Three new metric columns + the grader. Grading rules come from `expected.json[<id>].grading` — do not re-derive them per task (§7.1), and refuse to grade when `_meta.fixtureManifestSha` does not match the fixtures |
-| `bench.sh` | Add the four `M-*` captures to `do_capture()` (see §8.2) |
+| ~~`recipes/`~~ | ✅ Done in step 7 — the four `recipe_m_*.yaml`, with a byte-identical `instructions` block the runner enforces |
+| `parse_logs.py` | Two new metric columns + the grader. Grading rules come from `expected.json[<id>].grading` — do not re-derive them per task (§7.1), and refuse to grade when `_meta.fixtureManifestSha` does not match the fixtures. The Goose cross-check columns are already removed (§8.2) |
+| `bench.sh` | Add the four `M-*` captures to `do_capture()` (see §8.3) |
 | ~~`servers/openapi_mcp.py`~~ | ✅ Done in step 5, with `servers/supergraph_mcp.py` and `servers/_mcp_stdio.py` |
 | ~~`lib/setup.sh`~~ | ✅ Done in step 5 — renders `config/apollo-mcp.phase2.local.yaml` with absolute paths |
 | ~~`capture/capture_mcp.py`~~ | ✅ Confirmed: works unmodified against all four new servers |
@@ -1027,60 +1056,58 @@ ad-hoc query, and **M4 needs one board read plus one detail read per flight** �
 1+N shape as REST. A domain-sized frozen set does not perfectly fit every task; a set that
 did would be a set that was not actually frozen.
 
-### 8.2 Fix before the matrix — two shared-resource races
+### 8.2 Two shared-resource races — ✂️ both retired 2026-09-02
 
-Both have the same shape: a resource that is global while conditions are parallel
-(`ThreadPoolExecutor` at `run_benchmark.py:398`). Neither fails loudly.
+Both had the same shape: a resource that is global while conditions run in parallel
+(`ThreadPoolExecutor`, `run_benchmark.py`). Neither failed loudly. Neither was fixed —
+**both were removed**, which is the better outcome and worth recording as the pattern: when
+a measurement cannot be attributed to a run, ask whether the measurement is load-bearing
+before engineering a way to attribute it.
 
-#### The Goose log race
+#### The Goose log race — the cross-check column is retired
 
-PR #3 stopped this crashing but not the underlying problem, and phase 2 makes it worse: **six**
-conditions run in parallel instead of four, all against Goose's single shared log directory.
+PR #3 stopped this crashing but not the underlying problem, and phase 2 would have made it
+worse by running more conditions in parallel.
 
-- `GOOSE_LOG_DIR` is one global XDG path (`run_benchmark.py:71`), and its own comment says
-  Goose does not honour the variable. Two other comments — the module docstring at `:11-12`
-  and `:390` — claim each condition "gets its own `GOOSE_LOG_DIR`". Those are wrong, and are
-  probably why this went unnoticed for so long. Fix the comments too.
-- `clear_goose_logs()` (`:164`) calls `f.unlink()` on that shared directory at the start of
-  every run, so parallel conditions actively delete each other's logs. Goose's rotation is
-  not the main culprit; we are.
-- The damage is already visible in the committed phase-1 report: `proxy calls` is stable
-  (4,4,4 / 3,3,3) while `goose calls` reads 0,5,0,0,0,0,5,0,6,… and 2,5,0 for B2/T1. The
-  audit column is not corroborating the proxy under parallelism — it records which condition
-  cleared the directory last — and `rot?` is empty on all 24 rows, so nothing flags it.
-- Before PR #3 this surfaced as a crash that killed the whole matrix (`future.result()` at
-  `:398` catches only `BudgetExhausted`). After it, the same corruption is silent. **That is
-  why it needs doing now: the symptom that would have reminded us is gone.**
+- `GOOSE_LOG_DIR` was one global XDG path, and the code's own comment said Goose does not
+  honour the variable. Two other comments claimed each condition "gets its own
+  `GOOSE_LOG_DIR`". They were wrong, which is probably why this went unnoticed for so long.
+- `clear_goose_logs()` called `f.unlink()` on that shared directory at the start of every
+  run, so parallel conditions actively deleted each other's logs. Goose's own rotation was
+  not the main culprit; we were.
+- The damage was visible in the phase-1 report: `proxy calls` was stable (4,4,4 / 3,3,3)
+  while `goose calls` read 0,5,0,0,0,0,5,0,6 and 2,5,0 for B2/T1. The audit column was not
+  corroborating the proxy under parallelism — it recorded which condition cleared the
+  directory last — and `rot?` was empty on all 24 rows, so nothing flagged it.
+- Before PR #3 this surfaced as a crash that killed the whole matrix. After it, the same
+  corruption was silent. **That is why it needed doing: the symptom that would have reminded
+  us was gone.**
 
-Real fix: per-run log isolation, or serialize the snapshot behind a lock, or accept that the
-cross-check cannot work under parallelism and say so in the report instead of printing a
-column that looks like corroboration.
+**Retired rather than fixed.** The proxy log is per-run, written by our own process, and
+authoritative; the Goose snapshot only ever added a second opinion about the same API calls.
+A column that looks like corroboration and is not is worse than no column. So
+`clear_goose_logs()`, `snapshot_goose_logs()`, `GOOSE_LOG_DIR`, `rotation_truncated`, and the
+`goose_*` fields are gone from `run_benchmark.py` and `parse_logs.py`, and the report section
+is now "Audit — per-run disclosure & completion". The runner no longer touches any path
+outside its own run directory, so the race is gone by construction rather than by lock.
+`goose_exit` stays — that is the subprocess's exit code, not a measurement.
 
-#### `/__metrics` cannot attribute `backend_requests` per run
+The phase-1 numbers were never committed to this repo (`results/` and `runs/` are
+gitignored), so nothing published needs annotating; re-running `parse_logs.py` over the
+existing `runs/` regenerates the report without the column.
 
-The planned mechanism — reset `/__metrics`, run, read `/__metrics` — is a global counter on a
-single shared stack, and the six conditions all hit it at once. A `DELETE` from one condition
-zeroes another's counter mid-run, and every read mixes traffic from all six. Nothing has been
-wired up yet (nothing in `run_benchmark.py`, `parse_logs.py`, or `bench.sh` touches
-`/__metrics`), so this is a design fix rather than a repair — which is the good case, since the
-alternative is a plausible-looking infrastructure-cost column that is silently the sum of
-whatever else was running.
+#### `/__metrics` could not attribute `backend_requests` per run — and the metric was cut
 
-Options, roughly in order of preference:
+The planned mechanism was reset-run-read against a global counter on a single shared stack
+with conditions executing in parallel: one condition's `DELETE` zeroes another's counter
+mid-run, and every read mixes traffic from all of them. Nothing had been wired up, so this
+was a design question rather than a repair.
 
-1. **Scope the counter per run.** Have each MCP server pass a run id through to the services
-   (a header the request accounting buckets on) and read `/__metrics?run=<id>`. Cleanest, and
-   it survives parallelism. Needs checking whether Apollo MCP Server can attach a static
-   header for M-G2; the two Python servers trivially can.
-2. **Measure it in a serial pass.** Take `backend_requests` from a dedicated single-condition
-   run per cell rather than the parallel matrix. It is a property of the protocol and the
-   query plan, not of the agent's reps, so one clean measurement per cell is defensible.
-3. **Drop the column** and cite `pnpm verify:federation`'s fan-out numbers (§5.1) instead,
-   saying plainly that they come from the harness rather than the matrix.
-
-What is not acceptable is publishing the column as if it were per-run. The whole reason it
-exists is to answer "did you just move the cost to the infrastructure bill" — a reviewer's
-question — and an unattributable number cannot answer it.
+It was answered by dropping the metric. `backend_requests` existed to pre-empt "did you just
+move the cost to the infrastructure bill?", and that question is **out of scope** — the study
+measures inference cost and inference calls (§6). `/__metrics` remains as a harness facility
+for `pnpm verify:federation`, which uses it to prove DataLoader batches subgraph reads. That
+is design verification, not a reported result, and it should not be promoted into one.
 
 ### 8.3 Verification before the matrix
 
@@ -1120,27 +1147,84 @@ question — and an unattributable number cannot answer it.
    fails on a degenerate cell (seven guards, §7); `src/tools/sample.ts` gives the §5.1 table
    and the ground truth one shared sample; 100/100 tests pass, including three that recompute
    every answer from what the subgraphs actually serve. Three grading defects found and fixed
-   along the way — §5.*
+   along the way, and a fourth in step 7 — §5.*
 7. Harness wiring (§8) **and reporting (§11)**, then a smoke run before committing to the
    full matrix. Order matters here, so it is written down:
 
-   1. **`run_benchmark.py`** — six `M-*` `CONDITIONS` entries, a `services_up()` gate beside
-      the existing `docker info` check, and phase-2 task expansion: build the task list from
-      `expected.json` keys, render from `placeholders`, fail on any surviving `{{…}}`, and
-      pair `M-*` conditions with `phase: 2` tasks only. Details in §7.1.
-   2. **Four recipes** — `recipe_m_r1.yaml`, `recipe_m_r2.yaml`, `recipe_m_g1.yaml`,
-      `recipe_m_g2.yaml`.
+   1. ✅ **`run_benchmark.py`** — *Done 2026-09-02.* Four `M-*` conditions (not six: see
+      below), a `services_up()` gate, and phase-2 task expansion out of `expected.json`.
+
+      **The profile is a pass, not a condition.** The REST services read `PAYLOAD_PROFILE`
+      at container start, so a profile belongs to the running stack and cannot be switched
+      per condition. The six cells are therefore two passes over four conditions —
+      `PAYLOAD_PROFILE=fat` runs all four, `PAYLOAD_PROFILE=lean` runs the two `M-R*` — and
+      the `M-G*` conditions are skipped in the lean pass *loudly*, since a GraphQL query
+      names its own fields and running them twice would buy 66 identical runs. The profile
+      goes in the run **directory** (`runs/M-R1-fat/…`) so the two passes cannot overwrite
+      each other, and stays a separate `meta.json` field so §11 can keep it a column. A dry
+      run plans 132 + 66 = **198**, matching §4.
+
+      `services_up()` delegates to `pnpm health` rather than reimplementing seven probes in
+      Python — that script already proves the router can reach its subgraphs with a real
+      federated query and checks fixture provenance. It gained one flag for this:
+      `--profile fat|lean`, which asserts REST is serving the profile the pass claims.
+      Without it, `PAYLOAD_PROFILE=lean` against a stack still up in `fat` yields a full
+      pass labelled lean and measured fat, and nothing downstream can see it — both
+      profiles answer every task correctly, and only the byte counts differ.
+
+      Five guards, each verified to fire before being trusted: `tasks.yaml`'s `ns` vs
+      `_meta.sweep`; a cell in `expected.json` with no task entry; any `{{…}}` surviving
+      the render (fatal, not a warning — the literal text would produce a plausible run
+      that measures nothing); `_meta.fixtureManifestSha` vs the fixtures on disk; and a
+      condition paired with the other phase's tasks. Prompts are rendered and validated for
+      all thirteen cells *before the first run starts*, which is how the M1 wording defect
+      in §5 was caught.
+
+      `meta.json` gained `phase`, `n`, `profile`, and `max_turns` — `n` so §11's slope
+      charts need not re-split task ids, `max_turns` so a truncated high-N run can be
+      attributed to the harness cap rather than to the context window.
+   2. ✅ **Four recipes** — *Done 2026-09-02.* `recipe_m_{r1,r2,g1,g2}.yaml`.
+
+      Their `instructions` block is **byte-identical in all four**, and
+      `_assert_symmetric_instructions()` refuses to start a phase-2 pass if that stops being
+      true. That block is the system prompt: it enters every run's cached prefix, so a
+      sentence in one condition and not another shifts both the token counts and the agent's
+      strategy on one side of the comparison. It names no tool and suggests no strategy —
+      tool discovery and selection is what the 2×2 measures, so a hint measures the hint.
+      Phase 1's B and B2 recipes each coach their own tool surface (B: "do NOT call
+      `introspect`"; B2: a full schema-discovery workflow), which is a caveat on that
+      phase's protocol comparison and not a pattern phase 2 inherits. All four also share
+      one extension name (`airline`), because Goose namespaces tool names by extension and
+      a longer name on one side would shift its prefix.
+
+      The block does carry one instruction, identical everywhere: every fact in the answer
+      must come from a tool result, the data is synthetic, and an unavailable value should
+      be reported as unavailable rather than guessed. That is the fair form of the
+      `answer_grounded` concern — it targets fabrication, not tool choice, so it cannot
+      bias the comparison, and it makes an ungrounded answer a measured failure rather than
+      a missing instruction.
    3. **`parse_logs.py`, starting with the unknown-condition blocker (§11).** It comes first
       because until it is fixed every phase-2 row is dropped from the report *silently* — you
       would run the matrix and see a phase-1 report. Then grading from
       `expected.json[<id>].grading` plus the `answer_grounded` gate (§7.1), then the two PR-#3
       prose bugs (§11).
-   4. **The two shared-resource races (§8.2)** — before the matrix, not after. Neither fails
-      loudly, and both get worse with six parallel conditions.
+   4. ✅ **The two shared-resource races (§8.2)** — *Resolved 2026-09-02 by deletion.* The
+      Goose cross-check column is retired (the runner no longer touches any path outside its
+      own run directory, so the race is gone by construction) and `backend_requests` is
+      descoped (§6), which removes the `/__metrics` attribution problem instead of solving
+      it. Both were going to be engineering; both turned out to be scope questions.
    5. **Smoke run** — 2 conditions × 1 task to prove the wiring, then **one deliberate
       M4@103 `-fat` run** to settle whether a 127 KB tool result produces a clean API error
       or gets silently truncated. Those are different results needing different columns
       (`NOTES.md` expectation 8), and it is far cheaper to learn which now than 198 runs in.
+
+      That run also settles two **harness caps** inherited from phase 1, where no task
+      needed more than a handful of calls: `MAX_TURNS=50` and `RUN_TIMEOUT=420`s. M4@103 on
+      REST is one board read plus 103 detail reads — comfortable if the agent batches tool
+      calls per turn, impossible if it goes one at a time. A cap that truncates REST's 1+N
+      pattern would read exactly like the context-window finding while being an artifact of
+      the harness, which is why `max_turns` is now recorded per run. Decide whether to raise
+      them from the smoke result, not from a guess.
 
 ---
 
@@ -1154,7 +1238,7 @@ field-count rationale. ~40 fields per entity is defensible against real operatio
 and because the field ratio is swept rather than fixed, the result doesn't rest on that
 number being right.
 
-**Router latency is real.** Report `backend_requests` and wall-clock so the trade is
+**Router latency is real.** Report wall-clock so the trade is
 visible rather than concealed.
 
 **M-G2 is the strawman risk on the GraphQL side.** Freeze and date the operation set
@@ -1266,17 +1350,21 @@ single multiple.
 M3/N=50 the interesting failure is the agent silently dropping records, which a boolean
 cannot see. The "Audit — completion" section becomes an accuracy section.
 
-**4. Three new metrics, and one of them is not a parse-time change.**
-`pass_through_tokens` and `forced_serial_depth` are derivable from `proxy.jsonl`.
-**`backend_requests` is not** — it comes from the services' `/__metrics`, which
-`run_benchmark.py` has to reset before each run and read after it. That is runner work, not
-parser work, and it is easy to discover too late.
+**4. Two new metrics, both parse-time.** `pass_through_tokens` and `forced_serial_depth` are
+derivable from `proxy.jsonl`, so this is parser work only. The third planned metric,
+`backend_requests`, was the one that needed runner work — resetting and reading `/__metrics`
+around each run — and it is cut (§6). Everything the report now needs comes out of the
+per-run proxy log.
 
 ### What carries over unchanged
 
 The per-call proxy capture, the separation of cache-read from cache-creation tokens, the
-stage-cost breakdown by prompt lifecycle, the USD and timing sections, and the proxy-vs-Goose
-audit cross-check. All protocol-agnostic; none of it needs touching.
+stage-cost breakdown by prompt lifecycle, and the USD and timing sections. All
+protocol-agnostic; none of it needs touching.
+
+One thing does **not** carry over: the proxy-vs-Goose audit cross-check, retired in §8.2.
+The audit section survives as per-run disclosure — calls, tokens, cost, wall-clock, aux
+calls, unparsed, completion, exit — sourced entirely from the per-run proxy log.
 
 `results/quotes.md`'s taxonomy — initialization / orchestration / reasoning / synthesis —
 also transfers as-is, and is arguably more interesting in phase 2: "the model acting as an

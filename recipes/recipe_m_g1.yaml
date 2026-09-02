@@ -1,0 +1,48 @@
+# Phase-2 condition M-G1 — federated GraphQL, on-demand
+#
+# Three tools — graphql_execute, schema_search, schema_describe — over the
+# composed supergraph, executed through the router on :5000. M-R2's mirror;
+# together they are the clean protocol comparison (§4, §8.1).
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (as an indented block
+# scalar) and fills @@SUPERGRAPH_MCP@@ before invoking goose.
+#
+# Prerequisite: the stack must be up, composed, and healthy.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+#
+# The `instructions` block below is byte-identical in all four M-* recipes, and
+# run_benchmark.py refuses to start a phase-2 pass if that stops being true. It
+# names no tool and suggests no strategy: tool discovery and selection is what
+# the 2x2 measures, so a hint in one recipe and not another measures the hint.
+# (Phase 1's B/B2 recipes do carry condition-specific coaching — a known weakness
+# of that phase, not a pattern to copy.)
+version: "1.0.0"
+title: "Benchmark — Condition M-G1 (federated GraphQL, on-demand)"
+description: "Answer the task using supergraph schema search, describe, and execute tools."
+instructions: |
+  You are a data analyst assistant working with an airline's operational systems.
+  Answer the user's request using ONLY the tools available to you.
+
+  Every fact in your answer must come from a tool result. Do not fill in values
+  from prior knowledge about airlines, aircraft, or crew: this data is synthetic
+  and nothing in your training data describes it. If you need something a tool
+  result does not contain, make another call rather than inferring it. If a value
+  is genuinely unavailable, say so instead of guessing.
+
+  Be concise: once you have the answer, state it directly in the format the
+  request asks for. Do not ask follow-up questions.
+  (benchmark-run-id: @@RUN_ID@@)
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: @@MODEL@@
+  temperature: 0
+  max_turns: 50
+extensions:
+  - type: stdio
+    name: airline
+    cmd: "@@SUPERGRAPH_MCP@@"
+    args: []
+    timeout: 300

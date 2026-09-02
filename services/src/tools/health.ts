@@ -11,10 +11,11 @@
  * an agent that can reach two of three services produces a plausible wrong answer,
  * and a wrong answer that completes looks like a cheap correct one in the results.
  *
- *   pnpm health              # graphql + rest + router
- *   pnpm health --graphql    # only what the M-G* conditions need
- *   pnpm health --rest       # only what the M-R* conditions need
- *   pnpm health --quiet      # exit code only
+ *   pnpm health                 # graphql + rest + router
+ *   pnpm health --graphql       # only what the M-G* conditions need
+ *   pnpm health --rest          # only what the M-R* conditions need
+ *   pnpm health --profile lean  # ...and assert REST is serving that profile
+ *   pnpm health --quiet         # exit code only
  */
 
 import { PORTS, ROUTER_PORT, SERVICES } from '../entities/index.ts';
@@ -27,6 +28,28 @@ const ONLY_GRAPHQL = ARGS.includes('--graphql');
 const ONLY_REST = ARGS.includes('--rest');
 const WANT_GRAPHQL = !ONLY_REST;
 const WANT_REST = !ONLY_GRAPHQL;
+
+/**
+ * `--profile fat|lean` asserts the REST services are serving that profile.
+ *
+ * The consistency check further down catches the three REST services disagreeing
+ * with each other — the mistake you make by hand. This catches the one the
+ * harness makes: PAYLOAD_PROFILE is read at container start, so
+ * `PAYLOAD_PROFILE=lean ./bench.sh run` against a stack still up in `fat`
+ * produces a full pass of runs labelled lean and measured fat. Nothing about
+ * that is visible downstream — both profiles answer every task correctly, only
+ * the byte counts differ, and the byte counts are the finding.
+ */
+const WANT_PROFILE = ((): 'fat' | 'lean' | null => {
+  const i = ARGS.indexOf('--profile');
+  if (i === -1) return null;
+  const v = ARGS[i + 1];
+  if (v !== 'fat' && v !== 'lean') {
+    console.error(`--profile takes 'fat' or 'lean' (got ${v ?? 'nothing'})`);
+    process.exit(2);
+  }
+  return v;
+})();
 
 const TIMEOUT_MS = 3000;
 
@@ -180,6 +203,17 @@ async function main(): Promise<void> {
       console.error(
         `\nREST services disagree on payload profile: ${[...profiles].join(', ')}.\n` +
           `All three must run the same profile or the condition is incoherent.\n`,
+      );
+      process.exit(1);
+    }
+
+    const served = [...profiles][0];
+    if (WANT_PROFILE !== null && served !== WANT_PROFILE) {
+      console.error(
+        `\nREST is serving profile=${served}, but --profile ${WANT_PROFILE} was requested.\n\n` +
+          `  PAYLOAD_PROFILE=${WANT_PROFILE} docker compose up -d --wait --force-recreate\n\n` +
+          `The profile is read at container start, so an already-running stack keeps\n` +
+          `the one it booted with. --force-recreate is the part that is easy to omit.\n`,
       );
       process.exit(1);
     }

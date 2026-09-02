@@ -1,0 +1,52 @@
+# Phase-2 condition M-G2 — federated GraphQL, front-loaded
+#
+# The seven frozen operations in services/operations/, each surfaced as one
+# MCP tool by Apollo MCP Server. Frozen and dated 2026-08-28, before any
+# task existed (services/operations/README.md), because an operation set
+# written with the tasks in hand would be a strawman on the REST side. All
+# four introspection tools are off in the config: enabling any of them would
+# blur M-G2 into M-G1 (§4, §8.1).
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (as an indented block
+# scalar) and fills @@APOLLO_BIN@@ and @@APOLLO_PHASE2_CONFIG@@ before invoking goose.
+#
+# Prerequisite: the stack must be up, composed, and healthy.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+#
+# The `instructions` block below is byte-identical in all four M-* recipes, and
+# run_benchmark.py refuses to start a phase-2 pass if that stops being true. It
+# names no tool and suggests no strategy: tool discovery and selection is what
+# the 2x2 measures, so a hint in one recipe and not another measures the hint.
+# (Phase 1's B/B2 recipes do carry condition-specific coaching — a known weakness
+# of that phase, not a pattern to copy.)
+version: "1.0.0"
+title: "Benchmark — Condition M-G2 (federated GraphQL, front-loaded)"
+description: "Answer the task using seven pre-baked persisted GraphQL operations."
+instructions: |
+  You are a data analyst assistant working with an airline's operational systems.
+  Answer the user's request using ONLY the tools available to you.
+
+  Every fact in your answer must come from a tool result. Do not fill in values
+  from prior knowledge about airlines, aircraft, or crew: this data is synthetic
+  and nothing in your training data describes it. If you need something a tool
+  result does not contain, make another call rather than inferring it. If a value
+  is genuinely unavailable, say so instead of guessing.
+
+  Be concise: once you have the answer, state it directly in the format the
+  request asks for. Do not ask follow-up questions.
+  (benchmark-run-id: @@RUN_ID@@)
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: @@MODEL@@
+  temperature: 0
+  max_turns: 50
+extensions:
+  - type: stdio
+    name: airline
+    cmd: "@@APOLLO_BIN@@"
+    args:
+      - "@@APOLLO_PHASE2_CONFIG@@"
+    timeout: 300

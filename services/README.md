@@ -47,6 +47,7 @@ pnpm expected    # regenerate tasks/expected.json — the phase-2 ground truth
 cd services && pnpm install && pnpm build   # build needs rover on PATH
 cd .. && docker compose up -d --build --wait
 cd services && pnpm health                  # REQUIRED — see below
+cd services && pnpm health --profile lean   # ...and assert the served REST profile
 pnpm verify:federation --live
 ```
 
@@ -62,7 +63,7 @@ the six app containers are healthy, not when the router is serving. (It even pri
 `Healthy` for the router — compose reports a container with no healthcheck as ready once
 the process starts.)
 
-`pnpm health` is the real gate, and it checks four things that have each already produced a
+`pnpm health` is the real gate, and it checks five things that have each already produced a
 wrong or nearly-wrong measurement:
 
 1. **All seven endpoints reachable** from the host.
@@ -73,7 +74,15 @@ wrong or nearly-wrong measurement:
    `docker compose restart router`.
 3. **All three REST services agree on payload profile** — a mismatch would silently average
    two conditions together.
-4. **Fixture provenance** — both `/__health` endpoints report per-entity hashes from
+4. **REST is serving the profile the caller asked for**, with `--profile fat|lean`. This is
+   the one the harness needs rather than the one you make by hand: `run_benchmark.py` runs
+   the fat and lean passes separately, and against a stack still up in `fat` a
+   `PAYLOAD_PROFILE=lean` pass produces 66 runs labelled lean and measured fat. Nothing
+   downstream can see it — both profiles answer every task correctly, only the byte counts
+   differ, and the byte counts are the finding. `PAYLOAD_PROFILE=lean docker compose up -d
+   --wait --force-recreate`; `--force-recreate` is the part that is easy to omit, since the
+   profile is read at container start.
+5. **Fixture provenance** — both `/__health` endpoints report per-entity hashes from
    `manifest.json`, and a mismatch (or an endpoint reporting no hashes, which is what a
    stale process looks like) is a hard failure. `verify:federation` checks this too, before
    measuring anything. See `src/tools/provenance.ts` for why `--live` alone cannot catch a
@@ -129,18 +138,23 @@ Two checks close that:
 Both have been verified to fail when they should, not just to pass. The fixture bulk stays
 gitignored (~7 MB, hash-pinned by `manifest.json`); the generated surfaces are ~90 KB.
 
-## Backend request accounting
+## Backend request accounting — a harness facility, not a reported metric
 
 Each subgraph exposes `GET /__metrics` on its GraphQL port + 100 (so `:5101`, `:5102`,
-`:5103`), and `DELETE` resets it. This feeds the `backend_requests` metric from
-PHASE2_PLAN.md §6 — the answer to "did you just move cost from the token bill to the
-infrastructure bill?"
+`:5103`), and `DELETE` resets it. `pnpm verify:federation` uses it to produce the fan-out
+column of PHASE2_PLAN.md §5.1.
 
-Entity resolution is batched with DataLoader (`src/server/graphql/context.ts`), which keeps
-fan-out **flat in N**: M3 at N=20 costs 4 backend requests, the same as M2 at N=1. Batching
-changes no token count. It exists so the infrastructure figure is representative of a
-production subgraph rather than understating federation for reasons unrelated to the
-protocol.
+It once fed a `backend_requests` metric, which was **cut from the study** (§6): that metric
+existed to answer "did you just move cost from the token bill to the infrastructure bill?",
+and the study measures inference cost and inference calls instead. Nothing in
+`run_benchmark.py` or `parse_logs.py` reads these endpoints, and nothing should — a global
+counter cannot be attributed to one of several parallel conditions anyway.
+
+What the endpoint is still for: entity resolution is batched with DataLoader
+(`src/server/graphql/context.ts`), which keeps fan-out **flat in N** — M3 at N=20 costs 4
+backend requests, the same as M2 at N=1. Batching changes no token count. It is evidence
+that the GraphQL side is not issuing a hidden N+1 behind the router, which keeps the
+comparison fair. That is verification, not a result.
 
 Loaders are created per request. Sharing them would cache across benchmark reps and make
 later reps artificially cheap.

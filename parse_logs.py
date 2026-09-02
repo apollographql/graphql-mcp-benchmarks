@@ -186,43 +186,6 @@ def parse_proxy(p: Path, task_model: str = "") -> dict:
     return {**agg, **extra}
 
 
-def _find_usage(obj):
-    if isinstance(obj, dict):
-        if "output_tokens" in obj or "input_tokens" in obj:
-            return obj
-        for v in obj.values():
-            found = _find_usage(v)
-            if found is not None:
-                return found
-    elif isinstance(obj, list):
-        for v in obj:
-            found = _find_usage(v)
-            if found is not None:
-                return found
-    return None
-
-
-def parse_goose(run_dir: Path) -> dict:
-    """Approximate cross-check from Goose snapshots (maps renamed cache field)."""
-    agg = {"input_tokens": 0, "output_tokens": 0, "cache_read_input_tokens": 0,
-           "n_inference_calls": 0}
-    for f in sorted(run_dir.glob("goose_llm_request*.jsonl")):
-        for line in f.read_text().splitlines():
-            try:
-                entry = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            u = _find_usage(entry)
-            if not u:
-                continue
-            agg["n_inference_calls"] += 1
-            agg["input_tokens"] += _num(u.get("input_tokens"))
-            agg["output_tokens"] += _num(u.get("output_tokens"))
-            agg["cache_read_input_tokens"] += _num(
-                u.get("cache_read_tokens", u.get("cache_read_input_tokens")))
-    return agg
-
-
 def completed(meta: Path, stdout: Path) -> bool:
     try:
         m = json.loads(meta.read_text())
@@ -243,7 +206,6 @@ def collect():
     for meta_path in sorted(RUNS.glob("*/*/rep*/meta.json")):
         run_dir = meta_path.parent
         meta = json.loads(meta_path.read_text())
-        goose = parse_goose(run_dir)
         run_model = meta.get("model", PRIMARY_MODEL).split(" ")[0]
         proxy = parse_proxy(run_dir / "proxy.jsonl", task_model=run_model)
         per_call = parse_proxy_per_call(run_dir / "proxy.jsonl", task_model=run_model)
@@ -253,7 +215,6 @@ def collect():
             "toolsets": meta.get("toolsets"), "goose_exit": meta.get("goose_exit"),
             "timed_out": meta.get("timed_out"), "budget_killed": meta.get("budget_killed", False),
             "duration_s": meta.get("duration_s"), "agent_active_s": proxy.get("agent_active_s", 0.0),
-            "rotation_truncated": meta.get("rotation_truncated"),
             "completed": completed(meta_path, run_dir / "stdout.txt"),
             **{f"proxy_{k}": proxy[k] for k, _ in METRICS},
             "aux_calls": proxy["aux_calls"], "aux_tokens": proxy["aux_tokens"],
@@ -271,10 +232,6 @@ def collect():
                 (c["cache_creation_input_tokens"] for c in per_call
                  if c["cache_creation_input_tokens"] > 0), 0
             ),
-            "goose_input_tokens": goose["input_tokens"],
-            "goose_output_tokens": goose["output_tokens"],
-            "goose_cache_read_input_tokens": goose["cache_read_input_tokens"],
-            "goose_n_inference_calls": goose["n_inference_calls"],
         }
         row["cost_usd"] = cost_usd(row, run_model)
         rows.append(row)
@@ -733,41 +690,44 @@ def write_summary(rows):
             lines.append(f"| **{c}** — {COND_LABEL[c]} | {t} | "
                          f"{fmt(w_m, w_sd)}s | {fmt(a_m, a_sd)}s |")
 
-    # --- audit / cross-check ---
-    lines.append("\n## Audit — proxy vs Goose JSONL cross-check & completion\n")
+    # --- audit / per-run disclosure ---
+    #
+    # This section used to print a proxy-vs-Goose cross-check. That column was
+    # retired (PHASE2_PLAN.md §8.2): Goose ignores GOOSE_LOG_DIR and writes to one
+    # XDG path that every parallel condition shared and cleared, so `goose calls`
+    # recorded which condition cleared the directory last. It read 0,5,0,0,0,0,5,0,6
+    # against a stable proxy 4,4,4 in the committed phase-1 report — a column that
+    # looks like corroboration and is not is worse than no column at all.
+    lines.append("\n## Audit — per-run disclosure & completion\n")
     task_models_str = ", ".join(f"`{m}`" for m in models_used)
     lines.append(f"Headline metrics count only **task-model** ({task_models_str}) calls. "
                  "`aux` = auxiliary calls on a different model (e.g. Goose session-title "
                  "generation on Haiku) — excluded from the headline, shown here for full "
                  "disclosure. `unparsed` should be 0.\n")
-    lines.append("| Cond | Task | Rep | proxy calls | goose calls | proxy in | goose in | "
-                 "proxy cache-read | goose cache-read | cost $ | wall_s | active_s | "
-                 "aux calls | aux tok | unparsed | completed | exit | rot? |")
-    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
+    lines.append("| Cond | Task | Rep | calls | input | cache-read | cost $ | wall_s | "
+                 "active_s | aux calls | aux tok | unparsed | completed | exit |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
         done_cell = "**$killed**" if r.get("budget_killed") else ("yes" if r["completed"] else "**NO**")
-        lines.append("| {condition} | {task_id} | {rep} | {pc} | {gc} | {pi} | {gi} | "
-                     "{prc} | {grc} | {cost} | {wall} | {active} | "
-                     "{aux} | {auxt} | {unp} | {done} | {exit} | {rot} |".format(
-                         pc=r["proxy_n_inference_calls"], gc=r["goose_n_inference_calls"],
-                         pi=r["proxy_input_tokens"], gi=r["goose_input_tokens"],
+        lines.append("| {condition} | {task_id} | {rep} | {pc} | {pi} | {prc} | "
+                     "{cost} | {wall} | {active} | "
+                     "{aux} | {auxt} | {unp} | {done} | {exit} |".format(
+                         pc=r["proxy_n_inference_calls"],
+                         pi=r["proxy_input_tokens"],
                          prc=r["proxy_cache_read_input_tokens"],
-                         grc=r["goose_cache_read_input_tokens"],
                          cost=f"${r['cost_usd']:.3f}",
                          wall=f"{r['duration_s']}s" if r["duration_s"] is not None else "—",
                          active=f"{r['agent_active_s']}s",
                          aux=r["aux_calls"], auxt=r["aux_tokens"],
                          unp=("**%d**" % r["unparsed_calls"]) if r["unparsed_calls"] else "0",
                          done=done_cell,
-                         exit=r["goose_exit"], rot="!" if r["rotation_truncated"] else "",
+                         exit=r["goose_exit"],
                          **r))
-    lines.append("\n*proxy = authoritative (raw `usage`, no rotation cap). goose = cross-check "
-                 "(its `llm_request.*.jsonl` logs the raw response, so it carries the literal "
-                 "`cache_read_input_tokens`; but only 10 request files are kept, so `rot?`=`!` "
-                 "means the Goose snapshot under-counts and the proxy figure stands). "
-                 "`completed=NO` = goose bailed early. `$killed` = runner killed goose when "
-                 "per-run cost exceeded `PER_RUN_BUDGET_USD` — the partial cost is real and "
-                 "reported; the answer is incomplete. Both should be re-run or excluded.*\n")
+    lines.append("\n*Every figure comes from the per-run proxy log — raw `usage` off the wire, "
+                 "one file per run, no shared state. `completed=NO` = goose bailed early. "
+                 "`$killed` = the runner killed goose when per-run cost exceeded "
+                 "`PER_RUN_BUDGET_USD` — the partial cost is real and reported; the answer is "
+                 "incomplete. Both should be re-run or excluded.*\n")
 
     (RESULTS / "summary.md").write_text("\n".join(lines) + "\n")
 

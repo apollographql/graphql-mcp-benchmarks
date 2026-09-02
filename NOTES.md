@@ -228,6 +228,15 @@ rather than a post-hoc explanation.
    fewer backend calls — only that its backend work stays flat while REST's context cost
    does not.
 
+   **Retired, not resolved — 2026-09-02.** `backend_requests` was cut from the study
+   (PHASE2_PLAN.md §6): the question it answered — "did you just move the cost to the
+   infrastructure bill?" — is out of scope, since what is being measured is inference cost
+   and inference calls. So this expectation will not be scored. Its *substance* was already
+   confirmed by the harness rather than the matrix: `pnpm verify:federation` shows 4 backend
+   requests for M3 at N=20, identical to M2 at N=1 (§5.1). That is now design verification —
+   evidence the GraphQL side is not issuing a hidden N+1 — and not a result. Left in place
+   unedited because a prediction that gets descoped should be visibly descoped, not deleted.
+
 5. **M-G2 (pre-baked operations) may need MORE tool calls than M-G1 on some tasks.** A
    frozen operation set sized to the domain will not perfectly fit every task; M2 is
    expected to need two operations (roster + airworthiness) where M-G1 writes one ad-hoc
@@ -601,3 +610,95 @@ tool-design effect.
     "did you just move the cost to the infrastructure bill?" — and an unattributable number
     cannot answer it. Options in §8.2; the cheapest honest one is to measure it in a serial
     pass, since backend fan-out is a property of the query plan rather than of the agent.
+
+    **Resolved 2026-09-02 — by deleting the metric, not by attributing it.** Asked whether
+    `backend_requests` was load-bearing before engineering a way to scope it: it is not. The
+    study measures inference cost and inference calls, both fully captured per run by the
+    proxy log, and speculating about an infrastructure bill from a synthetic local stack
+    would not have answered the reviewer's question anyway. The attribution problem
+    disappeared with the metric.
+
+    Worth keeping as a sequence: the race was found by asking what evidence proves the agent
+    did the work, and then it was *dismissed* by asking whether that evidence was needed. The
+    first question is the one that finds bugs; the second is the one that stops you fixing
+    them. Both of §8.2's races ended this way — see surprise 34.
+
+31. **A swept prompt is wrong at one end of its own sweep, and only rendering shows you.**
+    M1 was written as "For flight numbers {{ids}} … cover all {{n}}", which reads fine at
+    N=20 and reads *"For flight numbers AA5751, … cover all 1."* at N=1. It sat in
+    `tasks.yaml` through a review, a guard suite, and eleven generated ground-truth cells
+    without anyone noticing, because nothing that ran over it ever produced the literal
+    string a model would see. `run_benchmark.py` rendering all thirteen cells did, on its
+    first execution.
+
+    The fix is small — put the count in a parenthetical the sentence never has to agree
+    with, "the following flight numbers ({{n}} total)" — but the general rule is worth
+    keeping: **a prompt with a swept parameter has to be read at both ends of the sweep, not
+    at the middle.** English grammar is a hidden dependency on N.
+
+    This is also the argument for the runner rendering and validating every prompt *before*
+    the first run rather than lazily per run. It costs nothing, it turns three classes of
+    error (unresolved placeholder, missing cell, phase mismatch) into a startup failure
+    instead of a mid-matrix one, and it is the only step that puts the actual model-visible
+    text in front of a human.
+
+32. **The payload profile is a property of the stack, so it cannot be a condition.** §4 lists
+    six phase-2 condition cells, four of them `M-R*-fat` / `M-R*-lean`. But the REST services
+    read `PAYLOAD_PROFILE` at container start, so the runner cannot switch it per condition:
+    six cells are two passes over four conditions, and the `M-G*` pair runs in only one of
+    them because a GraphQL query names its own fields.
+
+    Two consequences worth writing down. The run **directory** has to carry the profile
+    (`runs/M-R1-fat/…`) or the second pass silently overwrites the first, while `meta.json`
+    keeps it a separate field so the report can keep it a column — §11 is right that baking
+    it into the condition id doubles every table, but storage and reporting want different
+    things here. And the gate needs `pnpm health --profile lean`: without it,
+    `PAYLOAD_PROFILE=lean ./bench.sh run` against a stack still up in `fat` produces 66 runs
+    labelled lean and measured fat, and **nothing downstream can detect it** — both profiles
+    answer every task correctly, only the byte counts differ, and the byte counts are the
+    finding. `--force-recreate` is the part that is easy to omit.
+
+33. **The recipes' `instructions` block is a measurement surface, so it is now enforced
+    identical.** It is the system prompt: it enters every run's cached prefix, so a sentence
+    present in one condition and absent from another shifts both the token counts and the
+    agent's strategy on one side of the comparison. Phase 1 did not treat it that way — B's
+    recipe says "do NOT call `introspect`", B2's carries a full schema-discovery workflow,
+    A's says neither — which is a real caveat on phase 1's protocol comparison that we
+    should state rather than repeat.
+
+    The four phase-2 recipes therefore share one block, generated once, and
+    `_assert_symmetric_instructions()` refuses to start a pass if they diverge. A comment
+    saying "keep these identical" is exactly the kind of instruction that loses over time.
+    They also share one Goose extension name (`airline`), because Goose namespaces tool
+    names by extension and a longer name on one side of the comparison would shift its
+    prefix bytes — a detail small enough to have gone unnoticed and systematic enough to
+    matter across 198 runs.
+
+    The one instruction the block does carry, identically everywhere: every fact must come
+    from a tool result, the data is synthetic, and an unavailable value should be reported as
+    unavailable rather than guessed. That is the fair form of surprise 29's concern — it
+    targets fabrication rather than tool choice, so it cannot bias the comparison, and it
+    turns an ungrounded answer into a measured failure instead of a missing instruction.
+
+34. **Two shared-resource races, both retired instead of fixed.** §8.2 listed two things to
+    fix before the matrix: Goose's shared log directory (which parallel conditions were
+    actively deleting from) and `/__metrics` (a global counter six parallel conditions would
+    have interleaved). Both were real, both were correctly diagnosed, and neither was fixed.
+    The Goose cross-check column was retired and `backend_requests` was descoped, so both
+    races are now gone by construction — `run_benchmark.py` no longer touches any path
+    outside its own run directory, and nothing reads `/__metrics` during a run.
+
+    The pattern is worth naming because the instinct runs the other way. Both had obvious
+    engineering fixes — per-run log isolation, a run-id header the request accounting buckets
+    on — and both fixes would have worked. The question that made them unnecessary was
+    "**what does this column let us claim, and do we need that claim?**" For the Goose
+    snapshot: a second opinion about the same API calls the proxy already records
+    authoritatively per run. For `backend_requests`: a rebuttal to a question about
+    infrastructure cost that this study is not making a claim about.
+
+    The corollary is the uncomfortable half. A diagnosed bug creates real pressure to fix it
+    — the analysis is done, the fix is clear, and *not* fixing it feels like leaving work
+    unfinished. But a column nobody needs is still maintenance, still a thing that can be
+    misread, and in the Goose case it was actively misleading: it looked like corroboration
+    while recording which condition cleared the directory last. Deleting it removed the race,
+    the maintenance, and the misreading at once.

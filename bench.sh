@@ -45,6 +45,11 @@ fi
 : "${ENABLE_ROVER:=0}"
 : "${CONDITIONS:=}"   # comma-separated subset, e.g. A1,B2 — empty means all
 : "${TASKS:=}"        # comma-separated subset, e.g. T2    — empty means all
+# Which payload profile the phase-2 REST stack is serving. The REST services read
+# it at container start, so this only DECLARES what is running; the gate in
+# run_benchmark.py asks the stack and refuses to proceed if they disagree. The six
+# phase-2 cells are two passes: fat (all four M-* conditions) then lean (M-R* only).
+: "${PAYLOAD_PROFILE:=fat}"
 # Download version for the apollo-mcp-server binary. Deliberately NOT named with
 # the APOLLO_MCP_ prefix: the Apollo MCP server reads every APOLLO_MCP_* env var
 # as a config override, so APOLLO_MCP_VERSION parses as the unknown config key
@@ -52,7 +57,7 @@ fi
 # .env for back-compat, then unset it so it can't leak into the server process.
 : "${APOLLO_BIN_VERSION:=${APOLLO_MCP_VERSION:-v1.14.0}}"
 unset APOLLO_MCP_VERSION
-export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION CONDITIONS TASKS
+export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION CONDITIONS TASKS PAYLOAD_PROFILE
 
 # shellcheck source=lib/setup.sh
 . "$PROJECT_ROOT/lib/setup.sh"

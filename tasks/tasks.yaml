@@ -74,16 +74,25 @@
 # for something neither surface serves. The prompt sketch in §5 said "departing
 # SFO on <date>" and the prompt was simply wrong — noted here because it is the
 # second time that exact class of error has been caught in this task.
+#
+# {{n}} appears as a parenthesized count — "flight numbers ({{n}} total)" — and
+# never as a noun the sentence has to agree with. M1's first wording ended "cover
+# all {{n}}" and opened "For flight numbers {{ids}}", which rendered at N=1 as
+# "For flight numbers AA5751, ... cover all 1." A swept prompt is written once and
+# read at every N, so any phrasing that assumes the plural is wrong at one end of
+# the sweep. This surfaced the moment run_benchmark.py rendered all thirteen cells
+# for the first time — which is the argument for rendering them before running any.
 tasks:
   - id: M1
     phase: 2
     ns: [1, 5, 20, 50]
     title: Scheduled departure and gate for N flights — one service, batchable
     prompt: |
-      For flight numbers {{ids}}, report the scheduled departure time in UTC
-      (YYYY-MM-DDTHH:MM:SSZ) and the departure gate. If a flight has no gate
-      assigned, say so rather than guessing. Present the results as a list, one
-      flight per line, and cover all {{n}}.
+      Report the scheduled departure time in UTC (YYYY-MM-DDTHH:MM:SSZ) and the
+      departure gate for the following flight numbers ({{n}} total): {{ids}}. If
+      a flight has no gate assigned, say so rather than guessing. Present the
+      results as a list, one flight per line, and cover every flight number
+      listed.
   - id: M2
     phase: 2
     ns: [1]
