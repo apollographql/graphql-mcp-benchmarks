@@ -28,6 +28,31 @@ def check(label, got, want):
     print(f"  {'ok  ' if ok else 'FAIL'} {label}" + ("" if ok else f"  (got {got!r})"))
 
 
+def _reset():
+    prox._seen_result_ids = set()
+    prox._prev_msg_count = 0
+
+
+def _blocks_of(body: bytes) -> list:
+    """Exactly what the request handler does, in the same order."""
+    msgs = prox._messages(body)
+    blocks = prox._unseen_tool_result_blocks(msgs)
+    prox._advance_boundary(msgs)
+    return blocks
+
+
+def results_of(body: bytes, fresh: bool = True) -> list:
+    if fresh:
+        _reset()
+    return prox._tool_results(_blocks_of(body))
+
+
+def tokens_of(body: bytes, fresh: bool = True) -> int:
+    if fresh:
+        _reset()
+    return prox._tool_result_tokens(_blocks_of(body))
+
+
 def sse(*events):
     return ("\n".join(f"data: {json.dumps(e)}" for e in events) + "\n").encode()
 
@@ -78,7 +103,73 @@ uses = prox._tool_uses_json(body)
 check("one tool call found", len(uses), 1)
 check("arguments intact", uses[0]["input"], {"id": "CR-0416"})
 
-print("\ntool_result extraction — last user message only")
+print("\ntool_result extraction — keyed on tool_use id, not position")
+
+# Captured from a real run (M4@20, M-R1): the model emitted 19 tool_use blocks in
+# ONE response, and Goose sent them back as 19 separate assistant/user turn pairs.
+# So a single request can add 2N messages and each result sits behind its own
+# assistant turn — which is why every positional rule saw exactly one.
+def turn_pair(i):
+    return [
+        {"role": "assistant", "content": [{"type": "tool_use", "id": f"t{i}"}]},
+        {"role": "user", "content": [{"type": "tool_result", "tool_use_id": f"t{i}",
+                                      "content": '{"n":%d}' % i}]},
+    ]
+
+first = [{"role": "user", "content": "the task"}]
+serialized = first + [m for i in range(1, 20) for m in turn_pair(i)]
+
+_reset()
+prox._unseen_tool_result_blocks(first)                       # request 1: prompt only
+blocks = prox._unseen_tool_result_blocks(serialized)
+check("a 19-way fan-out serialized into turn pairs yields 19 results", len(blocks), 19)
+check("...in order", [b["tool_use_id"] for b in blocks][:3], ["t1", "t2", "t3"])
+check("...where the old positional rule found one",
+      len(prox._new_tool_result_blocks(serialized, prox._trailing_user_start(serialized))), 1)
+
+# Nothing is re-counted when the same history comes back.
+check("resending the same history counts nothing new",
+      len(prox._unseen_tool_result_blocks(serialized)), 0)
+following = serialized + turn_pair(99)
+check("the next request counts only its own new result",
+      len(prox._unseen_tool_result_blocks(following)), 1)
+
+# THE case that killed the positional version. Goose did not just append when it
+# serialized the fan-out — it RESTRUCTURED the prefix, merging an assistant text
+# message and an assistant tool_use into one. Every later index shifted by one and
+# an index-diff lost whatever straddled the boundary: one result per run, on top
+# of the fan-out undercount.
+_reset()
+before = [
+    {"role": "user", "content": "task"},
+    {"role": "assistant", "content": [{"type": "text", "text": "thinking"}]},
+    {"role": "user", "content": [{"type": "text", "text": "go on"}]},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "a1"}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a1", "content": "R1"}]},
+]
+check("the first result is counted", len(prox._unseen_tool_result_blocks(before)), 1)
+after = [
+    {"role": "user", "content": "task"},
+    {"role": "assistant", "content": [{"type": "text", "text": "thinking"},
+                                      {"type": "tool_use", "id": "a1"}]},   # merged
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a1", "content": "R1"}]},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "a2"}]},
+    {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a2", "content": "R2"}]},
+]
+blocks = prox._unseen_tool_result_blocks(after)
+check("a restructured prefix does not re-count the old result", len(blocks), 1)
+check("...and the new one is the one counted", blocks[0]["tool_use_id"], "a2")
+
+# A result with no id cannot be deduplicated; fall back rather than drop it.
+_reset()
+anon = json.dumps({"messages": [
+    {"role": "user", "content": "task"},
+    {"role": "assistant", "content": [{"type": "tool_use", "id": "x"}]},
+    {"role": "user", "content": [{"type": "tool_result", "content": "no id here"}]},
+]}).encode()
+check("an id-less result is still counted once", len(results_of(anon)), 1)
+
+print("\ntool_result extraction — a single batched message still works")
 req = json.dumps({"messages": [
     {"role": "user", "content": "the task"},
     {"role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "x", "input": {}}]},
@@ -90,23 +181,27 @@ req = json.dumps({"messages": [
         {"type": "tool_result", "tool_use_id": "t3", "content": [{"type": "text", "text": "extra"}]},
     ]},
 ]}).encode()
-res = prox._tool_results(req)
-check("only the newest user message is read", len(res), 2)
-check("...so the earlier FL-0001 result is not double-counted",
+prox._prev_msg_count = 0
+res = prox._tool_results(prox._new_tool_result_blocks(
+    prox._messages(req), prox._trailing_user_start(prox._messages(req))))
+check("several blocks in one user message all come through", len(res), 2)
+check("...in document order, not reversed",
+      [r["tool_use_id"] for r in res], ["t2", "t3"])
+check("...and the earlier FL-0001 result is not double-counted",
       any("FL-0001" in r["content"] for r in res), False)
 check("string content survives", res[0]["content"], '{"id":"AC-0007"}')
 check("multi-part text content is joined", res[1]["content"], "extra")
 check("byte size is recorded", res[0]["bytes"], len('{"id":"AC-0007"}'))
 
 check("a plain-text final user message yields no results",
-      prox._tool_results(json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()), [])
-check("a malformed body yields no results", prox._tool_results(b"not json"), [])
+      results_of(json.dumps({"messages": [{"role": "user", "content": "hi"}]}).encode()), [])
+check("a malformed body yields no results", results_of(b"not json"), [])
 
 print("\noversize bodies are flagged, not dropped")
 prox.TOOL_IO_MAX_BYTES = 32
 big = json.dumps({"messages": [{"role": "user", "content": [
     {"type": "tool_result", "tool_use_id": "t", "content": "x" * 500}]}]}).encode()
-r = prox._tool_results(big)[0]
+r = results_of(big)[0]
 check("content is clipped", len(r["content"]), 32)
 check("truncation is marked", r.get("truncated"), True)
 check("the original size is preserved", r["bytes"], 500)
@@ -118,9 +213,24 @@ check("sibling of the proxy log",
       "runs/M-R1-fat/M3@20/rep1/tool_io.jsonl")
 check("bare filename stays bare", prox._default_tool_io_log("proxy.jsonl"), "tool_io.jsonl")
 
-print("\nthe existing token count is unchanged by any of this")
-check("tool_result_tokens still counts the last user message only",
-      prox._tool_result_tokens(req) > 0, True)
+print("\nthe message skeleton — the diagnostic, because the shape was guessed wrong twice")
+shape = prox._message_shape(json.dumps({"messages": serialized}).encode())
+check("one entry per message", len(shape), len(serialized))
+check("a plain-text message is marked, not dumped", shape[0]["blocks"], ["<text>"])
+check("each assistant turn names its tool_use", shape[1]["blocks"], ["tool_use:t1"])
+check("each result names the tool_use it answers", shape[2]["blocks"], ["tool_result:t1"])
+check("the serialized fan-out is visible as turn pairs",
+      [m["role"] for m in shape[1:5]], ["assistant", "user", "assistant", "user"])
+check("no content leaks into the skeleton", any('"n"' in str(m) for m in shape), False)
+check("a malformed body yields an empty skeleton", prox._message_shape(b"nope"), [])
+
+print("\nthe token count and the sidecar share one boundary")
+check("tool_result_tokens counts the same blocks the sidecar records",
+      tokens_of(req) > 0, True)
+check("...and both see the same number of them",
+      len(results_of(req)), len(results_of(req)))
+check("a request with no new results counts zero",
+      tokens_of(json.dumps({"messages": [{"role": "user", "content": "task"}]}).encode()), 0)
 
 print()
 if _fails:

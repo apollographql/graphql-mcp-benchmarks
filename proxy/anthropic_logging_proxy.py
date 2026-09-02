@@ -84,6 +84,11 @@ TOOL_IO_LOG = _default_tool_io_log(PROXY_LOG) if _TOOL_IO_ENV is None else _TOOL
 # grounding check looks for. A block over the cap is recorded truncated and
 # flagged, never dropped without a trace.
 TOOL_IO_MAX_BYTES = int(os.environ.get("TOOL_IO_MAX_BYTES", str(4 * 1024 * 1024)))
+# Record the request's message skeleton (roles + block types, no content) on each
+# sidecar line. On by default: it is a few KB per run and it is the only thing
+# that can settle how the agent framework lays out parallel tool results, which
+# has already been guessed wrong twice.
+TOOL_IO_DEBUG_SHAPE = os.environ.get("TOOL_IO_DEBUG_SHAPE", "1") == "1"
 RUN_LABEL = os.environ.get("RUN_LABEL", "")
 HOST = os.environ.get("PROXY_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -121,41 +126,173 @@ async def _get_client() -> httpx.AsyncClient:
     return _client
 
 
-def _tool_result_tokens(body: bytes) -> int:
-    """Count tokens in the most-recent tool_result blocks sent to the model.
+def _message_shape(body: bytes) -> list:
+    """A tiny skeleton of the request's `messages`: roles and block types only.
 
-    Each API call carries the full conversation history. We look only at the
-    last user message — that's where the newest tool results appear. Prior user
-    messages were already counted in earlier proxy log entries, so this gives
-    per-call tool-payload tokens without double-counting.
+    Diagnostic, opt-in via TOOL_IO_DEBUG_SHAPE=1. It exists because I twice
+    reasoned about how Goose lays out parallel tool results, twice wrote a fix
+    against the shape I had assumed, and twice found the real runs disagreed.
+    Content is deliberately excluded — this is about structure, and the bodies are
+    already in the sidecar.
 
-    Content can be a plain string or a list of typed blocks (Anthropic's
-    multi-part tool_result format). Both are handled.
+    Cheap enough to leave on: a 100-call run adds a few KB.
     """
     try:
         parsed = json.loads(body)
     except (json.JSONDecodeError, ValueError):
-        return 0
-    messages = parsed.get("messages") or []
-    for msg in reversed(messages):
+        return []
+    out = []
+    for msg in parsed.get("messages") or []:
+        content = msg.get("content")
+        if isinstance(content, str):
+            out.append({"role": msg.get("role"), "blocks": ["<text>"]})
+            continue
+        blocks = []
+        for b in content or []:
+            if not isinstance(b, dict):
+                blocks.append("<raw>")
+                continue
+            t = b.get("type")
+            if t == "tool_use":
+                blocks.append(f"tool_use:{b.get('id')}")
+            elif t == "tool_result":
+                blocks.append(f"tool_result:{b.get('tool_use_id')}")
+            else:
+                blocks.append(str(t))
+        out.append({"role": msg.get("role"), "blocks": blocks})
+    return out
+
+
+# The tool_use ids whose results have already been recorded. One proxy process
+# per run, so this state is per-run by construction.
+#
+# Identity rather than position, because the history is NOT reliably append-only:
+# when Goose serialized a 19-way fan-out it also RESTRUCTURED the prefix, merging
+# an `assistant[text]` and an `assistant[tool_use]` into one message. That shifted
+# every later index by one, and an index-diff boundary lost exactly the results
+# that straddled it — one per run, on top of the fan-out undercount. A tool_use id
+# appears exactly once no matter how the transcript is rearranged.
+_seen_result_ids: set = set()
+_prev_msg_count = 0  # retained only for the no-id fallback below
+
+
+def _unseen_tool_result_blocks(messages: list) -> list:
+    """Tool results in this request whose tool_use id has not been recorded yet.
+
+    Three earlier versions of this boundary were all phrased positionally — "the
+    last user message", "since the last assistant turn", "since the previous
+    request's message count" — and each lost payloads to a transcript shape it did
+    not anticipate. Position is the wrong key: the client is free to rewrite the
+    history, and Goose does. An id is not.
+
+    A result block with no `tool_use_id` (malformed, or a client that omits it)
+    falls back to the positional rule so it is counted once rather than never.
+    """
+    fresh, anonymous = [], []
+    for msg in messages:
         if msg.get("role") != "user":
             continue
         content = msg.get("content") or []
         if isinstance(content, str):
-            return 0  # plain-text user message, no tool results
-        total = 0
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
+            continue
+        for b in content:
+            if not isinstance(b, dict) or b.get("type") != "tool_result":
                 continue
-            rc = block.get("content") or ""
-            if isinstance(rc, str):
-                total += _tok_count(rc)
-            elif isinstance(rc, list):
-                for part in rc:
-                    if isinstance(part, dict) and part.get("type") == "text":
-                        total += _tok_count(part.get("text") or "")
-        return total  # stop after the last user message (total may be 0)
-    return 0
+            tid = b.get("tool_use_id")
+            if tid is None:
+                anonymous.append(b)
+            elif tid not in _seen_result_ids:
+                _seen_result_ids.add(tid)
+                fresh.append(b)
+    if anonymous:
+        # Positional fallback, applied only to blocks we cannot identify.
+        cut = _trailing_user_start(messages)
+        fresh += [b for b in _new_tool_result_blocks(messages, cut)
+                  if b.get("tool_use_id") is None]
+    return fresh
+
+
+def _new_tool_result_blocks(messages: list, start: int) -> list:
+    """The tool_result blocks in `messages[start:]` — i.e. new since the last call.
+
+    **Getting this boundary right took three attempts, and the first two were
+    wrong in ways that passed their own tests.**
+
+    v1 read only the request's LAST user message, reasoning that each API call
+    resends the whole conversation so only the newest message holds anything new.
+    v2 walked back over every trailing user message and stopped at the most recent
+    assistant message. Both undercounted a fan-out by the fan-out factor: a call
+    that issued 19 parallel tool calls recorded ONE payload.
+
+    The actual shape, from a captured message skeleton: when the model emits N
+    tool_use blocks in one response, **Goose serializes them into N separate
+    assistant/user turn pairs** in the history it sends next —
+    `assistant[tool_use:1] user[tool_result:1] assistant[tool_use:2] ...`. So a
+    single request can add 2N new messages, and every one of those N results
+    genuinely does sit behind its own assistant turn. Any rule phrased in terms of
+    "the last turn" therefore sees exactly one, no matter how wide the fan-out.
+
+    Indexing against the previous request's length has no shape assumption in it
+    at all, which is the point. It also cannot double-count: an append-only
+    history means each message is new exactly once.
+    """
+    groups = []
+    for msg in messages[start:]:
+        if msg.get("role") != "user":
+            continue
+        content = msg.get("content") or []
+        if isinstance(content, str):
+            continue  # a plain-text user message (the task prompt) carries none
+        blocks = [b for b in content
+                  if isinstance(b, dict) and b.get("type") == "tool_result"]
+        if blocks:
+            groups.append(blocks)
+    return [b for group in groups for b in group]
+
+
+def _messages(body: bytes) -> list:
+    try:
+        return json.loads(body).get("messages") or []
+    except (json.JSONDecodeError, ValueError, AttributeError):
+        return []
+
+
+def _advance_boundary(messages: list) -> int:
+    """Return the index where this request's new messages begin, and move it on.
+
+    A history that SHRANK means the client compacted or restarted the
+    conversation; the index is meaningless then, so fall back to counting only
+    the trailing user messages rather than silently re-counting the whole
+    history as new.
+    """
+    global _prev_msg_count
+    n = len(messages)
+    start = _prev_msg_count if _prev_msg_count <= n else _trailing_user_start(messages)
+    _prev_msg_count = n
+    return start
+
+
+def _trailing_user_start(messages: list) -> int:
+    """Index of the first message in the trailing run of non-assistant messages."""
+    i = len(messages)
+    while i > 0 and messages[i - 1].get("role") != "assistant":
+        i -= 1
+    return i
+
+
+def _block_text(block: dict) -> str:
+    rc = block.get("content") or ""
+    if isinstance(rc, str):
+        return rc
+    if isinstance(rc, list):
+        return "".join(part.get("text") or "" for part in rc
+                       if isinstance(part, dict) and part.get("type") == "text")
+    return ""
+
+
+def _tool_result_tokens(blocks: list) -> int:
+    """Tokens in the tool results new to this call."""
+    return sum(_tok_count(_block_text(b)) for b in blocks)
 
 
 def _clip(text: str) -> tuple:
@@ -166,42 +303,23 @@ def _clip(text: str) -> tuple:
     return text[:TOOL_IO_MAX_BYTES], True, n
 
 
-def _tool_results(body: bytes) -> list:
-    """The tool results carried by this request's LAST user message.
+def _tool_results(blocks: list) -> list:
+    """The same blocks the token count saw, with their bodies.
 
-    Same rule as `_tool_result_tokens`: each API call resends the whole
-    conversation, so only the newest user message holds results not already
-    recorded by an earlier log line. Reading any further back would double-count.
+    Both readers are handed one list computed once per request, so the sidecar
+    and `tool_result_tokens` cannot disagree about which results belong to which
+    call — one owner for that boundary.
     """
-    try:
-        parsed = json.loads(body)
-    except (json.JSONDecodeError, ValueError):
-        return []
     out = []
-    for msg in reversed(parsed.get("messages") or []):
-        if msg.get("role") != "user":
-            continue
-        content = msg.get("content") or []
-        if isinstance(content, str):
-            return []
-        for block in content:
-            if not isinstance(block, dict) or block.get("type") != "tool_result":
-                continue
-            rc = block.get("content") or ""
-            if isinstance(rc, str):
-                text = rc
-            else:
-                text = "".join(part.get("text") or "" for part in rc
-                               if isinstance(part, dict) and part.get("type") == "text")
-            text, truncated, orig = _clip(text)
-            entry = {"tool_use_id": block.get("tool_use_id"),
-                     "is_error": bool(block.get("is_error")),
-                     "bytes": orig, "content": text}
-            if truncated:
-                entry["truncated"] = True
-            out.append(entry)
-        return out  # stop at the last user message, even if it had none
-    return []
+    for block in blocks:
+        text, truncated, orig = _clip(_block_text(block))
+        entry = {"tool_use_id": block.get("tool_use_id"),
+                 "is_error": bool(block.get("is_error")),
+                 "bytes": orig, "content": text}
+        if truncated:
+            entry["truncated"] = True
+        out.append(entry)
+    return out
 
 
 def _tool_uses_sse(raw: bytes) -> list:
@@ -417,6 +535,15 @@ async def app(scope, receive, send):
     _call_seq += 1
     call_index = _call_seq
 
+    # The new-message boundary is computed ONCE per request and handed to both
+    # readers, so the token count and the sidecar can never disagree about which
+    # results belong to which call. It also advances state, so it must not be
+    # called twice for the same request.
+    msgs = _messages(body) if is_messages else []
+    new_blocks = _unseen_tool_result_blocks(msgs) if is_messages else []
+    if is_messages:
+        _advance_boundary(msgs)  # keeps the positional fallback's state current
+
     rec = {
         "run_label": RUN_LABEL,
         "ts": started,
@@ -426,7 +553,9 @@ async def app(scope, receive, send):
         "request_id": request_id,
         "call": call_index,
         "duration_s": round(time.time() - started, 3),
-        "tool_result_tokens": _tool_result_tokens(body) if is_messages else 0,
+        "tool_result_tokens": _tool_result_tokens(new_blocks),
+        "n_tool_results": len(new_blocks),
+        "n_messages": len(msgs),
     }
     rec.update(parsed)
     await _write_log(rec)
@@ -439,12 +568,15 @@ async def app(scope, receive, send):
             uses = (_tool_uses_sse(bytes(buf)) if "text/event-stream" in content_type
                     else _tool_uses_json(bytes(buf)) if "application/json" in content_type
                     else [])
-            results = _tool_results(body)
-            await _write_tool_io({
+            results = _tool_results(new_blocks)
+            entry = {
                 "run_label": RUN_LABEL, "ts": started, "call": call_index,
                 "request_id": request_id, "model": rec.get("model"),
                 "tool_use": uses, "tool_result": results,
-            })
+            }
+            if TOOL_IO_DEBUG_SHAPE:
+                entry["messages"] = _message_shape(body)
+            await _write_tool_io(entry)
         except Exception as exc:
             try:
                 await _write_tool_io({"run_label": RUN_LABEL, "ts": started,

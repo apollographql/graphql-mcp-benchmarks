@@ -238,61 +238,82 @@ check("a flipped overall verdict is caught",
 print("\nforced_serial_depth — dependency, not sequencing")
 
 
-def call(i, uses, results):
+def call(i, uses, arriving):
+    """One sidecar record, in the shape the proxy actually writes.
+
+    `arriving` are the tool results that came IN WITH this request — they answer
+    the PREVIOUS call's tool_use — and `uses` are the tool calls that went out in
+    this response. Earlier versions of these fixtures put a call's own results in
+    its own record, which is not what the sidecar contains; the code and the
+    fixtures shared that mistake, so the tests passed and a real M4 run reported
+    depth 1 for a 2-deep chain.
+    """
     return {"call": i, "ts": float(i),
-            "tool_use": [{"id": f"t{i}", "name": n, "input": a} for n, a in uses],
-            "tool_result": [{"tool_use_id": f"t{i}", "content": c} for c in results]}
+            "tool_use": [{"id": f"t{i}.{k}", "name": n, "input": a}
+                         for k, (n, a) in enumerate(uses)],
+            "tool_result": [{"tool_use_id": f"t{i-1}.{k}", "content": c}
+                            for k, c in enumerate(arriving)]}
 
 
-# The REST shape for M2: flight -> aircraftId -> aircraft, each unlocking the next.
+# REST's M2 shape: flight -> aircraftId -> model -> crewId -> crew, each hop
+# needing an id the previous response returned.
+prompt_m2 = "For flight FL-0001, determine whether every assigned pilot..."
 chain = [
-    call(1, [("getFlight", {"id": "FL-0001"})], ['{"id":"FL-0001","aircraftId":"AC-0007"}']),
-    call(2, [("getAircraft", {"id": "AC-0007"})], ['{"id":"AC-0007","model":"A359"}']),
-    call(3, [("listAssignment", {"aircraftModel": "A359"})], ['{"crewId":"CR-0416"}']),
-    call(4, [("getCrewMember", {"id": "CR-0416"})], ['{"name":"Harper Ueda"}']),
+    call(1, [("getFlight", {"id": "FL-0001"})], []),
+    call(2, [("getAircraft", {"id": "AC-0007"})], ['{"id":"FL-0001","aircraftId":"AC-0007"}']),
+    call(3, [("listAssignment", {"aircraftModel": "A359"})], ['{"id":"AC-0007","model":"A359"}']),
+    call(4, [("getCrewMember", {"id": "CR-0416"})], ['{"crewId":"CR-0416","role":"CAPTAIN"}']),
+    call(5, [], ['{"id":"CR-0416","name":"Harper Ueda"}']),
 ]
-r = grade.forced_serial_depth(chain, prompt="For flight FL-0001, determine whether...")
-check("a four-deep dependency chain measures 4", r["forced_serial_depth"], 4)
-check("...and names what linked it", r["depth_linked_by"], ["CR-0416"])
+r = grade.forced_serial_depth(chain, prompt=prompt_m2)
+check("a four-hop dependency chain measures 4", r["forced_serial_depth"], 4)
+check("...and names what linked its deepest hop", r["depth_linked_by"], ["CR-0416"])
 
-# Four independent lookups of ids the PROMPT supplied are depth 1, not depth 4.
-prompt = "For flight numbers AA5751, DL2753, AS4422, UA9039, report the gate."
-independent = [
-    call(i + 1, [("getFlight", {"flightNumber": n})], ['{"flightNumber":"%s","gate":"B38"}' % n])
-    for i, n in enumerate(["AA5751", "DL2753", "AS4422", "UA9039"])
+# M4's real shape, from the captured run: one list call, then a fan-out over ids
+# that list returned — and BOTH sit in the same sidecar record.
+m4 = [
+    call(1, [("listFlight", {"origin": "SFO", "limit": 20})], []),
+    call(2, [("listAircraftAdvisories", {"id": f"AC-{i:04d}"}) for i in range(1, 20)],
+         ['{"items":[' + ",".join('{"aircraftId":"AC-%04d"}' % i for i in range(1, 20)) + ']}']),
+    call(3, [], ['{"advisories":[]}']),
 ]
-r = grade.forced_serial_depth(independent, prompt=prompt)
-check("independent calls on prompt-supplied ids are depth 1", r["forced_serial_depth"], 1)
+r = grade.forced_serial_depth(m4, prompt="Consider the first 20 flights ... from SFO.")
+check("a fan-out over ids the previous response returned is depth 2",
+      r["forced_serial_depth"], 2)
 
-# The case the prompt correction actually exists for, and the shape M3 produces on
-# REST: a list fetch whose response echoes the ids the PROMPT already supplied,
-# followed by per-record calls using those same ids. The agent could have issued
-# all of them at once, so this is depth 1 — but the id does appear in an earlier
-# result, so without the correction it reads as a chain.
-m3_prompt = "For each of these flights — FL-0001, FL-0002, FL-0003 — determine whether..."
+# Ids the PROMPT supplied are not a discovered dependency: the agent could have
+# issued all of these at once.
+prompt_m1 = "Report ... for the following flight numbers (4 total): AA5751, DL2753, AS4422, UA9039."
+NUMS = ["AA5751", "DL2753", "AS4422", "UA9039"]
+# The shape that needs the correction: a list fetch whose response echoes the ids
+# the prompt already supplied, then a per-record call using one of them. Nothing
+# was discovered — the agent could have issued all of these at once — but the id
+# does appear in an earlier response, so without the correction it reads as a chain.
 echoed = [
-    call(1, [("listFlight", {"ids": "FL-0001,FL-0002,FL-0003"})],
-         ['{"items":[{"id":"FL-0001"},{"id":"FL-0002"},{"id":"FL-0003"}]}']),
-    call(2, [("listAssignment", {"flightId": "FL-0002"})], ['{"crewId":"CR-0416"}']),
-    call(3, [("listAssignment", {"flightId": "FL-0003"})], ['{"crewId":"CR-0757"}']),
+    call(1, [("listFlight", {"flightNumbers": ",".join(NUMS)})], []),
+    call(2, [("getFlight", {"flightNumber": "DL2753"})],
+         ['{"items":[' + ",".join('{"flightNumber":"%s"}' % n for n in NUMS) + ']}']),
+    call(3, [("getFlight", {"flightNumber": "AS4422"})], ['{"flightNumber":"DL2753"}']),
 ]
-check("prompt-supplied ids echoed by a list fetch do not create a dependency",
-      grade.forced_serial_depth(echoed, prompt=m3_prompt)["forced_serial_depth"], 1)
+check("prompt-supplied ids echoed by a list fetch are not a dependency",
+      grade.forced_serial_depth(echoed, prompt=prompt_m1)["forced_serial_depth"], 1)
 check("...whereas omitting the prompt inflates the same calls to a chain",
       grade.forced_serial_depth(echoed, prompt="")["forced_serial_depth"] > 1, True)
 
-# One federated query: everything in a single call, so depth 1 by construction.
-one_shot = [call(1, [("FlightRoster", {"flightId": "FL-0001"})],
-                 ['{"flight":{"aircraft":{"model":"A359"},"crew":[{"name":"Harper Ueda"}]}}'])]
+# One federated call: nothing to chain to.
+one_shot = [
+    call(1, [("FlightRoster", {"flightId": "FL-0001"})], []),
+    call(2, [], ['{"flight":{"aircraft":{"model":"A359"},"crew":[{"name":"Harper Ueda"}]}}']),
+]
 check("a single federated call is depth 1",
-      grade.forced_serial_depth(one_shot, prompt=prompt)["forced_serial_depth"], 1)
+      grade.forced_serial_depth(one_shot, prompt=prompt_m2)["forced_serial_depth"], 1)
 
 # A GraphQL query is one long string argument; ids inside it must still count.
 gql = [
-    call(1, [("graphql_execute", {"query": "query { flight(id: \"FL-0001\") { aircraftId } }"})],
+    call(1, [("graphql_execute", {"query": 'query { flight(id: "FL-0001") { aircraftId } }'})], []),
+    call(2, [("graphql_execute", {"query": 'query { aircraft(id: "AC-0007") { model advisories { requiresGrounding } } }'})],
          ['{"data":{"flight":{"aircraftId":"AC-0007"}}}']),
-    call(2, [("graphql_execute", {"query": "query { aircraft(id: \"AC-0007\") { model advisories { requiresGrounding } } }"})],
-         ['{"data":{"aircraft":{"model":"A359"}}}']),
+    call(3, [], ['{"data":{"aircraft":{"model":"A359"}}}']),
 ]
 check("ids inside a GraphQL query string are found",
       grade.forced_serial_depth(gql, prompt="")["forced_serial_depth"], 2)

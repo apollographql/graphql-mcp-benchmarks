@@ -531,7 +531,20 @@ def forced_serial_depth(calls: list, prompt: str = "") -> dict:
         supplied |= set(FLIGHT_NUMBER.findall(prompt))
         supplied |= _leaf_strings(prompt.split())
 
-    produced = [_result_values(c) - supplied for c in calls]
+    # A sidecar record for call i holds the results that ARRIVED WITH its request
+    # and the tool_use blocks that came back in its response. Those results answer
+    # call i-1's tool calls, so they are *produced by* call i-1 — attribute them
+    # there, or a dependency inside a single record is invisible.
+    #
+    # That off-by-one is not academic: M4's real shape is one `listFlight`
+    # followed by 19 `listAircraftAdvisories` calls whose ids came from that
+    # list's response. Both sit in the same record, so the un-shifted version
+    # reported depth 1 for a genuinely 2-deep chain — and depth 1 is exactly what
+    # the GraphQL side predicts, so it would have read as a confirmed hypothesis.
+    produced = [set() for _ in calls]
+    for i, c in enumerate(calls):
+        if i > 0:
+            produced[i - 1] = _result_values(c) - supplied
     consumed = [_argument_values(c) - supplied for c in calls]
 
     depth = [1] * len(calls)

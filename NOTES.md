@@ -874,3 +874,185 @@ tool-design effect.
     and nothing checks them, so they age silently while the numbers beside them stay live.
     Both generators are now parameterised by phase, and the summary groups its table so a row
     from one experiment is never printed as if comparable with the other.
+
+42. **The primary instrument was undercounting tool payloads by roughly an order of magnitude
+    whenever the agent fanned out — and had been since phase 1.** Found by the phase-2 smoke
+    run, in a way that only real data could produce.
+
+`_tool_result_tokens()` counted the tool_result blocks in the request's **last user
+    message**, on the reasoning that each API call resends the whole conversation so only the
+    newest message holds results not already logged.
+
+**It took three attempts, and the first two passed their own tests.**
+
+    *v1 — the parser drops blocks.* Disproved: phase 1's A1 counted 5 parallel results as
+    4,548 tokens, so several blocks in one message read fine.
+
+    *v2 — Goose appends each result as its own user message, so reading only the last drops
+    the rest.* I changed the rule to walk back over trailing user messages to the last
+    assistant message, wrote a regression test for that shape, watched it pass, and declared
+    it fixed. A real run then disagreed: the fix landed at 12:58:43, a re-run started at
+    13:01:28, and it **still recorded 1 result at a 4-way fan-out.**
+
+    *v3 — what actually happens*, from a captured message skeleton: when the model emits N
+    tool_use blocks in one response, **Goose serializes them into N separate assistant/user
+    turn pairs** in the history it sends next —
+    `assistant[tool_use:1] user[tool_result:1] assistant[tool_use:2] user[tool_result:2] ...`.
+    A single request adds 2N messages, and each of those N results genuinely does sit behind
+    its own assistant turn. So *any* rule phrased in terms of "the last turn" sees exactly
+    one, however wide the fan-out. Both v1 and v2 were rules of that form.
+
+    *v3 — index against the previous request's message count.* Better: a real 19-way fan-out
+    went from 2 results captured to 19. But still one short of 20 on every fan-out run, and
+    the reason is instructive. **The history is not reliably append-only.** When Goose
+    serialized the fan-out it also *restructured the prefix*, merging an `assistant[text]` and
+    an `assistant[tool_use]` into a single message; every later index shifted by one and the
+    diff lost whatever straddled the boundary.
+
+    *v4 — key on `tool_use_id`.* Position was the wrong key all along: the client is free to
+    rewrite the transcript, and does. An id appears exactly once however the history is
+    rearranged. Replayed over five live runs, v4 captures **every** result — 20/20, 9/9, 9/9,
+    3/3, 1/1 — where v3 lost one on each of the two fan-out runs. (A result block without a
+    `tool_use_id` cannot be deduplicated, so those fall back to the positional rule and are
+    counted once rather than never.)
+
+    Four versions, and the through-line is that **the first three were all positional**. Each
+    encoded a different guess about where new data sits in a transcript someone else
+    controls.
+
+    **A fix verified only against a shape you invented is not verified.** Three times a
+    passing test proved my parser handled my hypothesis, which was never the thing in doubt.
+    What broke the loop was recording the actual structure — roles and block types, no
+    content, a few KB per run — instead of reasoning about it again. That capture is now on by
+    default, because the next surprise of this kind will also be a shape question.
+
+    The deeper lesson is about choosing a key. Every positional rule is a bet on someone
+    else's serialization staying put. **When the upstream gives you a stable identifier, key
+    on the identifier** — it is not merely more robust, it removes the class of bug rather
+    than the instance.
+
+    The evidence is Anthropic's own accounting, which is what makes it airtight. On
+    `M-G1/M1@5/rep3`, call 7 emitted 4 parallel `graphql_execute` calls; call 8 recorded
+    **one** 113-byte result and 40 tool-payload tokens, while `cache_creation_input_tokens`
+    grew **613** tokens. One result plus 333 output tokens accounts for ~373. Four results
+    account for ~493–613. The delta fits four and cannot fit one.
+
+    Phase 1 is worse, because REST is where the fan-out lives. `A1/T1/rep1` recorded a total
+    of **6,401** tool-payload tokens across the run, while `cache_creation_input_tokens` grew
+    31,385 and then 63,240 tokens on the two calls that carried results — against
+    `output_tokens` of 440 and 439. `NOTES.md` already records `list_pull_requests` over five
+    PRs as 82,301 bytes, which alone is ~20k tokens. So the published `tool-payload tok`
+    column understates REST's payload by something like 10×, and **the exact figure is not
+    recoverable**: the count was computed in the proxy at request time and only the total was
+    stored, so re-parsing cannot fix it. Those runs would have to be re-run.
+
+    Three things worth keeping.
+
+    **The error was conservative for the thesis, which is why nothing looked wrong.** The
+    undercount hits REST conditions specifically — they are the ones making parallel calls —
+    so it *understated* the effect the study exists to measure. An error that flatters your
+    hypothesis gets caught; one that handicaps it does not. B and B2 show
+    `cache_creation` of 0 throughout and a single tool call each, so their 419 is right, and
+    the column looked internally consistent.
+
+    **Cost and call counts are unaffected.** Those come from Anthropic's `usage` verbatim —
+    input, output, cache_read, cache_creation — and never touched `tool_result_tokens`. The
+    headline phase-1 claims (inference calls, USD, the stage-cost split) all stand. One
+    column is wrong, and it is not one any published claim rests on.
+
+    **The set of new blocks is computed once per request and handed to both readers**, so
+    `tool_result_tokens` and the sidecar cannot disagree about which results belong to which
+    call. `proxy.jsonl` also gained `n_tool_results` and `n_messages`, which is what made the
+    v3 residual findable by arithmetic instead of another guess.
+
+    And a note on the fix itself: my first version reversed the flat block list to restore
+    chronological order, which put a batched message's own blocks backwards. An existing test
+    for the single-batched-message shape caught it immediately. The correct reversal is at
+    *message* granularity — blocks within a message are already in order.
+
+43. **The grounding gate's first real finding was a false positive, and that was the right
+    outcome.** The smoke run flagged `M-G1/M1@5/rep3` as fabricated: a perfect answer (F1
+    1.00) stating 15 facts, 9 of which appeared in no recorded tool result. Three of the five
+    flights' departure times and gates were nowhere in the corpus — not even their flight
+    numbers.
+
+    It was measurement loss, not fabrication (surprise 42): the results arrived — Anthropic's
+    own cache accounting says so — and the proxy did not record them, for a reason still
+    unestablished. But note what the gate did with an instrument that was quietly broken. It
+    did not average a suspect run into the accuracy column, it named the specific facts it
+    could not trace, and it forced someone to go and look — which is how the underlying bug
+    was found. A gate that had said "5 of 6 verified, looks fine" would have hidden both the
+    false positive *and* the ten-year-old undercount behind it.
+
+    The design choice that made this work is the three-state return: `True` / `False` /
+    `None`, never `True` by default. A binary gate would have had to guess, and the safe guess
+    (pass) is the one that hides bugs.
+
+44. **A bare `./bench.sh run` planned 156 runs across both phases, and only a down stack
+    stopped it.** After making `bench.sh` phase-aware I left `run_benchmark.py`'s condition
+    default as "every condition in `CONDITIONS`" — which now meant all eight, both phases.
+    `bench.sh` chose `RUNS_DIR=runs/phase1` (its default for an unfiltered selection), so the
+    132 phase-2 runs would have been written *inside* the phase-1 tree, producing something
+    `parse_logs.py` refuses to parse, after spending roughly $10-20.
+
+    It didn't happen because `services_up()` gated on the phase-2 stack and the stack was
+    down. That is luck, not design: the guard that saved it was checking something else
+    entirely. The runner now refuses a mixed-phase selection outright and defaults to phase 1
+    only, with phase 2 opt-in by naming its conditions.
+
+    The general shape is worth naming: **when you split a pipeline by some dimension, every
+    stage needs to agree on the default for that dimension.** I taught `bench.sh` and
+    `parse_logs.py` about phases and left the component in the middle — the one that spends
+    the money — with the old global default.
+
+45. **The fan-out I needed to diagnose was a recovery behaviour, not a structural one — so it
+    didn't reproduce.** The M-G1 runs that exposed the undercount fanned out because the agent
+    passed a comma-joined *string* to a list argument:
+
+        flightsByNumbers(flightNumbers: "AA5751,DL2753,AS4422,AS1452,AS1876")
+
+    GraphQL coerces a single value to a one-element list, so that asks for one flight whose
+    number is the whole comma-joined string. The router correctly returned `[]`. The agent
+    then recovered by issuing one query per flight — four in parallel — and that fan-out is
+    what revealed the dropped payloads.
+
+    Two things follow. **It is not reproducible on demand**: of three reps, two fanned out and
+    one did not, and a later run took an entirely different path (ten sequential calls, no
+    fan-out at all). Asking for "the same cells again" to diagnose a fan-out bug was therefore
+    a wasted run — my mistake, and an obvious one in hindsight. To diagnose a fan-out you have
+    to pick a task that *structurally requires* one, not one where it happens to arise.
+    `listAircraftAdvisories` takes a single required `id` with no batch form, so M4 forces one
+    detail call per aircraft; that is the reliable inducer.
+
+    And **the recovery itself is a real observation about GraphQL tool use** worth keeping for
+    the writeup: a list argument is the one place where a plausible-looking mistake returns
+    empty data rather than an error, because coercion makes it valid. The agent recovered
+    within one turn and still got the right answer, but it cost four extra calls — an
+    error-recovery cost that shows up as inference calls, which is exactly what this study
+    measures. Watch for it in the matrix rather than treating it as noise.
+
+46. **`forced_serial_depth` reported 1 for a genuinely 2-deep chain, and the test fixtures
+    shared the code's mistake.** M4's real shape, from the captured run: one `listFlight`, then
+    19 `listAircraftAdvisories` calls whose aircraft ids came out of that list's response. That
+    is a dependency — the agent could not have issued the 19 without the first — so depth 2.
+    It measured 1.
+
+    The cause is an attribution off-by-one. A sidecar record for call *i* holds the tool
+    results that **arrived with its request** together with the tool_use blocks that went out
+    in its **response**. Those arriving results answer call *i−1*'s tool calls, so they are
+    produced by *i−1*. I had attributed them to *i*, which put the fan-out's cause and effect
+    in the same record, and the depth walk only links strictly earlier records — so it saw
+    nothing.
+
+    What makes this worth writing down is that **my unit-test fixtures encoded the same
+    assumption.** The helper built each record with a call's own results in its own record,
+    which is not what the sidecar contains. Code and fixtures agreed, seven assertions passed,
+    and the metric was wrong. Only real data disagreed — and it took the *right* real data:
+    M1@5 never fans out, so it could not have shown this either.
+
+    And note the direction, again: depth 1 for REST is precisely what the GraphQL hypothesis
+    predicts. A metric that quietly confirms your thesis is the one to distrust — this is the
+    second time in one session that a bug produced the expected answer (surprise 42 was the
+    other), and both times the expectedness is why it survived.
+
+    The fixtures now mirror the sidecar's real shape, with the M4 fan-out as an explicit case.

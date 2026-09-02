@@ -386,18 +386,40 @@ SUMMARY_EOF
 
 # ---------------------------------------------------------------------------
 do_run() {
-  echo "== run matrix =="
+  local phase; phase=$(selected_phase) || return 1
+  echo "== run matrix (phase $phase) =="
   ensure_prereqs_min
   # GitHub MCP (A1/A2) needs Docker; skip the check only if the filter excludes them.
   if [ -z "${CONDITIONS:-}" ] || [[ ",$CONDITIONS," == *",A1,"* ]] || [[ ",$CONDITIONS," == *",A2,"* ]]; then
     ensure_docker
   fi
-  uv run "$PROJECT_ROOT/run_benchmark.py"
+  # Each phase gets its own tree. run_benchmark.py's own services_up() gate handles
+  # the phase-2 stack; this just keeps the two sets of artifacts apart.
+  RUNS_DIR="$PROJECT_ROOT/runs/phase$phase" uv run "$PROJECT_ROOT/run_benchmark.py"
+}
+
+# Which phase the selected CONDITIONS belong to. Refuses a mix for the same reason
+# parse_logs.py does: they are separate experiments against separate backends, and
+# a merged tree invites the invalid comparison. Empty CONDITIONS defaults to 1,
+# the historical behaviour.
+selected_phase() {
+  local one=0 two=0
+  if [ -z "${CONDITIONS:-}" ]; then echo 1; return 0; fi
+  wants_phase 1 && one=1
+  wants_phase 2 && two=1
+  if [ "$one" = 1 ] && [ "$two" = 1 ]; then
+    echo "ERROR: CONDITIONS mixes phases ($CONDITIONS). Run each phase separately —" >&2
+    echo "       they use different backends and produce separate reports." >&2
+    return 1
+  fi
+  [ "$two" = 1 ] && echo 2 || echo 1
 }
 
 do_parse() {
-  echo "== parse =="
-  python3 "$PROJECT_ROOT/parse_logs.py"
+  local phase; phase=$(selected_phase) || return 1
+  echo "== parse (phase $phase) =="
+  RESULTS_DIR="$PROJECT_ROOT/results/phase$phase" \
+    python3 "$PROJECT_ROOT/parse_logs.py" "$PROJECT_ROOT/runs/phase$phase"
 }
 
 do_clean() {

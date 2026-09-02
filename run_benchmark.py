@@ -154,7 +154,11 @@ def _running_cost_usd(proxy_log: Path, model: str) -> float:
         )
     return total
 
-RUNS_DIR = ROOT / "runs"
+# Where run artifacts land. bench.sh sets this per phase (runs/phase1, runs/phase2)
+# so the two never share a tree: parse_logs.py refuses a mixed directory, and a
+# phase-2 parse writing over phase-1's report would be unrecoverable (results/ is
+# gitignored). Mirrors parse_logs.py's RESULTS_DIR.
+RUNS_DIR = Path(env("RUNS_DIR", str(ROOT / "runs")))
 RECIPES = ROOT / "recipes"
 TASKS_YAML = ROOT / "tasks" / "tasks.yaml"
 EXPECTED_JSON = ROOT / "tasks" / "expected.json"
@@ -608,6 +612,35 @@ def main():
     conds = [c for c in CONDITIONS if not ONLY or c in ONLY]
     if not conds:
         sys.exit(f"no conditions selected (CONDITIONS={ONLY}, available={list(CONDITIONS)})")
+
+    # One phase per invocation. Two reasons, and the second is the expensive one.
+    #
+    # The phases write into separate trees (bench.sh sets RUNS_DIR per phase) and
+    # parse_logs.py refuses a mixed directory, so a mixed run would put phase-2
+    # runs inside runs/phase1 and produce a tree nothing can parse.
+    #
+    # And an unfiltered CONDITIONS used to mean "every condition in both phases":
+    # a bare `./bench.sh run` planned 156 runs — the phase-1 matrix plus 132
+    # phase-2 runs, roughly $10-20 — and only failed because the phase-2 stack
+    # happened to be down. Defaulting to phase 1 keeps the historical behaviour
+    # of that command; phase 2 is opt-in by naming its conditions.
+    if not ONLY:
+        conds = [c for c in conds if cond_phase(c) == 1]
+        print("No CONDITIONS set — running phase 1 only. Phase 2 is opt-in:\n"
+              "  CONDITIONS=M-R1,M-R2,M-G1,M-G2 ./bench.sh run\n")
+    else:
+        by_phase = {}
+        for c in conds:
+            by_phase.setdefault(cond_phase(c), []).append(c)
+        if len(by_phase) > 1:
+            detail = "; ".join(f"phase {ph}: {', '.join(cs)}" for ph, cs in sorted(by_phase.items()))
+            sys.exit(
+                f"CONDITIONS mixes phases ({detail}).\n"
+                f"Run each phase separately: they serve different backends, write to "
+                f"different trees, and produce separate reports."
+            )
+    if not conds:
+        sys.exit(f"no conditions left after phase filtering (CONDITIONS={ONLY})")
 
     # A phase-2 pass runs at one payload profile; conditions the profile cannot
     # reach are skipped loudly, because a silent skip reads as a missing result.

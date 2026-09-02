@@ -45,10 +45,25 @@ would-be F1 of 1.00 (§11 item 4).
 drift against a pinned baseline**. It caught drift immediately — M-R1's `tools_list_bytes` had
 moved 9,440 → 9,601 back in `14d8973` and nothing had said so (§8.1).
 
-**NEXT: step 7 item 5 — the smoke run.** Everything buildable without inference is built. The
-smoke run is the first step needing the API key, and it also settles the two harness caps
-(`MAX_TURNS=50`, `RUN_TIMEOUT=420`) and whether a 127k-token tool result errors cleanly or
-truncates silently. Commands are in §9 step 7.
+**The first smoke run has happened** — 6 runs, M-R1 and M-G1 on M1@5, haiku, all exit 0, no
+timeouts. It found a **measurement bug in the proxy that predates phase 1**: tool payloads
+were undercounted by roughly 10× whenever the agent made parallel tool calls, because Goose
+appends each result as its own user message and `_tool_result_tokens` read only the last one.
+Fixed, with a regression test and the evidence, in §11 under "What the smoke run found".
+Accuracy was 1.00 on both conditions; the one run flagged as fabricated was a false positive
+caused by that same bug.
+
+The smoke run also found two metric bugs, both now fixed and both of which had quietly
+produced the answer the GraphQL hypothesis predicts: `tool_result_tokens` undercounted a
+fan-out by the fan-out factor, and `forced_serial_depth` read 1 for a 2-deep chain. Details in
+§11 under "What the smoke run found".
+
+**NEXT: re-run the smoke cells on the fixed instrument** — the six M1@5 runs plus M-R1/M4@20,
+cents — and confirm the tool-payload, pass-through and depth numbers land where the replay
+predicts. Then the M4@103 `-fat` run for the harness caps (`MAX_TURNS=50`,
+`RUN_TIMEOUT=420`) and the 127k-token-result question. Do not start the 198-run matrix until
+those numbers are confirmed against a live run: `tool_result_tokens` feeds
+`pass_through_tokens`, one of the two headline phase-2 metrics.
 
 The part of step 7 that is easy to skip and shouldn't be: **§7.1's `answer_grounded` gate**
 — a lucky guess on M2 or M4@20 otherwise scores as a cheap success, and phase 1 already
@@ -1392,8 +1407,16 @@ reads `RESULTS_DIR`, so phase 1 and phase 2 can be written side by side:
 RESULTS_DIR=results/phase1 python3 parse_logs.py runs/phase1
 ```
 
-Move the phase-1 outputs into `results/phase1/` before the first phase-2 parse — the
-directory is gitignored, so an overwrite is unrecoverable.
+✅ **Done 2026-09-02, and `bench.sh` now handles it.** The layout is `runs/phase1/`,
+`runs/phase2/`, `results/phase1/`, `results/phase2/`, and `do_run` / `do_parse` derive the
+phase from the `CONDITIONS` filter (refusing a mix, like `parse_logs.py` does) and set
+`RUNS_DIR` / `RESULTS_DIR` accordingly. So `CONDITIONS=M-R1,M-G1 ./bench.sh parse` writes
+phase-2's report to `results/phase2/` with no env vars to remember.
+
+That mattered immediately: a plain `./bench.sh parse` after the smoke run would have written
+phase-2 over phase-1's `results/`, which is gitignored and unrecoverable. It didn't, because
+`parse_logs.py`'s phase-mixing guard refused the merged `runs/` tree first — the guard
+catching a real accident within a day of being written.
 
 ### Separately: the phase-1 `capture/` evidence is gone
 
@@ -1532,6 +1555,98 @@ a sidecar showing only a schema search. The report catches it:
 That row is the whole reason the gate exists: a guess that lands inflates accuracy and
 deflates cost at the same time, corrupting both columns in the same direction. It is excluded
 from the accuracy means and reported separately, never averaged in.
+
+### What the smoke run found — ⚠️ a pre-existing proxy bug, fixed 2026-09-02
+
+Six runs (M-R1 and M-G1 on M1@5, haiku, 3 reps) all completed with exit 0. `answer_f1` was
+1.00 for both conditions, the sidecar was written, and the grader read real model prose
+correctly. It also found this, which 72 synthetic runs could not:
+
+**`tool_result_tokens` undercounts tool payloads by roughly 10× on any call that fans out —
+confirmed. The cause is still unknown.** `_tool_result_tokens()` counted the tool_result
+blocks in the request's *last user message*; a 4-way fan-out records one payload.
+
+**The mechanism, from a captured message skeleton.** When the model emits N tool_use blocks
+in one response, Goose serializes them into N separate assistant/user **turn pairs** in the
+history it sends next:
+
+```
+user[text] assistant[tool_use:1] user[tool_result:1] assistant[tool_use:2] user[tool_result:2] ...
+```
+
+A single request adds 2N messages, and each of the N results genuinely sits behind its own
+assistant turn. So *any* rule phrased in terms of "the last turn" sees exactly one, however
+wide the fan-out — which is why two successive fixes failed: both were rules of that form.
+
+**The fix keys on `tool_use_id`, not position.** An index diff against the previous request
+got a real 19-way fan-out from 2 results to 19 — but stayed one short of 20, because the
+history is *not* reliably append-only: serializing the fan-out also restructured the prefix,
+merging an `assistant[text]` and an `assistant[tool_use]` into one message and shifting every
+later index. Position was the wrong key all along; a `tool_use_id` appears exactly once
+however the transcript is rearranged.
+
+Replayed over five live runs, the id-keyed rule captures **every** result — 20/20, 9/9, 9/9,
+3/3, 1/1 — where the index rule lost one on each fan-out run. `proxy.jsonl` now also records
+`n_tool_results` and `n_messages`, which is what made that residual findable by arithmetic
+rather than another guess.
+
+The proof is Anthropic's own accounting. On `M-G1/M1@5/rep3`, call 7 emitted 4 parallel
+`graphql_execute` calls; call 8 recorded **one** 113-byte result and 40 tool-payload tokens
+while `cache_creation_input_tokens` grew **613**. One result plus 333 output tokens accounts
+for ~373; four accounts for the rest.
+
+| Run | recorded `tool_result_tokens` | `cache_creation` growth on the calls carrying results |
+|---|---|---|
+| `A1/T1/rep1` (phase 1) | 6,401 total | +31,385 then +63,240 (output 440 / 439) |
+| `M-G1/M1@5/rep3` | 40 at call 8 | +613 (output 333) |
+
+**Consequences, in order of importance:**
+
+1. **Phase 1's `tool-payload tok` column understates REST by roughly an order of magnitude,
+   and it is not recoverable.** The count was computed in the proxy at request time and only
+   the total was stored, so re-parsing cannot fix it — those runs would have to be re-run.
+2. **Nothing else in phase 1 is affected.** Inference calls, USD, and the stage-cost split
+   come from Anthropic's `usage` verbatim and never touched `tool_result_tokens`. No published
+   claim rests on the broken column.
+3. **The error was conservative**, which is why it survived: it hit only the conditions making
+   parallel calls — the REST ones — so it *understated* the very effect the study measures. B
+   and B2 made one tool call each and were counted correctly, so the column looked internally
+   consistent.
+4. **`pass_through_tokens` inherits the exact total**, so it is low by the same factor on any
+   run with parallel calls. Its *fraction* (percent-unused) is unaffected — that comes from
+   the sidecar bodies that were recorded — so the percentages are usable now and the absolute
+   token figures are not.
+
+**Fixed on the fourth attempt**, and the through-line is that the first three were all
+positional — each a different guess about where new data sits in a transcript the client
+controls. **A fix verified only against a shape you invented is not verified**; three times a
+passing test proved the parser handled the hypothesis, which was never what was in doubt. What
+broke the loop was recording the actual structure instead of reasoning about it again — every
+sidecar line now carries the request's message skeleton (roles and block types, no content,
+`TOOL_IO_DEBUG_SHAPE`, on by default, a few KB per run). And the general rule: **when the
+upstream hands you a stable identifier, key on the identifier.**
+
+**A second metric was wrong for a related reason: `forced_serial_depth` read 1 for a 2-deep
+chain.** A sidecar record holds the results that *arrived with* its request alongside the
+tool_use blocks that went out in its *response*; those results answer the previous call, so
+they are produced by it. Attributing them to the current record put the fan-out's cause and
+effect in the same place and the dependency became invisible. M4's real run now reports depth
+2. The unit fixtures had encoded the same assumption as the code — they agreed, and both were
+wrong — so they now mirror the sidecar's actual shape.
+
+Note the direction of both errors: undercounted REST payloads and depth 1 for REST are exactly
+what the GraphQL hypothesis predicts. **A metric that quietly confirms the thesis is the one to
+distrust.** Runs recorded before these fixes (`runs/_phase2-preproxyfix`, and the M4@20 run)
+carry the old numbers and should be re-run rather than reinterpreted.
+
+**And the grounding gate's first real finding was a false positive — correctly.** It flagged
+`M-G1/M1@5/rep3` as fabricated: F1 1.00, 15 facts stated, 9 untraceable, three flights' times
+and gates absent from the corpus entirely. That was the dropped payloads, not a guess. But the
+gate refused to average a suspect run into accuracy, named the facts it could not trace, and
+sent someone to look — which is how the undercount was found. A gate that had reported "5 of 6
+verified" would have hidden the false positive *and* the bug behind it. The three-state return
+(`True` / `False` / `None`, never `True` by default) is what made that possible: a binary gate
+must guess, and the safe guess is the one that hides bugs.
 
 ### What carries over unchanged
 
