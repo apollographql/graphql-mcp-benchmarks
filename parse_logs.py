@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """Parse benchmark logs -> results/summary.md + summary.csv + raw.csv + charts.
 
-Primary source: each run's proxy.jsonl (raw Anthropic usage, no rotation loss).
-Cross-check: the snapshotted Goose llm_request.*.jsonl (Goose renames Anthropic's
-cache_read_input_tokens -> cache_read_tokens; we map it back). The five required
-metrics — plus cache_creation separately — are reported per condition per task as
-mean ± stdev over the reps. Cache tokens are NEVER folded into input_tokens.
+Sole source: each run's proxy.jsonl (raw Anthropic usage, one file per run). The
+Goose llm_request.*.jsonl cross-check was retired — see PHASE2_PLAN.md §8.2. The
+required metrics — plus cache_creation separately — are reported per condition per
+task as mean ± stdev over the reps. Cache tokens are NEVER folded into input_tokens.
+
+Phase 1 (A*/B*/C, GitHub's live API) and phase 2 (M-*, the synthetic stack in
+services/) are DIFFERENT REPORTS: different API, different domain, different tool
+surfaces, and a different correctness metric. This script refuses to parse a runs
+directory containing both, rather than emitting a merged table that invites the
+comparison (§11).
 
 Generates: summary.md (narrative findings + tables + audit), summary.csv, raw.csv,
            and summary_charts.png (requires matplotlib — skipped gracefully if absent).
 
 stdlib + optional matplotlib. Usage: python3 parse_logs.py [runs_dir]
+                             Env:   RESULTS_DIR=results/phase1
 """
 import csv
 import json
@@ -18,6 +24,8 @@ import os
 import statistics
 import sys
 from pathlib import Path
+
+import grade
 
 try:
     import matplotlib
@@ -45,13 +53,29 @@ METRICS = [
     ("cache_creation_input_tokens", "cache-create tok"),
     ("tool_result_tokens", "tool-payload tok"),
 ]
-MCP_CONDS = ["A1", "A2", "B", "B2"]
+# Every condition this script knows how to report, in report order, by phase.
+# A condition that appears in `runs/` but not here is a hard error: the previous
+# behaviour was to filter rows against a hardcoded list, which meant an unknown
+# condition vanished from the report with no message — a confident-looking output
+# quietly missing half the experiment (§11).
+PHASE_CONDS = {
+    1: ["A1", "A2", "B", "B2", "C"],
+    2: ["M-R1", "M-R2", "M-G1", "M-G2"],
+}
+COND_PHASE = {c: ph for ph, cs in PHASE_CONDS.items() for c in cs}
+# Conditions whose numbers belong in the same table. Phase 1 keeps C out of it
+# (CLI-as-tool, not MCP, reported separately); all four phase-2 conditions are MCP.
+MCP_CONDS = ["A1", "A2", "B", "B2", "M-R1", "M-R2", "M-G1", "M-G2"]
 COND_LABEL = {
     "A1": "REST (default toolset)",
     "A2": "REST (minimal toolset)",
     "B": "GraphQL (Apollo MCP)",
     "B2": "GraphQL (Rover Schema MCP)",
     "C": "GraphQL (rover CLI, no MCP)",
+    "M-R1": "REST (one tool per endpoint)",
+    "M-R2": "REST (search + describe + request)",
+    "M-G1": "GraphQL (search + describe + execute)",
+    "M-G2": "GraphQL (frozen persisted operations)",
 }
 COND_SHORT = {
     "A1": "A1\nREST (default)",
@@ -59,7 +83,131 @@ COND_SHORT = {
     "B":  "B\nApollo MCP",
     "B2": "B2\nRover MCP",
     "C":  "C\nRover CLI",
+    "M-R1": "M-R1\nREST front-loaded",
+    "M-R2": "M-R2\nREST on-demand",
+    "M-G1": "M-G1\nGraphQL on-demand",
+    "M-G2": "M-G2\nGraphQL front-loaded",
 }
+
+
+TASKS_EXPECTED = ROOT / "tasks" / "expected.json"
+FIXTURE_MANIFEST = ROOT / "services" / "fixtures" / "manifest.json"
+_EXPECTED = None
+
+
+def expected_cells() -> dict:
+    """`tasks/expected.json`, loaded once and only when a phase-2 run needs it.
+
+    Loaded lazily so a phase-1 parse never depends on the phase-2 backend existing,
+    and refused outright when the fixtures have moved on — grading against a stale
+    ground truth marks correct answers wrong, which reads as the agent getting
+    worse rather than as a data problem.
+    """
+    global _EXPECTED
+    if _EXPECTED is None:
+        try:
+            _EXPECTED = grade.load_expected(TASKS_EXPECTED, FIXTURE_MANIFEST)
+        except grade.StaleGroundTruth as e:
+            sys.exit(f"refusing to grade phase-2 runs:\n{e}")
+        except FileNotFoundError as e:
+            sys.exit(f"cannot grade phase-2 runs: {e}\nRun `cd services && pnpm expected`.")
+    return _EXPECTED
+
+
+# Grading columns, added to phase-2 rows only. Kept in one list so raw.csv, the
+# accuracy table, and the blank phase-1 case cannot disagree about the schema.
+GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_coverage",
+                "graded_items", "correct_items", "missing_keys", "unparsed_values",
+                "answer_grounded", "needs_review", "grade_notes"]
+
+
+def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
+    """Grade one phase-2 run's answer. Rules come from expected.json (§7.1)."""
+    task_id = meta["task_id"]
+    cell = expected_cells().get(task_id)
+    if cell is None:
+        cells = ", ".join(k for k in expected_cells() if k != "_meta")
+        sys.exit(f"{run_dir}: task {task_id} has no cell in {TASKS_EXPECTED.name} "
+                 f"(cells: {cells}). Refusing to guess how to grade it.")
+
+    stdout_path = run_dir / "stdout.txt"
+    raw = stdout_path.read_text() if stdout_path.exists() else ""
+    # Grade the closing reply, never the transcript: Goose echoes tool ARGUMENTS,
+    # which contain the very keys the graders anchor on. See grade.final_answer.
+    result = grade.grade(cell, grade.final_answer(raw))
+    grounded, why = grade.answer_grounded(proxy.get("n_tool_calls"))
+    notes = list(result["notes"])
+    if grounded is False:
+        notes.insert(0, why)
+    return {
+        "answer_f1": result["answer_f1"],
+        "answer_precision": result["precision"],
+        "answer_recall": result["recall"],
+        "answer_coverage": result["coverage"],
+        "graded_items": result["graded_items"],
+        "correct_items": result["correct_items"],
+        "missing_keys": len(result["missing_keys"]),
+        "unparsed_values": len(result["unparsed_keys"]),
+        "answer_grounded": grounded,
+        "needs_review": result["needs_review"],
+        "grade_notes": " | ".join(notes),
+    }
+
+
+def task_n(task_id: str):
+    """The swept N encoded in a phase-2 task id (`M3@20` -> 20), else None."""
+    base, _, suffix = task_id.partition("@")
+    return int(suffix) if suffix.isdigit() else None
+
+
+def task_base(task_id: str) -> str:
+    """`M3@20` -> `M3`; `T1` -> `T1`."""
+    return task_id.partition("@")[0]
+
+
+def sort_tasks(task_ids) -> list:
+    """Report order: by base id, then by N numerically.
+
+    Lexical order puts `M1@20` before `M1@5`, which silently scrambles every
+    slope in the report — the one thing the sweep exists to show.
+    """
+    return sorted(task_ids, key=lambda t: (task_base(t), task_n(t) if task_n(t) is not None else -1))
+
+
+def resolve_conditions(rows) -> tuple[int, list]:
+    """Return (phase, ordered conditions) for these rows, or die.
+
+    Two failures this turns from silent into loud:
+
+    1. **An unknown condition.** Previously the report was built by filtering rows
+       against a hardcoded list, so a condition missing from that list produced no
+       rows, no warning, and a report that looked complete.
+    2. **Two phases in one directory.** The phases are separate reports by design
+       (§11); merging them would put GitHub's API and a synthetic airline stack in
+       one table and invite exactly the invalid comparison.
+    """
+    seen = sorted({r["condition"] for r in rows})
+    unknown = [c for c in seen if c not in COND_PHASE]
+    if unknown:
+        sys.exit(
+            f"unknown condition(s) in {RUNS}: {', '.join(unknown)}\n"
+            f"Known: {', '.join(COND_PHASE)}\n"
+            f"Add them to PHASE_CONDS (and COND_LABEL / COND_SHORT) in parse_logs.py. "
+            f"Refusing to drop them silently."
+        )
+    phases = sorted({COND_PHASE[c] for c in seen})
+    if len(phases) > 1:
+        by_phase = {ph: [c for c in seen if COND_PHASE[c] == ph] for ph in phases}
+        detail = "; ".join(f"phase {ph}: {', '.join(cs)}" for ph, cs in by_phase.items())
+        sys.exit(
+            f"{RUNS} mixes phases ({detail}).\n"
+            f"The two phases are separate reports — different API, different domain, "
+            f"different correctness metric. Split the runs and parse each:\n\n"
+            f"  RESULTS_DIR=results/phase1 python3 parse_logs.py runs/phase1\n"
+            f"  RESULTS_DIR=results/phase2 python3 parse_logs.py runs/phase2\n"
+        )
+    phase = phases[0]
+    return phase, [c for c in PHASE_CONDS[phase] if c in seen]
 
 
 # Anthropic pricing (USD per 1M tokens) by model prefix.
@@ -211,6 +359,12 @@ def collect():
         per_call = parse_proxy_per_call(run_dir / "proxy.jsonl", task_model=run_model)
         row = {
             "condition": meta["condition"], "task_id": meta["task_id"], "rep": meta["rep"],
+            # Phase-2 report axes (§11). `profile` is a column, never part of the
+            # condition id: the fat/lean bracket IS the headline claim, and folding
+            # it into the id doubles every table and leaves pairing to the reader.
+            "phase": meta.get("phase", 1),
+            "n": meta.get("n", task_n(meta["task_id"])),
+            "profile": meta.get("profile"),
             "model": run_model,
             "toolsets": meta.get("toolsets"), "goose_exit": meta.get("goose_exit"),
             "timed_out": meta.get("timed_out"), "budget_killed": meta.get("budget_killed", False),
@@ -234,6 +388,8 @@ def collect():
             ),
         }
         row["cost_usd"] = cost_usd(row, run_model)
+        if row["phase"] == 2:
+            row.update(grade_row(meta, run_dir, proxy))
         rows.append(row)
     return rows
 
@@ -266,6 +422,32 @@ def _mean_stage(rows, cond, task, stage_key) -> float | None:
     return statistics.mean(_stage_costs(r, model)[stage_key] for r in sub)
 
 
+# A ratio below this is not reported as a difference. Two conditions landing within
+# 5% of each other on a control task is noise at 3 reps, and PR #3 shipped a
+# "structural gap" of exactly that size (see the T2 bullet below).
+MATERIAL_RATIO = 1.05
+
+
+def _materially_differs(a: float, b: float) -> bool:
+    lo = min(a, b)
+    return lo > 0 and max(a, b) / lo >= MATERIAL_RATIO
+
+
+def _ratio(hi: float, lo: float, suffix: str = "more") -> str:
+    """Format a ratio, or say plainly that there isn't one.
+
+    `:.0f` was the original format and it rendered 4-vs-3 as "1x more", which
+    contradicts the two numbers printed beside it. One decimal is the minimum that
+    can express the ratios this study actually produces.
+    """
+    if lo <= 0:
+        return "n/a"
+    r = hi / lo
+    if r < MATERIAL_RATIO:
+        return "no material difference"
+    return f"{r:.1f}× {suffix}"
+
+
 def _key_findings(rows, conds, tasks) -> list[str]:
     """Return markdown bullet lines for the Key Findings lede."""
     bullets = []
@@ -279,10 +461,10 @@ def _key_findings(rows, conds, tasks) -> list[str]:
         if a1_calls and b2_calls and a1_cost and b2_cost:
             bullets.append(
                 f"**T1 (5 PRs + changed files) — REST vs GraphQL:** A1 uses **{a1_calls:.0f} inference "
-                f"calls** vs B2's **{b2_calls:.0f}** ({a1_calls/b2_calls:.0f}× more). REST requires "
+                f"calls** vs B2's **{b2_calls:.0f}** ({_ratio(a1_calls, b2_calls)}). REST requires "
                 f"one get_pull_request + one get_pull_request_files call per PR; B2 fetches all five "
                 f"in one aliased GraphQL query. Cost: A1 ${a1_cost:.3f} vs B2 ${b2_cost:.3f} per run "
-                f"(**{a1_cost/b2_cost:.0f}× cheaper** with B2)."
+                f"(**{_ratio(a1_cost, b2_cost, 'cheaper with B2')}**)."
             )
 
     # REST context overhead dominates A1 cost (computed using actual model pricing)
@@ -318,26 +500,38 @@ def _key_findings(rows, conds, tasks) -> list[str]:
                 f"targeted keyword search keep schema-discovery overhead low."
             )
 
-    # T2: structural gap between B and B2
+    # T2: B vs B2 on the single-lookup control.
+    #
+    # Two PR-#3 bugs lived here. The copy called T2 "issues by keyword" and
+    # explained a B-vs-B2 gap by Apollo's semantic search versus rover's keyword
+    # engine — T2 has been a single known-PR lookup since the fixed-PR redesign,
+    # so the mechanism described was for a task that no longer exists. And the
+    # branch was gated on `b2_cost > b_cost`, a bare float comparison: it fired on
+    # a difference invisible at the displayed precision, so the published lede
+    # asserted a "structural gap" of 1.0x, 3 vs 3 calls, $0.005 vs $0.005, and then
+    # explained its mechanism. A claim of difference now needs a real threshold.
     if all(c in conds for c in ["B", "B2"]) and "T2" in tasks:
         b_cost   = _mean_by(rows, "B",  "T2", "cost_usd")
         b2_cost  = _mean_by(rows, "B2", "T2", "cost_usd")
         b_calls  = _mean_by(rows, "B",  "T2", "proxy_n_inference_calls")
         b2_calls = _mean_by(rows, "B2", "T2", "proxy_n_inference_calls")
         if b_cost and b2_cost and b_calls and b2_calls:
-            if b2_cost > b_cost:
+            if _materially_differs(b2_cost, b_cost):
+                worse, better = ("B2", "B") if b2_cost > b_cost else ("B", "B2")
+                hi, lo = max(b2_cost, b_cost), min(b2_cost, b_cost)
                 bullets.append(
-                    f"**T2 (issues by keyword) — structural gap:** B2 costs **{b2_cost/b_cost:.1f}× "
-                    f"more** than B on keyword-filter tasks ({b2_calls:.0f} vs {b_calls:.0f} calls, "
-                    f"${b2_cost:.3f} vs ${b_cost:.3f}). Apollo's semantic `search` surfaces "
-                    f"`Query.search` directly; rover's keyword engine requires extra discovery calls "
-                    f"to find the issue-filter entry point."
+                    f"**T2 (single PR lookup) — {worse} costs {_ratio(hi, lo, 'more')}** than "
+                    f"{better} on a one-entity lookup ({b2_calls:.1f} vs {b_calls:.1f} calls, "
+                    f"${b2_cost:.3f} vs ${b_cost:.3f}). Both reach the answer; the gap is "
+                    f"schema-discovery overhead before the single execute, so it is a property of "
+                    f"the tool surface rather than of the query."
                 )
             else:
                 bullets.append(
-                    f"**T2 (issues by keyword):** B2 and B perform similarly "
-                    f"(${b2_cost:.3f} vs ${b_cost:.3f}/run) — keyword-filter tasks are roughly "
-                    f"call-count neutral between the two GraphQL conditions."
+                    f"**T2 (single PR lookup):** B and B2 are indistinguishable "
+                    f"(${b_cost:.3f} vs ${b2_cost:.3f}/run, {b_calls:.1f} vs {b2_calls:.1f} calls) "
+                    f"— as expected for a control task both conditions answer in one execute. "
+                    f"No claim is made about a difference this small."
                 )
 
     # Combined across all tasks
@@ -350,7 +544,7 @@ def _key_findings(rows, conds, tasks) -> list[str]:
                 bullets.append(
                     f"**Overall (all tasks):** B2 is **{b_total/b2_total:.1f}× cheaper** than B "
                     f"(${b2_total:.3f} vs ${b_total:.3f}/run) and "
-                    f"**{a1_total/b2_total:.0f}×** cheaper than A1 (${a1_total:.3f}/run), "
+                    f"**{a1_total/b2_total:.1f}×** cheaper than A1 (${a1_total:.3f}/run), "
                     f"driven primarily by T1's GraphQL nested-query advantage."
                 )
             else:
@@ -363,28 +557,146 @@ def _key_findings(rows, conds, tasks) -> list[str]:
     return bullets
 
 
-def _concepts_section() -> list[str]:
-    """Plain-language explainers for the three stage labels used throughout this report."""
+def _accuracy_section(rows, conds, tasks) -> list[str]:
+    """Phase 2's accuracy report — what replaces phase 1's completion boolean.
+
+    Phase 1 gated on `completed` (bool). At M3/N=50 the interesting failure is the
+    agent silently dropping records, which a boolean cannot see, so this reports
+    `answer_f1` with coverage beside it (§11).
+
+    **Ungrounded runs are excluded from the mean and listed separately.** A guess
+    that lands is worse than a wrong answer: it inflates accuracy and deflates cost
+    at the same time, so averaging it in corrupts both columns in the same
+    direction (§7.1).
+    """
+    out = ["\n## Accuracy\n"]
+    graded = [r for r in rows if r.get("answer_f1") is not None]
+    if not graded:
+        out.append("_No graded runs._\n")
+        return out
+
+    fabricated = [r for r in graded if r.get("answer_grounded") is False]
+    scorable = [r for r in graded if r.get("answer_grounded") is not False]
+    review = [r for r in scorable if r.get("needs_review")]
+
+    out.append("`answer_f1` is field-level precision/recall against `tasks/expected.json`, "
+               "whose `grading` block defines the rules per task. **coverage** is the "
+               "fraction of the records the prompt asked about that the answer mentions at "
+               "all — reported separately because a truncated answer can be perfectly "
+               "accurate on what it does say.\n")
+    out.append("| Condition | " + " | ".join(f"{t} f1" for t in tasks) + " |")
+    out.append("|" + "---|" * (len(tasks) + 1))
+    for c in conds:
+        cells = [f"**{c}** — {COND_LABEL[c]}"]
+        for t in tasks:
+            sub = [r for r in scorable if r["condition"] == c and r["task_id"] == t]
+            if not sub:
+                cells.append("—")
+                continue
+            m, sd = agg_stats(r["answer_f1"] for r in sub)
+            cov = statistics.mean([r["answer_coverage"] for r in sub
+                                   if r.get("answer_coverage") is not None] or [0]) or None
+            cell = f"{m:.2f} ± {sd:.2f}"
+            if cov is not None and cov < 1.0:
+                cell += f"<br>cov {cov:.0%}"
+            cells.append(cell)
+        out.append("| " + " | ".join(cells) + " |")
+
+    if fabricated:
+        out.append(f"\n### ⚠️ {len(fabricated)} fabricated run(s) — excluded from the means "
+                   f"above\n")
+        out.append("An answer whose facts never entered the context is not correct, however "
+                   "well it scores. These are reported, never averaged in.\n")
+        out.append("| Condition | Task | Rep | would-be f1 | why |")
+        out.append("|---|---|---|---|---|")
+        for r in sorted(fabricated, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
+            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+                       f"{r['answer_f1']:.2f} | {r['grade_notes'].split(' | ')[0]} |")
+
+    if review:
+        out.append(f"\n### {len(review)} run(s) flagged for review\n")
+        out.append("The grader could not read enough of these answers to trust the score — "
+                   "a parser limitation, not an agent error. Read the `stdout.txt` before "
+                   "citing the row.\n")
+        out.append("| Condition | Task | Rep | f1 | note |")
+        out.append("|---|---|---|---|---|")
+        for r in sorted(review, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
+            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+                       f"{r['answer_f1']:.2f} | {r['grade_notes'][:160]} |")
+
+    out.append("\n**On grounding.** Every run above passed the *weak* grounding check: it "
+               "made at least one tool call. The full check §7.1 specifies — every graded "
+               "fact traced to a `tool_result` that entered the context before the answer — "
+               "needs tool-result bodies, which `proxy.jsonl` does not record. Until it "
+               "does, `answer_grounded` is `False` or blank, never `True`, so a missing "
+               "check cannot be misread as a passing one.\n")
+    return out
+
+
+def _concepts_section(phase: int = 1) -> list[str]:
+    """Plain-language explainers for the three stage labels used throughout this report.
+
+    The MECHANISM is protocol-agnostic and identical in both phases. The
+    ILLUSTRATIONS are not: this text used to hardcode "REST conditions (A1/A2)",
+    "17-22 endpoint definitions", and "~82 KB for 5 PRs" — phase-1 facts about
+    GitHub's API. Printed unchanged into a phase-2 report they name conditions that
+    do not exist and cite payloads from another experiment, which is the same class
+    of bug as PR #3's stale T2 copy: prose asserting a mechanism the data on the
+    page does not show.
+    """
+    if phase == 2:
+        schema_eg = (
+            "For the front-loaded conditions that's nine generated endpoint tools (M-R1) or "
+            "seven frozen persisted operations (M-G2); for the on-demand pair it is three "
+            "generic tools each (M-R2, M-G1). Measured `tools/list` sizes are in "
+            "PHASE2_PLAN.md §8.1: 9,440 / 4,040 bytes front-loaded against 2,439 / 2,159 "
+            "on-demand."
+        )
+        growth_eg = (
+            "The REST conditions are penalised on both axes, and phase 2 is built to "
+            "separate them: an agent-side join needs one call per record where a federated "
+            "query needs one in total, and a `-fat` REST response carries every field "
+            "whether or not the task asked for it (49,049 B against GraphQL's 1,683 B for "
+            "the same twenty flights, §5.1). The `-lean` profile holds the call count fixed "
+            "and removes the over-fetch, which is how the two effects are told apart."
+        )
+        caveat_eg = (
+            "**One cross-condition caveat:** the on-demand conditions (M-R2, M-G1) carry a "
+            "much smaller tool schema, so their first cache write fires later in the "
+            "conversation — after a few discovery rounds have accumulated enough context — "
+            "which moves cost that the front-loaded conditions pay in Stage 1 into Stage 2."
+        )
+    else:
+        schema_eg = (
+            "For REST conditions (A1/A2) that's 17–22 endpoint definitions; for GraphQL "
+            "(B/B2) it's just 3–4 generic tools."
+        )
+        growth_eg = (
+            "REST conditions are penalised on both axes: 10 tool calls vs. 1, and full REST "
+            "API objects (~82 KB for 5 PRs) vs. GraphQL's field-precise responses (~1 KB)."
+        )
+        caveat_eg = (
+            "**One cross-condition caveat:** because GraphQL conditions (B/B2) have a smaller "
+            "tool schema, their first cache write fires later in the conversation (after a few "
+            "tool rounds have accumulated enough context), so their Stage 1 includes early "
+            "conversation turns that REST pays in Stage 2."
+        )
     return [
         "\n## How to read these numbers\n",
         "Every inference run goes through three phases. Understanding them explains why the "
         "token counts look the way they do.\n",
         "**Schema injection (Stage 1)** — Before Claude can act, the harness sends it a full "
-        "description of every available tool. For REST conditions (A1/A2) that's 17–22 endpoint "
-        "definitions; for GraphQL (B/B2) it's just 3–4 generic tools. Anthropic's caching "
+        f"description of every available tool. {schema_eg} Anthropic's caching "
         "system writes this description to a server-side cache once it exceeds ~1 000 tokens. "
         "Stage 1 captures the `cache_creation` charge for that first write — the one-time cost "
         "of committing the initial context to cache. A fatter tool schema means a higher "
-        "Stage 1 cost, which is why A1 and A2 consistently pay more here than B or B2, "
-        "even before the agent has made a single API call.\n",
+        "Stage 1 cost, paid before the agent has made a single API call.\n",
         "**Context growth (Stage 2)** — Each tool call extends the conversation: the tool's "
         "response is appended and the *now-longer* context must be written to cache again "
         "so the next inference call can read it cheaply. Stage 2 sums those incremental "
         "`cache_creation` charges — the cost of *maintaining* the cache as it grows, not "
         "of using it. Two factors drive Stage 2 higher: more round trips (more re-writes) "
-        "and larger payloads per round trip (more new tokens to cache each time). REST "
-        "conditions are penalised on both axes: 10 tool calls vs. 1, and full REST API "
-        "objects (~82 KB for 5 PRs) vs. GraphQL's field-precise responses (~1 KB). "
+        f"and larger payloads per round trip (more new tokens to cache each time). {growth_eg} "
         "Stage 2 is where most of the REST\u2013GraphQL cost difference accumulates.\n",
         "**Inference compute (Stage 3)** — The cost of the model *reading and generating*, "
         "not writing. It has three components: `cache_read_input_tokens` (tokens pulled "
@@ -395,17 +707,31 @@ def _concepts_section() -> list[str]:
         "of which API protocol answered the question. It does not include cache-write "
         "charges — those are entirely in Stages 1 and 2.\n",
         "The three stages are additive — total cost = Stage 1 + Stage 2 + Stage 3. "
-        "**One cross-condition caveat:** because GraphQL conditions (B/B2) have a smaller tool "
-        "schema, their first cache write fires later in the conversation (after a few tool rounds "
-        "have accumulated enough context), so their Stage 1 includes early conversation turns that "
-        "REST pays in Stage 2. The Stage 1 + Stage 2 sum and Stage 3 are the reliable "
+        f"{caveat_eg} The Stage 1 + Stage 2 sum and Stage 3 are the reliable "
         "cross-condition comparators. The stage split is most useful within a single condition "
         "to understand how its cost is structured.\n",
     ]
 
 
-def _stage_cost_table(rows, conds, tasks) -> list[str]:
-    """Lines for the cost-by-stage table."""
+def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
+    """Lines for the cost-by-stage table.
+
+    Takes `phase` for the same reason `_concepts_section` does: the footnote
+    illustrates the Stage 1 / Stage 2 boundary with named conditions, and naming
+    phase-1's conditions in a phase-2 report cites an experiment that is not on
+    the page.
+    """
+    boundary_eg = (
+        "A front-loaded tool surface (M-R1, M-G2) triggers the first cache write on call 1; "
+        "an on-demand one (M-R2, M-G1) does not hit the threshold until several discovery "
+        "rounds have accumulated, so its Stage 1 includes early conversation context that "
+        "the front-loaded conditions pay in Stage 2."
+        if phase == 2 else
+        "A large REST schema (A1/A2) triggers the first cache write on call 1; a small "
+        "GraphQL schema (B/B2) doesn't hit the threshold until several tool rounds have "
+        "accumulated, so B/B2's Stage 1 includes early conversation context that REST pays "
+        "in Stage 2."
+    )
     lines = [
         "\n## Cost breakdown by prompt lifecycle stage\n",
         "Each run's cost is split across the three stages of the inference prompt lifecycle. "
@@ -420,7 +746,7 @@ def _stage_cost_table(rows, conds, tasks) -> list[str]:
     ]
     mcp = [c for c in conds if c in MCP_CONDS]
     for c in mcp:
-        for t in sorted(tasks):
+        for t in sort_tasks(tasks):
             sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
             if not sub:
                 continue
@@ -439,10 +765,8 @@ def _stage_cost_table(rows, conds, tasks) -> list[str]:
         "Stage 2: all subsequent `cache_creation_input_tokens`. "
         "Stage 3: `input_tokens` + `output_tokens` + `cache_read_input_tokens` across all calls. "
         "**Cross-condition caveat:** the Stage 1 / Stage 2 boundary falls at a different point "
-        "in the conversation for each condition. A large REST schema (A1/A2) triggers the first "
-        "cache write on call 1; a small GraphQL schema (B/B2) doesn't hit the threshold until "
-        "several tool rounds have accumulated, so B/B2's Stage 1 includes early conversation "
-        "context that REST pays in Stage 2. The Stage 1 + Stage 2 sum (total cache-create cost) "
+        f"in the conversation for each condition. {boundary_eg} "
+        "The Stage 1 + Stage 2 sum (total cache-create cost) "
         "and Stage 3 are the reliable cross-condition comparators; the individual stage split "
         "reflects within-condition structure, not a symmetric breakdown.*\n"
     )
@@ -458,7 +782,7 @@ def _write_charts(rows, conds, tasks):
 
     mcp = [c for c in conds if c in MCP_CONDS]
     model = rows[0]["model"] if rows else PRIMARY_MODEL
-    tasks_sorted = sorted(tasks)
+    tasks_sorted = sort_tasks(tasks)
 
     C_SCHEMA    = "#d95f02"   # orange  — schema injection (often dominates REST)
     C_CONTEXT   = "#f5c242"   # amber   — context growth
@@ -579,11 +903,13 @@ def _write_charts(rows, conds, tasks):
 
 
 def write_summary(rows):
-    RESULTS.mkdir(exist_ok=True)
-    tasks = sorted({r["task_id"] for r in rows})
-    conds = [c for c in ["A1", "A2", "B", "B2", "C"] if any(r["condition"] == c for r in rows)]
+    RESULTS.mkdir(parents=True, exist_ok=True)
+    phase, conds = resolve_conditions(rows)
+    tasks = sort_tasks({r["task_id"] for r in rows})
 
-    lines = ["# Benchmark Results — REST-backed MCP vs GraphQL-backed MCP\n"]
+    title = ("# Benchmark Results — REST-backed MCP vs GraphQL-backed MCP\n" if phase == 1
+             else "# Phase 2 Results — who performs the join\n")
+    lines = [title]
 
     # --- Key Findings lede ---
     findings = _key_findings(rows, conds, tasks)
@@ -614,8 +940,8 @@ def write_summary(rows):
         return out
 
     # --- MCP conditions ---
-    lines.append("\n## MCP conditions (A1 / A2 / B)\n")
     mcp = [c for c in conds if c in MCP_CONDS]
+    lines.append(f"\n## MCP conditions ({' / '.join(mcp)})\n")
     for t in tasks:
         lines += task_table(t, mcp, f"Task {t}")
 
@@ -643,9 +969,13 @@ def write_summary(rows):
         for t in tasks:
             lines += task_table(t, ["C"], f"Task {t}")
 
+    # --- Accuracy (phase 2 only; phase 1 gated on `completed` instead) ---
+    if phase == 2:
+        lines += _accuracy_section(rows, conds, tasks)
+
     # --- Concepts explainer + Stage cost breakdown ---
-    lines += _concepts_section()
-    lines += _stage_cost_table(rows, conds, tasks)
+    lines += _concepts_section(phase)
+    lines += _stage_cost_table(rows, conds, tasks, phase)
 
     # --- cost summary ---
     models_used = sorted({r.get("model", PRIMARY_MODEL) for r in rows})
@@ -738,7 +1068,7 @@ def write_summary(rows):
         w.writerows(rows)
     with open(RESULTS / "summary.csv", "w", newline="") as f:
         w = csv.writer(f)
-        head = ["condition", "task_id", "n_reps"]
+        head = ["condition", "profile", "task_id", "n", "n_reps"]
         for _, lbl in METRICS:
             head += [lbl + " mean", lbl + " sd"]
         w.writerow(head)
@@ -747,7 +1077,8 @@ def write_summary(rows):
                 sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
                 if not sub:
                     continue
-                row = [c, t, len(sub)]
+                row = [c, sub[0].get("profile") or "", t, task_n(t) if task_n(t) is not None else "",
+                       len(sub)]
                 for k, _ in METRICS:
                     m, sd = agg_stats(r[f"proxy_{k}"] for r in sub)
                     row += [round(m, 2), round(sd, 2)]

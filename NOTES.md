@@ -702,3 +702,54 @@ tool-design effect.
     misread, and in the Goose case it was actively misleading: it looked like corroboration
     while recording which condition cleared the directory last. Deleting it removed the race,
     the maintenance, and the misreading at once.
+
+35. **The proxy records token counts and throws away the content, so three of the four
+    phase-2 metrics were unbuildable.** PHASE2_PLAN.md §11 asserted that
+    `pass_through_tokens` and `forced_serial_depth` were "derivable from `proxy.jsonl`" —
+    parser work only — and that `backend_requests` was the one needing runner changes. Both
+    halves were wrong. `backend_requests` got cut (surprise 34), and the proxy turns out to
+    log this and nothing more:
+
+        {"tool_result_tokens": 4212, "n_tool_use": 3, "input_tokens": 200, ...}
+
+    `_tool_result_tokens()` tokenizes each tool result, keeps the integer, and discards the
+    body; `tool_use` blocks are counted without their names or arguments. Every metric that
+    asks *what* was in a payload — pass-through tokens (which fields went unused), forced
+    serial depth (did call k consume an id from call k−1), per-fact grounding (did this fact
+    ever enter the context) — needs the content. Only `answer_f1` was buildable, because the
+    answer lives in `stdout.txt`.
+
+    Two things worth keeping from how this went. **The claim was plausible and specific,
+    which is why it survived.** "Derivable from proxy.jsonl by matching IDs across tool_use /
+    tool_result blocks" describes a real algorithm over a log that does not exist; nothing
+    about it reads as a guess. Confirming it took one `head -1` of a real log file, and that
+    check was never run because the sentence sounded like it had already been checked.
+
+    **The weak form was worth building anyway.** Zero tool calls means the answer was
+    fabricated, full stop — and that is not hypothetical, it is the phase-1 handshake failure
+    (Apollo's startup logs corrupted stdio, Goose registered zero tools, the agent answered
+    from training data). It returns `False` or `None` and never `True`, so an unassessed run
+    can never be read as a verified one. A partial gate that cannot lie about its own scope
+    beats waiting for the complete one.
+
+36. **Two reporting bugs that only a rendered report could show.** `parse_logs.py` was
+    exercised against 72 synthetic phase-2 runs, and the *code* looked right in both cases.
+
+    **Task ids sorted lexically**, so `M1@20` came before `M1@5` in every table and chart.
+    The sweep exists to show a slope; lexical order scrambles it while every individual
+    number stays correct. Two call sites still said `sorted(tasks)` after the ordering helper
+    was written — which is the ordinary way a fix half-lands.
+
+    **The concepts explainer printed phase-1 copy into a phase-2 report** — "REST conditions
+    (A1/A2)", "17–22 endpoint definitions", "~82 KB for 5 PRs" — naming conditions that do
+    not exist in that experiment and citing payloads from another one. §11 had explicitly
+    listed that section under "what carries over unchanged", and the *mechanism* does; the
+    illustrations embedded in it do not. This is the same bug as PR #3's stale T2 copy: prose
+    asserting a mechanism the data on the page does not show. It was found the same way, too
+    — by reading the output instead of the code.
+
+    Hence the synthetic runs. They cost nothing, they need no API key, and they exercise the
+    whole path from `meta.json` to rendered markdown with deliberate failures planted in
+    them: a truncated answer, an all-"yes" answer, an answer with zero tool calls. Every one
+    of those showed up in the report where it should — and the two bugs above showed up
+    beside them.

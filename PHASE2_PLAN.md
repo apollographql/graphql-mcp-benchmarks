@@ -30,10 +30,18 @@ prompt reading "cover all 1" at the low end of its own sweep. All are recorded i
 guard that now catches each. **Expect more of these**; the pattern is a question that reads
 one way to the grader and another to the agent, with nothing erroring to say so.
 
-**NEXT: step 7 item 3 — `parse_logs.py`.** Start with the unknown-condition blocker (§11):
-until it is fixed, every phase-2 row is dropped from the report *silently*. Then grading from
-`expected.json[<id>].grading` — read those rules, do not re-derive them — plus the
-`answer_grounded` gate, then the two PR-#3 prose bugs.
+**Step 7 item 3 is mostly complete** (2026-09-02): the unknown-condition blocker, a
+phase-mixing guard, `grade.py` + `test_grade.py` (all four grading kinds, 46 assertions), the
+Accuracy section, the weak `answer_grounded` gate, and both PR-#3 prose bugs. Verified by
+rendering a full phase-2 report from 72 synthetic runs — which turned up two more reporting
+bugs, both fixed (§9 step 7.3).
+
+**NEXT: a decision, then the smoke run.** `pass_through_tokens`, `forced_serial_depth`, and
+the per-fact `answer_grounded` gate are **blocked on the proxy**, which records token *counts*
+and discards tool-call arguments and tool-result bodies. §11 item 4 has the evidence, a
+metric-by-metric table, and the recommended fix (a per-run `tool_io.jsonl` sidecar, keeping
+the proxy dumb). Changing the proxy changes the component that produced phase 1's numbers, so
+it is a decision rather than a chore.
 
 The part of step 7 that is easy to skip and shouldn't be: **§7.1's `answer_grounded` gate**
 — a lucky guess on M2 or M4@20 otherwise scores as a cheap success, and phase 1 already
@@ -735,14 +743,20 @@ is fair, and do not promote it into the report.
 Existing per-call proxy capture is unchanged. Three additions:
 
 **`pass_through_tokens`** — tool-result tokens that never appear in the final answer.
-Computable because we own the fixtures: per tool result, count tokens of fields absent
-from the graded answer. This is the join tax, quantified directly, and it's the number
-that makes the depth finding legible.
+Computable *in principle* because we own the fixtures: per tool result, count tokens of
+fields absent from the graded answer. This is the join tax, quantified directly, and it's the
+number that makes the depth finding legible.
+
+> ⚠️ **Blocked on a proxy change.** `proxy.jsonl` records `tool_result_tokens` (a count) and
+> discards the body, so there are no fields to compare against the answer. Same blocker as
+> `forced_serial_depth` and the full `answer_grounded` gate — see §11 item 4 for what the
+> proxy needs and the recommended shape.
 
 **`forced_serial_depth`** — longest chain of inference calls where call *k* consumed an
 ID returned by call *k−1*. Distinguishes genuine dependency serialization from mere
-sequencing. Derivable from `proxy.jsonl` by matching IDs across `tool_use` / `tool_result`
-blocks. Maps to user-perceived latency in a way call count does not.
+sequencing. Maps to user-perceived latency in a way call count does not. Matching those IDs
+needs the `tool_use` arguments and the `tool_result` bodies, and **`proxy.jsonl` records
+neither** — §11 item 4.
 
 **`backend_requests` was cut — ✂️ descoped 2026-09-02.** It was going to count HTTP hits
 per service to pre-empt "you just moved the cost to the infrastructure bill." That question
@@ -762,7 +776,9 @@ replacing phase 1's binary completion gate. Required at M3 / N=50, where the int
 failure mode is the agent silently dropping records rather than erroring. Grading rules per
 task come from `expected.json[<id>].grading` (§7.1), and every run passes an
 `answer_grounded` check first: an answer whose facts never entered the context via a
-`tool_result` is fabricated, not correct, and is reported separately rather than scored.
+`tool_result` is fabricated, not correct, and is reported separately rather than scored. The
+**weak** form of that gate — zero tool calls means fabricated — is built; the per-fact form
+is blocked on the same proxy change (§11 item 4).
 
 ---
 
@@ -950,7 +966,9 @@ Small, additive changes:
 | ~~`run_benchmark.py`~~ | ✅ Done in step 7 — four `M-*` conditions, a `services_up()` gate that delegates to `pnpm health`, N expansion out of `expected.json`, and five new pre-flight guards (§9 step 7) |
 | ~~`tasks/tasks.yaml`~~ | ✅ Done in step 6 — M1–M4 with `phase:`, `ns:`, and `{{ids}}` / `{{n}}` / `{{as_of}}` / `{{origin}}` placeholders |
 | ~~`recipes/`~~ | ✅ Done in step 7 — the four `recipe_m_*.yaml`, with a byte-identical `instructions` block the runner enforces |
-| `parse_logs.py` | Two new metric columns + the grader. Grading rules come from `expected.json[<id>].grading` — do not re-derive them per task (§7.1), and refuse to grade when `_meta.fixtureManifestSha` does not match the fixtures. The Goose cross-check columns are already removed (§8.2) |
+| ~~`parse_logs.py`~~ | ✅ Mostly done in step 7 — condition blocker, phase-mixing guard, grading, Accuracy section, `n`/`profile` columns, both prose bugs. The two pass-through metrics are blocked on a proxy change (§11 item 4) |
+| `grade.py`, `test_grade.py` | ✅ New in step 7 — the four grading kinds, driven by `expected.json[<id>].grading`, refusing to grade when `_meta.fixtureManifestSha` does not match the fixtures |
+| `proxy/anthropic_logging_proxy.py` | **Pending a decision.** Must log tool-call arguments and tool-result bodies for `pass_through_tokens` / `forced_serial_depth` / per-fact grounding (§11 item 4) |
 | `bench.sh` | Add the four `M-*` captures to `do_capture()` (see §8.3) |
 | ~~`servers/openapi_mcp.py`~~ | ✅ Done in step 5, with `servers/supergraph_mcp.py` and `servers/_mcp_stdio.py` |
 | ~~`lib/setup.sh`~~ | ✅ Done in step 5 — renders `config/apollo-mcp.phase2.local.yaml` with absolute paths |
@@ -1203,11 +1221,28 @@ is design verification, not a reported result, and it should not be promoted int
       `answer_grounded` concern — it targets fabrication, not tool choice, so it cannot
       bias the comparison, and it makes an ungrounded answer a measured failure rather than
       a missing instruction.
-   3. **`parse_logs.py`, starting with the unknown-condition blocker (§11).** It comes first
-      because until it is fixed every phase-2 row is dropped from the report *silently* — you
-      would run the matrix and see a phase-1 report. Then grading from
-      `expected.json[<id>].grading` plus the `answer_grounded` gate (§7.1), then the two PR-#3
-      prose bugs (§11).
+   3. ⚠️ **`parse_logs.py`** — *Mostly done 2026-09-02; one part is blocked.*
+
+      Done: the unknown-condition blocker and a phase-mixing guard (both verified to fire),
+      `grade.py` + `test_grade.py` implementing all four grading kinds from
+      `expected.json[<id>].grading`, the Accuracy section with fabricated and
+      needs-review tables, the weak `answer_grounded` gate, `n`/`profile` columns, numeric
+      task ordering, and both PR-#3 prose bugs. Details in §11.
+
+      Two bugs were found by rendering a phase-2 report for the first time, from 72 synthetic
+      runs. **Task ids sorted lexically**, putting `M1@20` before `M1@5` and scrambling every
+      slope the sweep exists to show. And **the concepts explainer and stage-table footnote
+      printed phase-1 copy** — "REST conditions (A1/A2)", "17–22 endpoint definitions",
+      "~82 KB for 5 PRs" — into a phase-2 report, naming conditions that do not exist and
+      citing payloads from another experiment. That is the same class of bug as PR #3's stale
+      T2 copy, found the same way: by looking at the rendered output rather than the code.
+      Both are now phase-aware.
+
+      **Blocked: `pass_through_tokens`, `forced_serial_depth`, and the per-fact
+      `answer_grounded` gate.** All three need tool-call arguments and tool-result bodies,
+      and the proxy records only counts. §11 item 4 has the evidence and the recommended
+      fix (a per-run `tool_io.jsonl` sidecar). It is a change to the component that produced
+      phase 1's numbers, so it needs a decision rather than a commit.
    4. ✅ **The two shared-resource races (§8.2)** — *Resolved 2026-09-02 by deletion.* The
       Goose cross-check column is retired (the runner no longer touches any path outside its
       own run directory, so the race is gone by construction) and `backend_requests` is
@@ -1302,33 +1337,33 @@ are protected from this by being synthetic, local, and hash-pinned.
 tool surfaces, and (below) a different correctness metric. Only the *shape* of the finding
 is comparable; a merged table would invite precisely the invalid comparison.
 
-### ⚠️ `parse_logs.py` silently drops unknown conditions
+### ✅ The `parse_logs.py` blockers — fixed 2026-09-02
 
-```python
-conds = [c for c in ["A1", "A2", "B", "B2", "C"] if any(r["condition"] == c for r in rows)]
-```
+**Unknown conditions were dropped silently.** The report was built by filtering rows against
+a hardcoded `["A1", "A2", "B", "B2", "C"]`, so every phase-2 row would have vanished with no
+error — the same failure shape as a half-up stack: a confident-looking output quietly missing
+half the experiment. `resolve_conditions()` now hard-fails on any condition absent from
+`PHASE_CONDS`, and **also refuses a runs directory that mixes the two phases**, printing the
+two commands that split it. Both were verified to fire.
 
-Phase-2 rows would vanish from the report with no error — the same failure shape as a
-half-up stack: a confident-looking output that is quietly missing half the experiment.
-`MCP_CONDS` has the same hardcoded list, and `_key_findings()` is written entirely against
-A1-vs-B2-on-T1, so the "Key Findings" lede would come out empty or wrong. Fix these first;
-they are not cosmetic.
+**Both PR-#3 prose bugs are fixed**, and both changed the phase-1 report:
 
-**And fix the two prose bugs from PR #3**, both in `_key_findings()` and both visible in the
-committed `results/summary.md`:
+- **Ratios formatted with `:.0f`.** 4 inference calls against 3 rendered as "**1× more**",
+  contradicting the two numbers printed beside it. Now `_ratio()`, one decimal, and it says
+  "no material difference" below a threshold rather than printing a meaningless multiple.
+- **T2's copy described "issues by keyword"** and explained a B-vs-B2 gap by Apollo's
+  semantic search versus rover's keyword engine — T2 has been a single known-PR lookup since
+  the fixed-PR redesign, so the mechanism described a task that no longer existed. Worse, the
+  branch was gated on a bare `b2_cost > b_cost`, which fired on a float difference invisible
+  at displayed precision: the lede asserted a "structural gap" of **1.0×, 3 vs 3 calls,
+  $0.005 vs $0.005** and then explained its cause. The gate is now `MATERIALLY_DIFFERS`
+  (≥5%), and the else-branch says plainly that no claim is made about a difference that
+  small. The phase-1 report now reads *"B and B2 are indistinguishable"* for that row.
 
-- **`parse_logs.py:~325` formats ratios with `:.0f`.** 4 inference calls against 3 renders as
-  "**1× more**", self-contradictory next to the two numbers it just printed. Same bug on the
-  cost ratio a line below. Use `:.1f`, or phrase it as a difference.
-- **`parse_logs.py:~370-383` describes T2 as "issues by keyword"** and explains a B-vs-B2 gap
-  via Apollo's semantic search versus rover's keyword engine. T2 has been a single PR lookup
-  since the fixed-PR redesign, so the copy is stale — and the `if b2_cost > b_cost` branch
-  fires on a float difference invisible at displayed precision, so the published lede asserts
-  a "structural gap" of **1.0×, 3 vs 3 calls, $0.005 vs $0.005** and then explains its
-  mechanism. Gate the branch on a real threshold and rewrite the copy.
-
-Phase 2 needs its own `_key_findings()` regardless, but these two are worth fixing in phase
-1's path too, since those numbers are already published.
+**Phase 2 deliberately has no `_key_findings()` yet.** Writing a narrative lede before there
+is data to describe is precisely how the two bugs above were written in the first place — one
+asserted a mechanism for a task that had changed under it, the other explained a gap that was
+not there. Phase 2's lede gets written against phase-2 numbers.
 
 ### The report structure does change, in four ways
 
@@ -1346,15 +1381,71 @@ GraphQL stays flat" — a line over N, which the current grouped-bar `_write_cha
 express. One new chart type, and the M3 narrative reports a fitted slope rather than a
 single multiple.
 
-**3. `completed` (bool) → `answer_f1` (float).** Phase 1 gated on binary completion. At
-M3/N=50 the interesting failure is the agent silently dropping records, which a boolean
-cannot see. The "Audit — completion" section becomes an accuracy section.
+**3. `completed` (bool) → `answer_f1` (float).** ✅ **Built 2026-09-02.** Phase 1 gated on
+binary completion; at M3/N=50 the interesting failure is the agent silently dropping records,
+which a boolean cannot see. `grade.py` implements all four grading kinds from
+`expected.json`, and phase-2 reports now carry an **Accuracy** section: per-condition
+`answer_f1` with coverage beside it, a fabricated-runs table excluded from the means, and a
+flagged-for-review table for answers the parser could not read.
 
-**4. Two new metrics, both parse-time.** `pass_through_tokens` and `forced_serial_depth` are
-derivable from `proxy.jsonl`, so this is parser work only. The third planned metric,
-`backend_requests`, was the one that needed runner work — resetting and reading `/__metrics`
-around each run — and it is cut (§6). Everything the report now needs comes out of the
-per-run proxy log.
+Two rules are encoded in it. **The rules come from the artifact** — every cell's `grading`
+block names its kind, key field, positive class, and whether coverage is required, so the
+grader and `pnpm expected`'s guards cannot drift apart. **An unreadable answer is not a wrong
+answer** — a key never mentioned is a real miss and scores as one, but a key mentioned whose
+value the parser cannot read is *our* bug, counted separately and flagged rather than scored
+as agent error.
+
+`grade.py` has its own test suite (`python3 test_grade.py`, 46 assertions) because answer
+parsing is the one genuinely heuristic step in the pipeline. The tests that matter most are
+the degenerate ones: answering "yes" to all 20 flights in M3@20 scores **0.00**, a bare "Yes."
+on M2 scores below half, and grading Goose's raw stdout instead of the extracted answer scores
+**0.00** where the extracted answer scores 1.00 — Goose echoes tool *arguments*, which contain
+the very keys the graders anchor on.
+
+**4. ⚠️ The two remaining metrics are NOT parse-time derivable. This section was wrong.**
+
+It said `pass_through_tokens` and `forced_serial_depth` were "derivable from `proxy.jsonl`",
+so parser work only, and that `backend_requests` was the one needing runner changes. That has
+it backwards. `backend_requests` is now cut (§6), and **the proxy does not record what the
+other two need**:
+
+```jsonc
+// one line of proxy.jsonl — the complete record
+{"run_label": "...", "ts": ..., "path": "/v1/messages", "is_messages": true, "status": 200,
+ "request_id": "...", "duration_s": 0.985, "tool_result_tokens": 0, "model": "...",
+ "input_tokens": 200, "output_tokens": 10, "cache_read_input_tokens": 0,
+ "cache_creation_input_tokens": 0, "n_tool_use": 0, "stop_reason": "end_turn"}
+```
+
+Counts, not content. `_tool_result_tokens()` tokenizes each tool result and keeps the number;
+the body is discarded, and `tool_use` blocks are counted (`n_tool_use`) without their names
+or arguments. So:
+
+| Metric | Needs | Status |
+|---|---|---|
+| `pass_through_tokens` | tool-result **fields**, to count those absent from the answer | blocked on the proxy |
+| `forced_serial_depth` | `tool_use` **inputs** + `tool_result` **content**, to match ids across calls | blocked on the proxy |
+| `answer_grounded` (full) | tool-result content, to trace each graded fact | blocked on the proxy |
+| `answer_f1` + coverage | the answer text (`stdout.txt`) | ✅ built |
+| `answer_grounded` (weak) | `n_tool_use` | ✅ built |
+
+**The weak grounding gate is implemented and labelled as weak.** Zero tool calls ⟹
+fabricated, which is exactly the failure that already happened (Apollo's startup logs broke
+the stdio handshake, Goose registered zero tools, the agent answered from training data). It
+returns `False` or `None` and **never `True`**, so an unassessed run cannot be misread as a
+verified one.
+
+**What unblocks the rest.** The proxy needs to log tool-call names and arguments, and the
+tool-result bodies from the newest user message — the same "last user message only" rule
+`_tool_result_tokens()` already uses, so nothing double-counts. Recommendation: a **sidecar
+file per run** (`tool_io.jsonl`) rather than inlining bodies into `proxy.jsonl`. Three
+reasons: `proxy.jsonl` stays small and diffable; a 446 KB M4@103 tool result does not sit in
+the middle of the metrics stream; and the proxy stays *dumb*. It is the one component whose
+correctness underpins every published number, so extraction logic belongs in
+`parse_logs.py`, not in it. Privacy is a non-issue — phase 2's data is synthetic and local.
+
+This is a change to the component that produced phase 1's numbers, so it is a decision rather
+than a chore.
 
 ### What carries over unchanged
 
