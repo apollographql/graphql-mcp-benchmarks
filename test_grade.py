@@ -234,15 +234,123 @@ r = grade.grade(cell, flipped)
 check("a flipped overall verdict is caught",
       any("overallVerdict" in n for n in r["notes"]), True)
 
-# ── the validity gate ────────────────────────────────────────────────────────
-print("\nanswer_grounded (weak form — see grade.py)")
-grounded, why = grade.answer_grounded(0)
-check("zero tool calls is ungrounded", grounded, False)
-check("...with a reason", "fabricated" in why, True)
-grounded, _ = grade.answer_grounded(7)
-check("a run with tool calls is NOT asserted grounded", grounded, None)
-grounded, _ = grade.answer_grounded(None)
-check("a missing count is not asserted grounded", grounded, None)
+# ── the tool-I/O sidecar ─────────────────────────────────────────────────────
+print("\nforced_serial_depth — dependency, not sequencing")
+
+
+def call(i, uses, results):
+    return {"call": i, "ts": float(i),
+            "tool_use": [{"id": f"t{i}", "name": n, "input": a} for n, a in uses],
+            "tool_result": [{"tool_use_id": f"t{i}", "content": c} for c in results]}
+
+
+# The REST shape for M2: flight -> aircraftId -> aircraft, each unlocking the next.
+chain = [
+    call(1, [("getFlight", {"id": "FL-0001"})], ['{"id":"FL-0001","aircraftId":"AC-0007"}']),
+    call(2, [("getAircraft", {"id": "AC-0007"})], ['{"id":"AC-0007","model":"A359"}']),
+    call(3, [("listAssignment", {"aircraftModel": "A359"})], ['{"crewId":"CR-0416"}']),
+    call(4, [("getCrewMember", {"id": "CR-0416"})], ['{"name":"Harper Ueda"}']),
+]
+r = grade.forced_serial_depth(chain, prompt="For flight FL-0001, determine whether...")
+check("a four-deep dependency chain measures 4", r["forced_serial_depth"], 4)
+check("...and names what linked it", r["depth_linked_by"], ["CR-0416"])
+
+# Four independent lookups of ids the PROMPT supplied are depth 1, not depth 4.
+prompt = "For flight numbers AA5751, DL2753, AS4422, UA9039, report the gate."
+independent = [
+    call(i + 1, [("getFlight", {"flightNumber": n})], ['{"flightNumber":"%s","gate":"B38"}' % n])
+    for i, n in enumerate(["AA5751", "DL2753", "AS4422", "UA9039"])
+]
+r = grade.forced_serial_depth(independent, prompt=prompt)
+check("independent calls on prompt-supplied ids are depth 1", r["forced_serial_depth"], 1)
+
+# The case the prompt correction actually exists for, and the shape M3 produces on
+# REST: a list fetch whose response echoes the ids the PROMPT already supplied,
+# followed by per-record calls using those same ids. The agent could have issued
+# all of them at once, so this is depth 1 — but the id does appear in an earlier
+# result, so without the correction it reads as a chain.
+m3_prompt = "For each of these flights — FL-0001, FL-0002, FL-0003 — determine whether..."
+echoed = [
+    call(1, [("listFlight", {"ids": "FL-0001,FL-0002,FL-0003"})],
+         ['{"items":[{"id":"FL-0001"},{"id":"FL-0002"},{"id":"FL-0003"}]}']),
+    call(2, [("listAssignment", {"flightId": "FL-0002"})], ['{"crewId":"CR-0416"}']),
+    call(3, [("listAssignment", {"flightId": "FL-0003"})], ['{"crewId":"CR-0757"}']),
+]
+check("prompt-supplied ids echoed by a list fetch do not create a dependency",
+      grade.forced_serial_depth(echoed, prompt=m3_prompt)["forced_serial_depth"], 1)
+check("...whereas omitting the prompt inflates the same calls to a chain",
+      grade.forced_serial_depth(echoed, prompt="")["forced_serial_depth"] > 1, True)
+
+# One federated query: everything in a single call, so depth 1 by construction.
+one_shot = [call(1, [("FlightRoster", {"flightId": "FL-0001"})],
+                 ['{"flight":{"aircraft":{"model":"A359"},"crew":[{"name":"Harper Ueda"}]}}'])]
+check("a single federated call is depth 1",
+      grade.forced_serial_depth(one_shot, prompt=prompt)["forced_serial_depth"], 1)
+
+# A GraphQL query is one long string argument; ids inside it must still count.
+gql = [
+    call(1, [("graphql_execute", {"query": "query { flight(id: \"FL-0001\") { aircraftId } }"})],
+         ['{"data":{"flight":{"aircraftId":"AC-0007"}}}']),
+    call(2, [("graphql_execute", {"query": "query { aircraft(id: \"AC-0007\") { model advisories { requiresGrounding } } }"})],
+         ['{"data":{"aircraft":{"model":"A359"}}}']),
+]
+check("ids inside a GraphQL query string are found",
+      grade.forced_serial_depth(gql, prompt="")["forced_serial_depth"], 2)
+
+print("\npass_through_tokens — the join tax")
+fat = call(1, [("getFlight", {"id": "FL-0001"})], [json.dumps({
+    "id": "FL-0001", "flightNumber": "AA5751", "scheduledDeparture": "2026-03-18T13:15:00Z",
+    "gate": "B38", "origin": "SFO", "destination": "JFK", "operator": "American",
+    "cateringCode": "CT-88", "deicingRequired": False, "remarks": "none",
+})])
+answer = "AA5751 departs 2026-03-18T13:15:00Z from gate B38."
+r = grade.pass_through_tokens([fat], answer)
+check("most of a fat record never reaches the answer", r["pass_through_fraction"] > 0.5, True)
+lean = call(1, [("getFlight", {"id": "FL-0001"})], [json.dumps({
+    "flightNumber": "AA5751", "scheduledDeparture": "2026-03-18T13:15:00Z", "gate": "B38"})])
+r_lean = grade.pass_through_tokens([lean], answer)
+check("a field-precise response passes almost nothing through",
+      r_lean["pass_through_fraction"] < r["pass_through_fraction"], True)
+check("no tool results means no fraction to report",
+      grade.pass_through_tokens([], answer)["pass_through_fraction"], None)
+
+print("\nanswer_grounded — per-fact, using the sidecar")
+cell = EXPECTED["M2@1"]
+exp = cell["expected"]
+good_answer = (f"Aircraft model: {exp['aircraftModel']}\n"
+               + "\n".join(f"- {p['role']} {p['name']}: yes" for p in exp["pilots"])
+               + "\n\nOverall: yes")
+retrieved = [call(1, [("FlightRoster", {"flightId": "FL-0001"})], [json.dumps(exp)])]
+r = grade.answer_grounded(3, retrieved, cell, good_answer)
+check("facts that appeared in a tool result are grounded", r["grounded"], True)
+check("...and the fact count is reported", r["facts"] >= 3, True)
+
+# The failure this exists for: the right answer, with nothing behind it.
+empty = [call(1, [("schema_search", {"query": "flight"})], ['{"results":[]}'])]
+r = grade.answer_grounded(1, empty, cell, good_answer)
+check("a correct answer with no supporting data is UNgrounded", r["grounded"], False)
+check("...and names what was fabricated", len(r["ungrounded"]) >= 3, True)
+check("...naming the pilot it invented",
+      any(exp["pilots"][0]["name"] in u for u in r["ungrounded"]), True)
+
+r = grade.answer_grounded(0, None, cell, good_answer)
+check("zero tool calls is ungrounded without needing a sidecar", r["grounded"], False)
+r = grade.answer_grounded(5, None, cell, good_answer)
+check("a missing sidecar is NOT asserted grounded", r["grounded"], None)
+r = grade.answer_grounded(5, retrieved, cell, "I could not determine that.")
+check("an answer stating no fact is not asserted grounded", r["grounded"], None)
+
+print("\nreading the sidecar file")
+import tempfile as _tf
+_d = Path(_tf.mkdtemp())
+_d.joinpath("tool_io.jsonl").write_text(
+    json.dumps({"call": 2, "ts": 2.0, "tool_use": [], "tool_result": []}) + "\n"
+    + "not json\n"
+    + json.dumps({"call": 1, "ts": 1.0, "tool_use": [], "tool_result": []}) + "\n")
+got = grade.read_tool_io(_d / "tool_io.jsonl")
+check("lines are ordered by call index", [c["call"] for c in got], [1, 2])
+check("a malformed line is skipped, not fatal", len(got), 2)
+check("a missing sidecar reads as empty", grade.read_tool_io(_d / "nope.jsonl"), [])
 
 # ── stale ground truth ───────────────────────────────────────────────────────
 print("\nstale ground truth")

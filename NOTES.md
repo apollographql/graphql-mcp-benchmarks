@@ -753,3 +753,61 @@ tool-design effect.
     them: a truncated answer, an all-"yes" answer, an answer with zero tool calls. Every one
     of those showed up in the report where it should — and the two bugs above showed up
     beside them.
+
+37. **A tool call's arguments arrive as fragments that do not individually parse, and a naive
+    reader would have made `forced_serial_depth` read 1 everywhere.** The proxy's new
+    `tool_io.jsonl` sidecar has to record what each tool call asked for. In a streamed
+    response that is not one object — it is a `content_block_start` carrying the tool's id and
+    name with `input: {}`, followed by `input_json_delta` events whose `partial_json` strings
+    must be concatenated before they parse:
+
+        {"id": "toolu_a", "name": "getFlight", "input": {}}
+        partial_json: '{"id": "FL-'
+        partial_json: '0001"}'
+
+    Read one delta at a time and every argument fails to parse, so every call records
+    `input: {}`. Nothing errors. `forced_serial_depth` then finds no consumed values anywhere
+    and reports depth 1 for every condition — which is *exactly the result the GraphQL side
+    predicts*, so it would have read as a confirmed hypothesis rather than a bug. The accumulate-
+    per-block-index version is a few lines; the failure mode is what makes it worth a test.
+
+    Same shape as the `n_tool_use` count the proxy already had: it worked because
+    `content_block_start` is a single event. The moment a field is streamed rather than sent
+    whole, "read the event" stops being enough.
+
+38. **`forced_serial_depth` had to exclude ids the prompt supplied, or it rewards reading the
+    instructions.** The metric is the longest chain of calls where each consumed an identifier
+    the previous one returned. M1 hands the agent twenty flight numbers, and M3 hands it twenty
+    flight ids — so an agent that fetches a list and then calls per record *looks* chained: the
+    ids appear in the first call's response, and again in every following call's arguments.
+    They were never discovered, though. The agent could have issued all of those calls at once.
+
+    So the values in `task_prompt.txt` are subtracted from both sides before matching. The
+    correction is available because `run_benchmark.py` writes the rendered prompt per run —
+    written for reproducibility, useful here for something else entirely.
+
+    Two smaller guards in the same function, both for the same reason: strings under four
+    characters are ignored (short tokens collide across unrelated records constantly, and a
+    spurious match inflates the chain), and numbers and booleans are skipped entirely — a seat
+    count matching a crew id's digits is a coincidence, not a dependency.
+
+    Worth noting how both of these were found: by writing the test for the *negative* case.
+    "Four independent lookups of prompt-supplied ids are depth 1" passes trivially; the test
+    that mattered was "the same calls with a list fetch in front of them are still depth 1",
+    and getting that to fail first is what showed the correction was load-bearing. Two earlier
+    versions of that test passed for the wrong reason — the fixtures did not actually contain
+    the collision — which is its own lesson: a test asserting a guard works has to be watched
+    failing without the guard.
+
+39. **`pass_through_tokens` reports exact tokens without a tokenizer in the parser.** The
+    metric wants tool-result tokens whose values never reach the answer. Tokenizing in
+    `parse_logs.py` would mean a tiktoken dependency there (it runs under plain `python3`) and
+    a second implementation to keep in sync with the proxy's.
+
+    Instead: the proxy already records an exact `tool_result_tokens` per call, so the parser
+    computes the *fraction* of result bytes whose values never appear in the answer and applies
+    that fraction to the exact total. Token units stay consistent with every other column, no
+    tokenizer is needed downstream, and the approximation is confined to a ratio — which is far
+    more stable than absolute tokenization, since JSON keys and punctuation are spread evenly
+    through used and unused fields alike. The same "one owner per number" move as `sample.ts`
+    and `rest-payload.ts`: whoever owns the exact count keeps owning it.

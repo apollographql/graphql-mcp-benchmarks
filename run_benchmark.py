@@ -17,8 +17,11 @@ For each (condition, task, rep) it runs in isolation:
   3. `goose run --recipe ...` (headless), capturing stdout
   4. stop the proxy, write meta.json
 
-Proxy output (runs/<cond>/<task>/rep<k>/proxy.jsonl) is the measurement, and the
-only one. The Goose `llm_request.*.jsonl` snapshot used to be copied in as a
+Proxy output is the measurement, and the only one: proxy.jsonl for per-call token
+usage, and tool_io.jsonl beside it for the tool-call arguments and tool-result
+bodies that `pass_through_tokens`, `forced_serial_depth`, and the per-fact
+`answer_grounded` gate are computed from. The proxy derives the sidecar path from
+PROXY_LOG, so both land in the run directory. The Goose `llm_request.*.jsonl` snapshot used to be copied in as a
 cross-check; it was retired in phase 2 (PHASE2_PLAN.md §8.2) because Goose
 ignores GOOSE_LOG_DIR and writes to one XDG path that every parallel condition
 shared *and cleared*, so the column recorded which condition cleared the
@@ -475,9 +478,13 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
     recipe_path.write_text(recipe_text)
     (run_dir / "task_prompt.txt").write_text(task_prompt)
 
+    # The proxy appends to both, so clear them before each run or a re-run
+    # double-counts. tool_io.jsonl is the sidecar carrying tool-call arguments and
+    # tool-result bodies; the proxy derives its path from PROXY_LOG (§11).
     proxy_log = run_dir / "proxy.jsonl"
-    if proxy_log.exists():
-        proxy_log.unlink()  # proxy appends — start each run clean so re-runs don't double-count
+    for stale in (proxy_log, run_dir / "tool_io.jsonl"):
+        if stale.exists():
+            stale.unlink()
     run_env = dict(base_env)  # toolsets are baked into the recipe, not env
     run_env["ANTHROPIC_HOST"] = f"http://127.0.0.1:{port}"
     run_env["PROXY_LOG"] = str(proxy_log)

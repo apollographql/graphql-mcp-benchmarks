@@ -118,7 +118,8 @@ def expected_cells() -> dict:
 # accuracy table, and the blank phase-1 case cannot disagree about the schema.
 GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_coverage",
                 "graded_items", "correct_items", "missing_keys", "unparsed_values",
-                "answer_grounded", "needs_review", "grade_notes"]
+                "answer_grounded", "grounded_facts", "needs_review", "grade_notes",
+                "pass_through_tokens", "pass_through_fraction", "forced_serial_depth"]
 
 
 def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
@@ -134,11 +135,30 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
     raw = stdout_path.read_text() if stdout_path.exists() else ""
     # Grade the closing reply, never the transcript: Goose echoes tool ARGUMENTS,
     # which contain the very keys the graders anchor on. See grade.final_answer.
-    result = grade.grade(cell, grade.final_answer(raw))
-    grounded, why = grade.answer_grounded(proxy.get("n_tool_calls"))
+    answer = grade.final_answer(raw)
+    result = grade.grade(cell, answer)
+
+    # The three metrics that need to know WHAT was in a payload, not just how many
+    # tokens it was. All read the sidecar the proxy writes beside proxy.jsonl.
+    calls = grade.read_tool_io(run_dir / "tool_io.jsonl")
+    prompt_path = run_dir / "task_prompt.txt"
+    prompt = prompt_path.read_text() if prompt_path.exists() else ""
+
+    grounding = grade.answer_grounded(proxy.get("n_tool_calls"), calls, cell, answer)
+    depth = grade.forced_serial_depth(calls, prompt) if calls else {}
+    through = grade.pass_through_tokens(calls, answer) if calls else {}
+    # Exact token total from the proxy, apportioned by the unused-byte fraction —
+    # see grade.pass_through_tokens for why the ratio, not the tokenizer, carries
+    # the approximation.
+    fraction = through.get("pass_through_fraction")
+    pass_through = (round(proxy.get("tool_result_tokens", 0) * fraction)
+                    if fraction is not None else None)
+
     notes = list(result["notes"])
-    if grounded is False:
-        notes.insert(0, why)
+    if grounding["grounded"] is False:
+        notes.insert(0, grounding["why"])
+    elif grounding["grounded"] is None and calls:
+        notes.append(grounding["why"])
     return {
         "answer_f1": result["answer_f1"],
         "answer_precision": result["precision"],
@@ -148,9 +168,13 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
         "correct_items": result["correct_items"],
         "missing_keys": len(result["missing_keys"]),
         "unparsed_values": len(result["unparsed_keys"]),
-        "answer_grounded": grounded,
+        "answer_grounded": grounding["grounded"],
+        "grounded_facts": grounding["facts"],
         "needs_review": result["needs_review"],
         "grade_notes": " | ".join(notes),
+        "pass_through_tokens": pass_through,
+        "pass_through_fraction": fraction,
+        "forced_serial_depth": depth.get("forced_serial_depth"),
     }
 
 
@@ -557,6 +581,61 @@ def _key_findings(rows, conds, tasks) -> list[str]:
     return bullets
 
 
+def _join_tax_section(rows, conds, tasks) -> list[str]:
+    """`pass_through_tokens` and `forced_serial_depth` — who performed the join.
+
+    These two are the phase-2 thesis in numbers. `pass_through_tokens` is the
+    tokens an agent dragged through its context and never used: the cost of
+    fetching whole records to extract two fields. `forced_serial_depth` is the
+    longest chain of calls where each needed an id the previous one returned —
+    genuine dependency, not mere sequencing, and the part that cannot be
+    parallelised away.
+
+    Both are protocol-neutral by construction: they ask what crossed the wire and
+    what depended on what, never how many calls a surface happened to need.
+    """
+    have = [r for r in rows if r.get("pass_through_tokens") is not None
+            or r.get("forced_serial_depth") is not None]
+    if not have:
+        return ["\n## Join tax\n",
+                "_No `tool_io.jsonl` found in these runs, so `pass_through_tokens` and "
+                "`forced_serial_depth` could not be computed. The proxy writes the sidecar "
+                "beside `proxy.jsonl`; runs recorded before it existed do not have one._\n"]
+
+    out = ["\n## Join tax — pass-through tokens and forced serial depth\n",
+           "**pass-through** is tool-result tokens whose values never appear in the answer: "
+           "payload the agent carried through its context and did not use. **depth** is the "
+           "longest chain of calls where each consumed an identifier the previous one "
+           "returned — ids the prompt supplied are excluded, so reading the instructions "
+           "does not count as a dependency.\n",
+           "| Condition | " + " | ".join(f"{t}" for t in tasks) + " |",
+           "|" + "---|" * (len(tasks) + 1)]
+    for c in conds:
+        cells = [f"**{c}** — {COND_LABEL[c]}"]
+        for t in tasks:
+            sub = [r for r in have if r["condition"] == c and r["task_id"] == t]
+            if not sub:
+                cells.append("—")
+                continue
+            pt = [r["pass_through_tokens"] for r in sub if r.get("pass_through_tokens") is not None]
+            fr = [r["pass_through_fraction"] for r in sub if r.get("pass_through_fraction") is not None]
+            dp = [r["forced_serial_depth"] for r in sub if r.get("forced_serial_depth") is not None]
+            bits = []
+            if pt:
+                bits.append(f"{statistics.mean(pt):,.0f} tok")
+            if fr:
+                bits.append(f"({statistics.mean(fr):.0%} unused)")
+            if dp:
+                bits.append(f"depth {statistics.mean(dp):.1f}")
+            cells.append("<br>".join(bits) or "—")
+        out.append("| " + " | ".join(cells) + " |")
+    out.append("\n*Token figures apportion the proxy's exact `tool_result_tokens` by the "
+               "fraction of result bytes whose values never reach the answer, so they share "
+               "units with every other token column here; the approximation is confined to "
+               "that ratio. See `grade.pass_through_tokens`.*\n")
+    return out
+
+
 def _accuracy_section(rows, conds, tasks) -> list[str]:
     """Phase 2's accuracy report — what replaces phase 1's completion boolean.
 
@@ -607,11 +686,12 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
                    f"above\n")
         out.append("An answer whose facts never entered the context is not correct, however "
                    "well it scores. These are reported, never averaged in.\n")
-        out.append("| Condition | Task | Rep | would-be f1 | why |")
-        out.append("|---|---|---|---|---|")
+        out.append("| Condition | Task | Rep | would-be f1 | facts stated | why |")
+        out.append("|---|---|---|---|---|---|")
         for r in sorted(fabricated, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
             out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
-                       f"{r['answer_f1']:.2f} | {r['grade_notes'].split(' | ')[0]} |")
+                       f"{r['answer_f1']:.2f} | {r.get('grounded_facts', 0)} | "
+                       f"{r['grade_notes'].split(' | ')[0]} |")
 
     if review:
         out.append(f"\n### {len(review)} run(s) flagged for review\n")
@@ -624,12 +704,18 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
             out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
                        f"{r['answer_f1']:.2f} | {r['grade_notes'][:160]} |")
 
-    out.append("\n**On grounding.** Every run above passed the *weak* grounding check: it "
-               "made at least one tool call. The full check §7.1 specifies — every graded "
-               "fact traced to a `tool_result` that entered the context before the answer — "
-               "needs tool-result bodies, which `proxy.jsonl` does not record. Until it "
-               "does, `answer_grounded` is `False` or blank, never `True`, so a missing "
-               "check cannot be misread as a passing one.\n")
+    verified = [r for r in scorable if r.get("answer_grounded") is True]
+    unassessed = [r for r in scorable if r.get("answer_grounded") is None]
+    out.append(f"\n**On grounding.** {len(verified)} of {len(graded)} run(s) are "
+               f"fact-verified: every fact the answer states was traced to a `tool_result` "
+               f"that entered the context before it, using the proxy's `tool_io.jsonl` "
+               f"sidecar. {len(fabricated)} failed that check. "
+               + (f"{len(unassessed)} could not be assessed (no sidecar, or the answer "
+                  f"states no checkable fact) and are marked blank rather than passing — "
+                  f"`answer_grounded` is never `True` by default.\n"
+                  if unassessed else
+                  "`answer_grounded` is never `True` by default, so a blank means "
+                  "unassessed, not passed.\n"))
     return out
 
 
@@ -969,9 +1055,10 @@ def write_summary(rows):
         for t in tasks:
             lines += task_table(t, ["C"], f"Task {t}")
 
-    # --- Accuracy (phase 2 only; phase 1 gated on `completed` instead) ---
+    # --- Accuracy + join tax (phase 2 only; phase 1 gated on `completed`) ---
     if phase == 2:
         lines += _accuracy_section(rows, conds, tasks)
+        lines += _join_tax_section(rows, conds, tasks)
 
     # --- Concepts explainer + Stage cost breakdown ---
     lines += _concepts_section(phase)

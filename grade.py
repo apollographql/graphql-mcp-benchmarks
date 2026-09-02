@@ -427,33 +427,286 @@ def grade(cell: dict, answer: str) -> dict:
     return _KINDS[kind](cell, answer)
 
 
+# ── the tool-I/O sidecar ─────────────────────────────────────────────────────
+# proxy/anthropic_logging_proxy.py writes one line per inference call carrying
+# that call's tool-call names and arguments plus the tool-result bodies that
+# arrived with it. Everything below reads that file. Nothing below is computable
+# from proxy.jsonl alone, which records only token counts (PHASE2_PLAN.md §11).
+
+# Values shorter than this are ignored when matching a value from one call's
+# result against the next call's arguments. A two-character token collides across
+# unrelated records constantly, and a spurious match inflates forced_serial_depth
+# — the metric would then report a dependency chain the agent never had.
+MIN_MATCH_LEN = 4
+
+
+def read_tool_io(path: Path) -> list:
+    """The sidecar, ordered by call index. Missing file -> empty."""
+    if not path.exists():
+        return []
+    calls = []
+    for line in path.read_text().splitlines():
+        try:
+            calls.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return sorted(calls, key=lambda c: (c.get("call") or 0, c.get("ts") or 0))
+
+
+def _leaf_strings(obj, out=None) -> set:
+    """Every scalar in a JSON structure, as a string.
+
+    Numbers and booleans are skipped: an aircraft's seat count matching a crew
+    id's digits is a coincidence, and this set is used for identity matching.
+    """
+    if out is None:
+        out = set()
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _leaf_strings(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _leaf_strings(v, out)
+    elif isinstance(obj, str) and len(obj) >= MIN_MATCH_LEN:
+        out.add(obj)
+    return out
+
+
+def _result_values(call: dict) -> set:
+    """Identifier-ish strings a call's tool results carried.
+
+    Results are JSON on the wire but arrive as text, so parse when possible and
+    fall back to scanning for the fixture's identifier shapes. The fallback keeps
+    this working for an error string or a non-JSON body without pretending to
+    have read fields that were not there.
+    """
+    vals = set()
+    for res in call.get("tool_result") or []:
+        text = res.get("content") or ""
+        try:
+            vals |= _leaf_strings(json.loads(text))
+        except (json.JSONDecodeError, ValueError):
+            vals |= set(FLIGHT_ID.findall(text))
+            vals |= set(FLIGHT_NUMBER.findall(text))
+            vals |= set(re.findall(r"\b((?:AC|CR|AS)-\d{3,4})\b", text))
+    return vals
+
+
+def _argument_values(call: dict) -> set:
+    """Identifier-ish strings a call passed as tool arguments."""
+    vals = set()
+    for use in call.get("tool_use") or []:
+        vals |= _leaf_strings(use.get("input") or {})
+    # A GraphQL query arrives as one big string argument, so pull identifiers out
+    # of it too — otherwise the whole query counts as a single opaque value and a
+    # federated call looks like it consumed nothing.
+    for use in call.get("tool_use") or []:
+        for v in (use.get("input") or {}).values():
+            if isinstance(v, str) and len(v) > 40:
+                vals |= set(FLIGHT_ID.findall(v))
+                vals |= set(FLIGHT_NUMBER.findall(v))
+                vals |= set(re.findall(r"\b((?:AC|CR|AS)-\d{3,4})\b", v))
+    return vals
+
+
+def forced_serial_depth(calls: list, prompt: str = "") -> dict:
+    """Longest chain of calls where each consumed an id the previous one produced.
+
+    This is the metric that separates a genuine dependency from mere sequencing —
+    "I had to fetch the flight before I could know which aircraft to ask about"
+    versus "I happened to make these calls in this order". It maps to
+    user-perceived latency in a way call count does not: ten independent calls can
+    go out together, three dependent ones cannot.
+
+    **Values the prompt supplied are excluded.** M1 hands the agent twenty flight
+    numbers; using one is not a discovered dependency, and counting it would give
+    every condition an inflated depth for doing nothing but read its instructions.
+    That correction requires the prompt text, which is why `task_prompt.txt` is
+    passed in — without it this metric flatters REST and federation equally, but
+    wrongly.
+    """
+    supplied = set()
+    if prompt:
+        supplied |= set(FLIGHT_ID.findall(prompt))
+        supplied |= set(FLIGHT_NUMBER.findall(prompt))
+        supplied |= _leaf_strings(prompt.split())
+
+    produced = [_result_values(c) - supplied for c in calls]
+    consumed = [_argument_values(c) - supplied for c in calls]
+
+    depth = [1] * len(calls)
+    via = [None] * len(calls)
+    for i in range(len(calls)):
+        for j in range(i):
+            if consumed[i] & produced[j] and depth[j] + 1 > depth[i]:
+                depth[i] = depth[j] + 1
+                via[i] = sorted(consumed[i] & produced[j])[:3]
+    best = max(depth) if depth else 0
+    at = depth.index(best) if depth else None
+    return {"forced_serial_depth": best,
+            "depth_chain_ends_at_call": (calls[at].get("call") if at is not None else None),
+            "depth_linked_by": (via[at] if at is not None else None)}
+
+
+def pass_through_tokens(calls: list, answer: str) -> dict:
+    """Tool-result tokens that never reach the answer — the join tax, quantified.
+
+    This is the number that makes the depth finding legible: an agent-side join
+    does not just cost more calls, it drags whole records through the context to
+    extract two fields. Here it is measured directly.
+
+    **How the token figure is derived.** The proxy already records an exact
+    `tool_result_tokens` per call (cl100k_base, at log time). This function
+    computes the *fraction* of result bytes whose values never appear in the
+    answer, then applies that fraction to the exact token total. So the token
+    units stay consistent with every other column in the report and no tokenizer
+    is needed here — the approximation is confined to the ratio, which is far more
+    stable than absolute tokenization, since JSON keys and punctuation are spread
+    evenly through used and unused fields alike.
+    """
+    used_bytes = unused_bytes = 0
+    for call in calls:
+        for res in call.get("tool_result") or []:
+            text = res.get("content") or ""
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                # Unparseable body (an error string, a non-JSON payload): charge
+                # it all as pass-through unless the answer quotes it wholesale.
+                # Better to over-report the tax than to drop a payload the agent
+                # demonstrably carried through its context.
+                if text.strip() and text.strip() in answer:
+                    used_bytes += len(text)
+                else:
+                    unused_bytes += len(text)
+                continue
+            for key, value in _flat_fields(parsed):
+                size = len(key) + len(json.dumps(value)) + 4  # "key": value,
+                if _value_in_answer(value, answer):
+                    used_bytes += size
+                else:
+                    unused_bytes += size
+    total = used_bytes + unused_bytes
+    fraction = (unused_bytes / total) if total else None
+    return {"pass_through_fraction": round(fraction, 4) if fraction is not None else None,
+            "tool_result_bytes": total,
+            "pass_through_bytes": unused_bytes}
+
+
+def _flat_fields(obj, prefix="", out=None) -> list:
+    """(key, scalar) pairs for every leaf in a JSON structure."""
+    if out is None:
+        out = []
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            _flat_fields(v, k, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _flat_fields(v, prefix, out)
+    else:
+        out.append((prefix, obj))
+    return out
+
+
+def _value_in_answer(value, answer: str) -> bool:
+    if value is None or isinstance(value, bool):
+        return False
+    text = str(value)
+    if len(text) < 2:
+        return False
+    return text in answer
+
+
+def grounded_facts(cell: dict, answer: str) -> list:
+    """The facts an answer asserts that a tool result must have supplied.
+
+    Per §7.1: for M2 the aircraft model and both pilots' names; for M1 each
+    departure and gate; for M3/M4 the flight identifiers. Only facts the answer
+    actually states are checked — an omitted fact is a recall miss for the grader
+    to score, not a fabrication.
+    """
+    kind = (cell.get("grading") or {}).get("kind")
+    expected = cell.get("expected") or {}
+    facts = []
+    if kind == "keyedFields":
+        for key, want in expected.items():
+            if key not in answer:
+                continue
+            facts.append(key)
+            for field, value in want.items():
+                if value is not None and str(value) in answer:
+                    facts.append(str(value))
+                elif field == "scheduledDeparture" and value:
+                    # Accept the minute-precision form the answer may have used.
+                    norm = _norm_ts(str(value))
+                    if norm and norm in answer:
+                        facts.append(norm)
+    elif kind == "perKeyBoolean":
+        facts = [k for k in expected if k in answer]
+    elif kind == "set":
+        facts = [n for n in FLIGHT_NUMBER.findall(answer)]
+    elif kind == "verdictWithPilotDetail":
+        model = str(expected.get("aircraftModel") or "")
+        if model and model.lower() in answer.lower():
+            facts.append(model)
+        for pilot in expected.get("pilots") or []:
+            name = str(pilot.get("name") or "")
+            if name and name.lower() in answer.lower():
+                facts.append(name)
+    return sorted(set(f for f in facts if f))
+
+
 # ── validity gate ────────────────────────────────────────────────────────────
 
 
-def answer_grounded(n_tool_calls: int) -> tuple:
-    """Whether the answer could have come from data, given the run's tool calls.
+def answer_grounded(n_tool_calls, calls: list = None, cell: dict = None,
+                    answer: str = "") -> dict:
+    """Whether every fact the answer states actually entered the context.
 
-    **This is the weak form of the check §7.1 specifies, and deliberately labelled
-    as such.** The full gate is "every graded fact appears in a `tool_result` that
-    entered the context before the answer", which needs tool-result *content*. The
-    proxy records only counts — `n_tool_use`, `tool_result_tokens`, usage — and
-    discards the bodies, so the per-fact version is not computable from today's
-    `proxy.jsonl`. See PHASE2_PLAN.md §6.
+    A correct answer is not proof of work, and phase 2 is the first phase where
+    that gap can bite: in phase 1 the model knew GitHub's real data from training,
+    so a lucky answer was still plausibly retrieved. Against synthetic fixtures it
+    cannot know anything — but it can still guess, and M2's answer is one boolean
+    while M4@20's is one flight number.
 
-    What is computable is the case that actually happened: in phase 1, Apollo's
-    startup logs broke the stdio handshake, Goose registered the extension with
-    ZERO tools, and the agent answered from training data. Against synthetic
-    fixtures it cannot know anything, so an answer produced with no tool calls at
-    all is fabricated, full stop.
+    **This is not hypothetical.** When Apollo's startup logs broke the stdio
+    handshake in phase 1, Goose registered the extension with zero tools and the
+    agent hallucinated tool calls from training data. That run would score as a
+    cheap success: high accuracy, near-zero cost, both wrong in the same
+    direction.
 
-    Returns (grounded, reason). `grounded=None` means "not assessed" — never
-    silently True, so a missing check cannot be read as a passing one.
+    Two properties make this the right instrument rather than a heuristic. It is
+    **per-run by construction** — the sidecar is written per run, so there is no
+    attribution problem. And it is **protocol-neutral**: it asks whether the data
+    arrived, not how many calls it took. Call counts differ between REST and
+    GraphQL by design; that difference is the measurement, so it cannot also be
+    the validity gate.
+
+    Returns a dict. `grounded` is None when the check could not run — never
+    silently True, so an unassessed run can't be read as a verified one.
     """
-    if n_tool_calls is None:
-        return None, "no tool-call count recorded"
     if n_tool_calls == 0:
-        return False, "answered with zero tool calls — fabricated, not retrieved"
-    return None, (
-        f"{n_tool_calls} tool call(s) made; per-fact grounding not assessed "
-        f"(proxy does not record tool-result content)"
-    )
+        return {"grounded": False, "facts": 0, "ungrounded": [],
+                "why": "answered with zero tool calls — fabricated, not retrieved"}
+    if not calls:
+        return {"grounded": None, "facts": 0, "ungrounded": [],
+                "why": "no tool_io.jsonl for this run — per-fact grounding not assessed"}
+    if cell is None:
+        return {"grounded": None, "facts": 0, "ungrounded": [],
+                "why": "no expected cell — per-fact grounding not assessed"}
+
+    corpus = "\n".join(res.get("content") or ""
+                       for call in calls
+                       for res in (call.get("tool_result") or []))
+    facts = grounded_facts(cell, answer)
+    if not facts:
+        return {"grounded": None, "facts": 0, "ungrounded": [],
+                "why": "the answer states no checkable fact"}
+    missing = [f for f in facts if f not in corpus]
+    if missing:
+        return {"grounded": False, "facts": len(facts), "ungrounded": missing,
+                "why": f"{len(missing)} of {len(facts)} stated fact(s) never appeared in "
+                       f"any tool result: {', '.join(missing[:4])}"
+                       f"{'...' if len(missing) > 4 else ''}"}
+    return {"grounded": True, "facts": len(facts), "ungrounded": [],
+            "why": f"all {len(facts)} stated fact(s) traced to a tool result"}
