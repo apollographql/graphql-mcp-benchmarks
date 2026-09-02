@@ -4,6 +4,39 @@
 # fully-resolved task_prompt string injected — IDENTICAL, word-for-word — into
 # every condition's recipe. Edit wording here only; never per-condition.
 #
+# ── phases ───────────────────────────────────────────────────────────────────
+# `phase: 1` tasks (T*) run against GitHub's live API under conditions A1/A2/B/B2.
+# `phase: 2` tasks (M*) run against the synthetic three-service backend in
+# services/ under conditions M-R1/M-R2/M-G1/M-G2. The two sets never mix: a
+# condition serves one backend, so the runner pairs phase-2 conditions with
+# phase-2 tasks (PHASE2_PLAN.md §8).
+#
+# ── the breadth sweep ────────────────────────────────────────────────────────
+# Phase-2 tasks are swept over N. Rather than adding a dimension to the matrix,
+# each (task, N) becomes its own task id — `M3@20` — so the runner loop, the
+# runs/<cond>/<task>/rep<k> layout, and raw.csv keep working unchanged (§7.1).
+#
+# `ns:` below is a COPY. tasks/expected.json is authoritative: it is generated
+# from the fixtures by `pnpm expected`, and its keys are the task ids that
+# actually run. The runner cross-checks the two and refuses to start on a
+# mismatch, the same way fixtures are checked against their manifest rather
+# than trusted.
+#
+# ── placeholders ─────────────────────────────────────────────────────────────
+# {{repo}}, {{window_start}}, {{window_end}}, {{file_path}} come from .env.
+# Phase-2 placeholders — {{ids}}, {{n}}, {{as_of}}, {{origin}} — come
+# pre-rendered from expected.json[<task id>].placeholders, so the artifact
+# that computes the answer also decides which records the prompt names. Deriving
+# them separately is how you get a prompt asking about one set of flights and a
+# grader scoring another, with every result then wrong in a way that looks like
+# agent error.
+#
+# {{as_of}} is not decoration. "Is this rating still current?" has no answer
+# without a reference date, the fixtures are dated 2026-03-14, and an agent
+# reasonably uses its own idea of today: 17 of M3@50's 50 flights flip verdict
+# between those two dates, and the gap widens every month. Any date-sensitive
+# task MUST state the date; `pnpm expected` fails if the placeholder is missing.
+#
 # Task design:
 # T1 is the differential task: fetching nested data (files changed) for five
 # known PRs. REST must call get_pull_request + get_pull_request_files per PR
@@ -18,8 +51,72 @@
 # conditions still incur schema-discovery overhead (several inference calls
 # before the execute), so REST wins on call count here — the honest tradeoff
 # for a simple lookup.
+# ── phase 2 (M1-M4) ──────────────────────────────────────────────────────────
+# M1 isolates payload precision with joins held out: one service, every call
+# independently issuable, REST batches into one round. The whole result depends
+# on the payload profile (§3.1).
+#
+# M2 is the headline: three forced serial rounds and a client-side join for REST,
+# one query for GraphQL. It is also the N=1 point of M3's slope, which is why M3
+# does not run at N=1 — that cell would ask the same question of the same flight
+# and score the same answer twice (§7.1).
+#
+# M3 sweeps M2 over N, yielding a slope rather than a point. It asks for a verdict
+# on EVERY flight, not just the failing ones, because the interesting failure at
+# N=50 is the agent silently dropping records rather than erroring (§6).
+#
+# M4 places the list in one service and the predicate in another. REST must
+# over-fetch the list, fan out, and filter in context — the agent becomes the
+# predicate. Report it on pass_through_tokens, not payload ratio (§5).
+#
+# M4 says "the first N the API returns", not "the next N departing". Collections
+# sort by id (src/server/data.ts), which is not time order, so "next" would ask
+# for something neither surface serves. The prompt sketch in §5 said "departing
+# SFO on <date>" and the prompt was simply wrong — noted here because it is the
+# second time that exact class of error has been caught in this task.
 tasks:
+  - id: M1
+    phase: 2
+    ns: [1, 5, 20, 50]
+    title: Scheduled departure and gate for N flights — one service, batchable
+    prompt: |
+      For flight numbers {{ids}}, report the scheduled departure time in UTC
+      (YYYY-MM-DDTHH:MM:SSZ) and the departure gate. If a flight has no gate
+      assigned, say so rather than guessing. Present the results as a list, one
+      flight per line, and cover all {{n}}.
+  - id: M2
+    phase: 2
+    ns: [1]
+    title: Are the assigned pilots type-rated and current for the aircraft model
+    prompt: |
+      For flight {{ids}}, determine whether every assigned pilot — the
+      captain and the first officer — holds a type rating for that flight's
+      aircraft model which is still current as of {{as_of}}. Report the aircraft
+      model, then one line per pilot giving the pilot's role, name, and whether
+      that pilot is type-rated and current, then a final yes or no for the flight
+      as a whole.
+  - id: M3
+    phase: 2
+    ns: [5, 20, 50]
+    title: M2 over N flights — breadth x depth
+    prompt: |
+      For each of these flights — {{ids}} — determine whether every assigned
+      pilot (the captain and the first officer) holds a type rating for that
+      flight's aircraft model which is still current as of {{as_of}}. Report one
+      line per flight: the flight id, then yes or no. Cover all {{n}} flights.
+  - id: M4
+    phase: 2
+    ns: [20, 50, 103]
+    title: Which of N departures have an aircraft with an open grounding advisory
+    prompt: |
+      Consider the first {{n}} flights the API returns for departures from
+      {{origin}}. Report the flight numbers of those whose assigned aircraft has
+      an open grounding advisory — an advisory that requires grounding and has
+      not been resolved. List only the qualifying flight numbers.
+
+# ── phase 1 (T1-T2) ──────────────────────────────────────────────────────────
   - id: T1
+    phase: 1
     title: PR details and changed files for five known pull requests
     prompt: |
       For each of the following pull requests in {{repo}} — #4742, #4731, #4729,
@@ -27,6 +124,7 @@ tasks:
       file paths changed in the PR (up to 10 files per PR). Present the results
       as a numbered list, one PR per section.
   - id: T2
+    phase: 1
     title: Single PR lookup — title, author, and merge date
     prompt: |
       For pull request #4742 in {{repo}}, report the PR title, the author's

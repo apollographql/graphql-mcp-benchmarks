@@ -210,6 +210,13 @@ rather than a post-hoc explanation.
    diverge sharply from those, the cause is agent behavior (tool-choice, retries), not
    payload, and should be reported as such.
 
+   *Baseline re-measured 2026-09-02, prediction unchanged:* those two figures came from
+   M1 at N=12, a breadth no condition runs. Swept over the real cells, `-fat` climbs
+   23.9× → 29.5× (N=1 → 50) while `-lean` falls 4.9× → 3.4×, both driven by the fixed
+   ~400 B REST envelope amortizing. So the prediction now has a range to be judged
+   against rather than a point, and the "close to a tie on `-lean`" half is if anything
+   better supported at high N than the original number suggested.
+
 3. **The headline claim we expect to survive the steelman is the JOIN, not over-fetch.**
    Prediction: on `-lean`, M1's advantage largely dissolves while M2/M3/M4 hold at
    roughly 6–8×. If M1 also holds at 6×+ on `-lean`, something is wrong with the lean
@@ -258,6 +265,12 @@ rather than a post-hoc explanation.
    plausible wrong answer that `answer_f1` scores as agent incompetence with no visible
    cause. **Establish which happens with one deliberate high-N `-fat` run during the step-7
    smoke test**, before committing to 200+ runs. They need different columns.
+
+   *Measured 2026-09-02, prediction unchanged:* M3@50 `-fat` is 424,863 B, confirming the
+   ~423 KB estimate this was written on. But the largest cell in the matrix is **M4@103
+   `-fat` at 446,234 B (~127k tokens)**, which this expectation did not name — M4's sweep
+   was extended after it was written. The deliberate high-N `-fat` smoke run should use
+   M4@103, not M3@50.
 
 ## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
 
@@ -471,3 +484,120 @@ tool-design effect.
     genuinely helps more at scale on this task, and only the sweep makes that visible — a
     single-N measurement would have implied a flat multiple. Worth reporting as-is: it is a
     real advantage of the client-side join and it costs nothing to disclose.
+
+23. **"Is this rating still current?" had no reference date — and 34% of the headline task's
+    graded answers depended on it.** M2 and M3 ask whether a pilot's type rating is still
+    current. The fixtures are dated 2026-03-14 and the generator itself uses that instant as
+    "now", but the prompt never said so, and an agent has no way to know: it would reasonably
+    use its own idea of today. 404 of the 1,490 type ratings expire between the fixture base
+    date and 2026-09-01 alone, and **17 of M3@50's 50 flights flip verdict across that gap**.
+
+    Nothing would have failed. The runs complete, the answers look plausible, the accuracy
+    column is quietly wrong — and it drifts further every month the benchmark stays runnable,
+    so a re-run next year would produce a different "finding" from identical code and data.
+
+    Fixed by putting the date in the prompt (`{{as_of}}`, supplied per cell), which is also
+    just what an operational question carries. `pnpm expected` now fails if a date-sensitive
+    task has no `{{as_of}}` placeholder, and `pnpm test` fails if the prompt does not use it.
+
+    The general lesson, and the reason to write it down: a benchmark over synthetic data has
+    a *second* clock — the data's — and every question about currency, recency, or "next" is
+    ambiguous between the two unless the prompt pins one.
+
+24. **M1 named flights by a key that is not unique, and the two surfaces disagreed about it.**
+    M1 quotes flight *numbers* rather than ids, deliberately — that is what a human says.
+    But airlines reuse a flight number across days, the fixtures span 14 days, and 49 of the
+    2,000 numbers are carried by two different flights. One of them (DL3432, on FL-0014 and
+    FL-1396, different gates and departure times) sat in the first 20, so it was in M1@20 and
+    M1@50 but not in the N=12 row that had already been published.
+
+    Worse than ambiguous — asymmetric. `flightsByNumbers` flat-maps every match, so GraphQL
+    returns 21 flights for 20 requested numbers, with two conflicting answers for DL3432.
+    REST's `?flightNumbers=...&limit=20` applies the limit after filtering and truncates the
+    same result set to a single DL3432. The two surfaces answer the same prompt differently
+    and the grader marks one of them wrong, for a reason that has nothing to do with protocol.
+
+    Fixed by sampling M1 only from flights whose number is unique across the fixtures. Keeping
+    numbers in the prompt was worth the extra filter; switching M1 to ids would have removed
+    the one task that exercises a human-quoted key.
+
+25. **A single-boolean task cannot be saved by a balance guard — only by asking for more.**
+    M2 grades one yes/no about one fixed flight, and that flight's answer is "yes", so an
+    agent that replies "yes" with zero tool calls scores 100%. The 80/20 skew guard cannot
+    catch it: skew is meaningless over one item. The fix had to change the task, not the
+    check — M2 now asks for each pilot's role, **name**, and per-pilot verdict, and the names
+    sit in the personnel service behind two dependent hops, so they cannot be guessed. It
+    cost nothing to measure: both surfaces already fetch `crew { name typeRatings }` for M2.
+
+    Related: M3 at N=1 was M2 with different wording about the same flight — same records,
+    same predicate, same answer, 18 runs of the matrix. Dropped; M2 *is* the N=1 point of
+    M3's slope. The duplicate-cell guard that catches it initially did not, because it keyed
+    on the whole `sample` object and M2 carries an extra `aircraftId` for the grader.
+
+26. **The skew guard was wrong for M4, and failing it was the right way to find out.** Its
+    first run failed all three M4 cells: 92-95% of candidates do not qualify. But M4 grades a
+    *set* — only the qualifying flights — so a small positive class is the realistic case
+    (8 of 103 is a plausible AOG rate) and F1 already punishes hedging (returning everything
+    scores precision 0.08). The skew rule belongs to per-item classification, which is M3.
+    Left as-is, it would have pushed the fixtures toward an unrealistic grounding rate to
+    satisfy a metric that does not apply. A guard that fires needs its premise re-read, not
+    just its threshold raised.
+
+27. **The measurement table described a cell no condition runs.** §5.1 reported M1 at N=12 —
+    a leftover breadth — while saying nothing about M1@50 or M3@50, two of the three largest
+    cells in the matrix. `verify:federation` now derives its task list from the same `SWEEP`
+    constant the ground truth uses, so the table covers exactly the eleven cells that run and
+    cannot drift from them again. The rows that appeared in both versions are byte-identical.
+
+28. **The same M1 payload was computed three different ways, and the plan quoted two of
+    them.** §3.1 reported M1's `-fat` ratio as 28.5× and §5.1 as 29.1× — same task, same
+    fixtures, same profile. The cause was two helper implementations: `measure.ts` sliced
+    its own twelve flights and passed a stub `self` link, while `verify-federation.ts` used
+    the real link builders and a differently-sized `generatedAt`. Neither was wrong on its
+    own terms and nothing could tell you which to believe.
+
+    Both now call one `src/tools/rest-payload.ts` and draw their sample from `sample.ts`, so
+    `pnpm measure`'s three M1 rows are byte-identical to §5.1's M1 (N=20) row. This is the
+    fourth instance of the same root cause in this project — after `links.ts` (surprise 7),
+    `codegen/artifacts.ts`, and now the samples — and the rule that keeps falling out of it
+    is worth stating plainly: **if two things must agree on a number, they have to share the
+    code that computes it.** A second implementation kept in step by discipline is a second
+    implementation that will drift, and the drift shows up as a published inconsistency
+    rather than a test failure.
+
+29. **A correct answer is not evidence of work, and phase 2 is where that starts to matter.**
+    In phase 1 the model knew GitHub's real data from training, so even an unretrieved answer
+    was plausibly *retrievable*. Against synthetic fixtures it can know nothing — but it can
+    still guess, and two cells are guessable in one shot: M2 is a single boolean, and M4@20
+    has a single qualifying flight.
+
+    The precedent is already in this file (Apollo stdout pollution, above): a broken stdio
+    handshake registered the extension with zero tools and **the agent hallucinated tool
+    calls from training data**. That run would now score as a cheap success — high accuracy,
+    near-zero tool calls — which corrupts both columns in the same direction.
+
+    So `parse_logs.py` gains a per-run `answer_grounded` check: every graded fact must appear
+    in a `tool_result` that entered the context before the answer, or the run is reported as
+    fabricated rather than averaged into accuracy. Two things make it the right instrument.
+    It is **per-run by construction** (`proxy.jsonl` is per run, unlike `/__metrics`), and it
+    is **protocol-neutral** — it asks whether the data arrived, not how many calls it took.
+    Call counts differ between REST and GraphQL by design; the measurement cannot also be
+    the validity gate.
+
+    Rejected alternative: naming the expected tools in the prompt. Tool discovery and
+    selection is precisely what the 2x2 measures, and the prompt must go into every
+    condition identical word-for-word. The tool surface is the condition, not the prompt.
+
+30. **`/__metrics` cannot attribute `backend_requests` per run, and nothing had been wired up
+    yet to reveal it.** The planned mechanism is reset-run-read against a global counter on a
+    single shared stack, while six conditions execute in parallel
+    (`ThreadPoolExecutor`, `run_benchmark.py:398`). One condition's `DELETE` zeroes another's
+    counter mid-run and every read sums all six.
+
+    Same shape as the Goose log race (PHASE2_PLAN.md §8.2), and worth noting how it was
+    found: not by reading the metrics code, but by asking what evidence proves an agent did
+    the work, then checking whether that evidence could be attributed to a run. The
+    "who performs the join" claim rests on this column answering a reviewer's question —
+    "did you just move the cost to the infrastructure bill?" — and an unattributable number
+    cannot answer it. Options in §8.2; the cheapest honest one is to measure it in a serial
+    pass, since backend fan-out is a property of the query plan rather than of the agent.

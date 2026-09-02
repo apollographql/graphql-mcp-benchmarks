@@ -18,7 +18,8 @@
     "rest": "tsx src/server/rest/serve.ts",
     "fixtures:verify": "tsx src/tools/verify-fixtures.ts",
     "health": "tsx src/tools/health.ts",
-    "verify:supergraph": "tsx src/tools/verify-supergraph.ts"
+    "verify:supergraph": "tsx src/tools/verify-supergraph.ts",
+    "expected": "tsx src/tools/expected.ts"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

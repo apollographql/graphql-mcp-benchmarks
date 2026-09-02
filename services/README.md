@@ -38,6 +38,7 @@ pnpm build       # fixtures + codegen + supergraph compose
 pnpm test        # parity gate + subgraph resolvers — see below
 pnpm typecheck
 pnpm measure     # payload sizes for PHASE2_PLAN.md §3.1
+pnpm expected    # regenerate tasks/expected.json — the phase-2 ground truth
 ```
 
 ### Running the stack — Docker (preferred)
@@ -166,6 +167,14 @@ in `operations/` must equal a hardcoded list, each must hold one query named aft
 file, and each must validate against the composed supergraph. Adding an operation is
 supposed to be inconvenient — see `operations/README.md`.
 
+And it guards the ground truth (`src/test/expected.test.ts`): `tasks/expected.json` must
+match what the current fixtures imply, no task cell may be degenerate (an empty answer set, a
+per-item verdict skewed past 80/20, or two cells asking the same question of the same
+records), every prompt placeholder must be supplied and every supplied placeholder used, and
+every expected answer is **recomputed from what the subgraphs actually serve** rather than
+from the fixture files the generator read. See PHASE2_PLAN.md §7 for what each guard has
+already caught.
+
 **Treat a failure here as a design regression, not a broken test.**
 
 ## Payload profiles
@@ -177,7 +186,7 @@ Both are served from the same data; the difference is field selection.
 - **`-lean`** — honors `?fields=`. A REST service that has already solved over-fetching.
 
 Every `M-R*` condition runs in both, and results are reported as a range. On M1 the
-spread is 28.6× versus 3.5× against GraphQL — picking one profile would be picking the
+spread is 23.9–29.5× versus 3.4–4.9× against GraphQL — picking one profile would be picking the
 headline. See `pnpm measure`.
 
 ## Determinism

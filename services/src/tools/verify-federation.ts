@@ -27,45 +27,30 @@
  * projected byte counts, which is what makes the projected table trustworthy.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { API_VERSION, PORTS, REGISTRY, ROUTER_PORT, SERVICES } from '../entities/index.ts';
-import { projectCollection, projectResource } from '../shared/projections.ts';
-import type { PayloadProfile, ProjectOptions } from '../shared/projections.ts';
-import type { EntityDef, ServiceName } from '../shared/types.ts';
-import { collectionLinks, resourceLinks } from '../server/rest/links.ts';
+import { PORTS, REGISTRY, ROUTER_PORT, SERVICES } from '../entities/index.ts';
+import type { PayloadProfile } from '../shared/projections.ts';
+import type { ServiceName } from '../shared/types.ts';
+import { restCollection, restResource } from './rest-payload.ts';
 import { checkFixtureProvenance, formatProvenanceFailure } from './provenance.ts';
+import { SWEEP } from './ground-truth.ts';
+// The samples live in sample.ts so this table and tasks/expected.json measure and
+// grade the SAME flights. See its header.
+import {
+  AIRCRAFT,
+  CREW,
+  M4_ORIGIN,
+  PILOT_ROLES,
+  assignmentsFor,
+  m4Candidates,
+  pickFlights,
+  pickFlightsForM1,
+  pilotsOnly,
+} from './sample.ts';
+import type { Record_ } from './sample.ts';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(HERE, '../..');
 const ROUTER = `http://localhost:${ROUTER_PORT}/`;
 
-type Record_ = Record<string, unknown>;
-
-function fixtures(entity: string): Record_[] {
-  return JSON.parse(readFileSync(resolve(ROOT, `fixtures/${entity}.json`), 'utf8'));
-}
-
-const FLIGHTS = fixtures('Flight');
-const AIRCRAFT = new Map(fixtures('Aircraft').map((a) => [String(a['id']), a]));
-const CREW = new Map(fixtures('CrewMember').map((c) => [String(c['id']), c]));
-const ASSIGNMENTS = fixtures('Assignment');
-
 const bytes = (v: unknown): number => Buffer.byteLength(JSON.stringify(v));
-
-function opts(profile: PayloadProfile, fields?: string[]): ProjectOptions {
-  return {
-    profile,
-    fields,
-    registry: REGISTRY,
-    apiVersion: API_VERSION,
-    // Same fixed width as src/server/rest/app.ts, so envelope bytes line up.
-    requestId: `req_${'0'.repeat(25)}1`,
-    generatedAt: '2026-03-14T00:00:00Z',
-  };
-}
 
 // ── router / metrics plumbing ────────────────────────────────────────────────
 
@@ -142,32 +127,6 @@ interface RestCall {
   live?: { service: ServiceName; path: string };
 }
 
-/**
- * Both helpers use the SAME link builders as src/server/rest/app.ts. They used to
- * pass no links, which made every projected byte count 65-135 B light — caught by
- * `--live`. `selfPath` must match the URL the agent would actually call, because
- * the collection `self` link embeds the query string and its length counts.
- */
-function restResource(entity: EntityDef, record: Record_, profile: PayloadProfile, fields?: string[]) {
-  return projectResource(record, entity, opts(profile, fields), resourceLinks(entity.name, record));
-}
-
-function restCollection(
-  entity: EntityDef,
-  records: Record_[],
-  profile: PayloadProfile,
-  fields: string[] | undefined,
-  selfPath: string,
-) {
-  return projectCollection(
-    records,
-    entity,
-    opts(profile, fields),
-    { limit: records.length, nextCursor: null, total: records.length },
-    collectionLinks(selfPath, null),
-  );
-}
-
 interface TaskReport {
   id: string;
   description: string;
@@ -182,37 +141,14 @@ const Aircraft = REGISTRY.get('Aircraft')!;
 const CrewMember = REGISTRY.get('CrewMember')!;
 const Assignment = REGISTRY.get('Assignment')!;
 
-/** Deterministic pick of N flights that have an aircraft and a full roster. */
-function pickFlights(n: number): Record_[] {
-  return FLIGHTS.filter((f) => AIRCRAFT.has(String(f['aircraftId']))).slice(0, n);
-}
-
-/**
- * M2/M3 ask about PILOTS (§5), and since 2026-08-31 BOTH surfaces can say so:
- * `GET /v2/assignments?roles=CAPTAIN,FIRST_OFFICER` and
- * `assignments(roles: [CAPTAIN, FIRST_OFFICER])`.
- *
- * Before that filter existed the asymmetry favored REST — it could fetch the full
- * roster, filter client-side, and then request crew for the two pilots only, while
- * a single GraphQL traversal had no way to narrow and resolved crew for all four.
- * Modelling REST as fetching all four crew instead overstated its cost by ~30% at
- * N=20 and pushed M3 at N=50 `-fat` past a 200k context window.
- */
-const PILOT_ROLES = ['CAPTAIN', 'FIRST_OFFICER'] as const;
-const PILOT_ROLE_SET: ReadonlySet<string> = new Set(PILOT_ROLES);
 const PILOT_ROLES_QS = `&roles=${PILOT_ROLES.join(',')}`;
 const PILOT_ROLES_GQL = `(roles: [${PILOT_ROLES.join(', ')}])`;
 
-function pilotsOnly(assignments: Record_[]): Record_[] {
-  return assignments.filter((a) => PILOT_ROLE_SET.has(String(a['role'])));
-}
-
-function assignmentsFor(flightIds: Set<string>): Record_[] {
-  return ASSIGNMENTS.filter((a) => flightIds.has(String(a['flightId'])));
-}
-
 function m1(n: number): TaskReport {
-  const flights = pickFlights(n);
+  // Not `pickFlights`: M1 names flights by NUMBER, and 49 of the 2,000 numbers are
+  // carried by more than one flight — one of them inside the first 20. See
+  // sample.ts. This is why the M1 row of §5.1 was re-measured on 2026-09-01.
+  const flights = pickFlightsForM1(n);
   const numbers = flights.map((f) => String(f['flightNumber']));
   const leanFields = { flight: ['flightNumber', 'scheduledDeparture', 'gate'], aircraft: [], crew: [] };
   const path = `/v2/flights?flightNumbers=${numbers.join(',')}&limit=${n}&fields=${leanFields.flight.join(',')}`;
@@ -352,26 +288,14 @@ function m3(n: number): TaskReport {
 }
 
 /**
- * N is `limit` on the flight list — the candidate set the agent must evaluate.
- *
- * Two things about M4's sweep differ from M3's, both forced by the data:
- *
- * 1. It only runs at the HIGH end (20/50/103). Only 3.7% of airframes carry an
- *    open grounding advisory, so at N<=5 the correct answer is "none" and an agent
- *    that calls nothing and says so scores a perfect `answer_f1`. 103 is the full
- *    SFO departure list, not an arbitrary cap.
- * 2. There is no `date` filter, despite the prompt sketch that once said "on
- *    <date>". The fixtures span 14 days at 7.4 SFO departures/day, so a single
- *    date leaves ~10 candidates and zero hits on most days.
+ * The candidate set and its sweep points are in sample.ts (`m4Candidates`).
  *
  * The interesting metric here is `pass_through_tokens`, not payload ratio: at
  * N=103 REST fetches 103 flights and ~90 airframes to return 8 rows.
  */
 function m4(n: number): TaskReport {
-  const origin = 'SFO';
-  const candidates = FLIGHTS.filter(
-    (f) => f['origin'] === origin && AIRCRAFT.has(String(f['aircraftId'])),
-  ).slice(0, n);
+  const origin = M4_ORIGIN;
+  const candidates = m4Candidates(n);
   // Deduped: several SFO flights share an airframe, and an agent would not fetch
   // the same id twice. Not deduping would inflate REST's payload unfairly.
   const acIds = [...new Set(candidates.map((f) => String(f['aircraftId'])))];
@@ -527,7 +451,17 @@ async function main(): Promise<void> {
     }
   }
 
-  for (const task of [m1(12), m2(), m3(20), m4(20), m4(50), m4(103)]) {
+  // Exactly the cells the matrix runs, from the one sweep definition in
+  // ground-truth.ts. It used to be a hand-written list that measured M1 at N=12 —
+  // a breadth no condition ever runs — so the headline table described cells that
+  // did not exist while saying nothing about M1@50 or M3@50, the two largest.
+  const tasks: TaskReport[] = [
+    ...SWEEP.M1.map((n) => m1(n)),
+    m2(),
+    ...SWEEP.M3.map((n) => m3(n)),
+    ...SWEEP.M4.map((n) => m4(n)),
+  ];
+  for (const task of tasks) {
     await reportTask(task);
   }
 

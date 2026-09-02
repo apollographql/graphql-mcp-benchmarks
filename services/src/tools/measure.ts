@@ -1,10 +1,17 @@
 /**
  * Payload measurement — checks the numbers PHASE2_PLAN.md §3.1 asserts.
  *
- * The plan claims a Flight resource is ~2 KB minified and that M1 at N=12 costs
- * roughly 7–8K tokens on REST versus ~200 on GraphQL. Those figures drove the
- * decision to bracket `?fields=` instead of assuming it, so they need to be
+ * The plan claims a Flight resource is ~2 KB minified and that M1 costs several
+ * thousand tokens on REST versus a few hundred on GraphQL. Those figures drove
+ * the decision to bracket `?fields=` instead of assuming it, so they need to be
  * measured rather than estimated.
+ *
+ * It reports M1 at **N=20**, a breadth the matrix actually runs, using the same
+ * sample (`pickFlightsForM1`) and the same payload helpers as the §5.1
+ * head-to-head table, so the two sections of the plan cannot disagree. They did:
+ * this file used to slice its own twelve flights and pass a stub `self` link,
+ * which is how §3.1 came to report a 28.5x ratio where §5.1 reported 29.1x for
+ * the same task on the same data.
  *
  * Token counts here are ESTIMATES from a bytes-per-token divisor. Dense JSON
  * tokenizes worse than prose because punctuation and quoted keys rarely merge,
@@ -15,34 +22,16 @@
  * Run: pnpm measure
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-
-import { API_VERSION, REGISTRY } from '../entities/index.ts';
-import { projectCollection, projectResource } from '../shared/projections.ts';
-import type { ProjectOptions } from '../shared/projections.ts';
-
-const HERE = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(HERE, '../..');
+import { REGISTRY } from '../entities/index.ts';
+import { projectCollection } from '../shared/projections.ts';
+import { payloadOpts, restCollection, restResource } from './rest-payload.ts';
+import { FLIGHTS, pickFlightsForM1 } from './sample.ts';
 
 /** Dense-JSON bytes per token. See the header note. */
 const BYTES_PER_TOKEN = 3.5;
 
-function fixtures(entity: string): Record<string, unknown>[] {
-  return JSON.parse(readFileSync(resolve(ROOT, `fixtures/${entity}.json`), 'utf8'));
-}
-
-function opts(profile: 'fat' | 'lean', fields?: string[]): ProjectOptions {
-  return {
-    profile,
-    fields,
-    registry: REGISTRY,
-    apiVersion: API_VERSION,
-    requestId: 'req_01HQ8XJ4K2M9P7RTVW3YZB6NC',
-    generatedAt: '2026-03-14T07:18:22.418Z',
-  };
-}
+/** The M1 cell reported here — one of the four the matrix runs. */
+const N = 20;
 
 const bytes = (v: unknown): number => Buffer.byteLength(JSON.stringify(v));
 const tokens = (v: unknown): number => Math.round(bytes(v) / BYTES_PER_TOKEN);
@@ -58,36 +47,31 @@ function row(label: string, value: unknown, extra = ''): void {
 
 function main(): void {
   const flight = REGISTRY.get('Flight')!;
-  const flights = fixtures('Flight');
-  const one = flights.find((f) => f['id'] === 'FL-0142') ?? flights[0]!;
+  const one = FLIGHTS.find((f) => f['id'] === 'FL-0142') ?? FLIGHTS[0]!;
 
-  // M1 needs exactly these two values per flight.
-  const M1_FIELDS = ['scheduledDeparture', 'gate'];
+  // What M1 asks for, and all it asks for. `flightNumber` is included because
+  // the prompt names flights by number, so the response has to identify them.
+  const M1_FIELDS = ['flightNumber', 'scheduledDeparture', 'gate'];
 
   console.log('\nSingle Flight resource — GET /v2/flights/FL-0142\n');
-  row('-fat (full representation)', projectResource(one, flight, opts('fat')));
-  row(
-    '-lean (?fields=scheduledDeparture,gate)',
-    projectResource(one, flight, opts('lean', M1_FIELDS)),
-  );
+  row('-fat (full representation)', restResource(flight, one, 'fat'));
+  row(`-lean (?fields=${M1_FIELDS.join(',')})`, restResource(flight, one, 'lean', M1_FIELDS));
 
-  console.log('\nM1 at N=12 — twelve flights, two values each\n');
+  console.log(`\nM1 at N=${N} — ${N} flights, two values each\n`);
 
-  const twelve = flights.slice(0, 12);
-  const page = { limit: 12, nextCursor: null, total: 12 };
+  const flights = pickFlightsForM1(N);
+  const numbers = flights.map((f) => String(f['flightNumber']));
+  const selfPath =
+    `/v2/flights?flightNumbers=${numbers.join(',')}&limit=${N}&fields=${M1_FIELDS.join(',')}`;
 
-  const restFat = projectCollection(twelve, flight, opts('fat'), page, {
-    self: '/v2/flights?ids=...',
-  });
-  const restLean = projectCollection(twelve, flight, opts('lean', M1_FIELDS), page, {
-    self: '/v2/flights?ids=...&fields=scheduledDeparture,gate',
-  });
+  const restFat = restCollection(flight, flights, 'fat', M1_FIELDS, selfPath);
+  const restLean = restCollection(flight, flights, 'lean', M1_FIELDS, selfPath);
 
   // What the router returns for:
   //   { flightsByNumbers(flightNumbers: [...]) { flightNumber scheduledDeparture gate } }
   const graphql = {
     data: {
-      flightsByNumbers: twelve.map((f) => ({
+      flightsByNumbers: flights.map((f) => ({
         flightNumber: f['flightNumber'],
         scheduledDeparture: f['scheduledDeparture'],
         gate: f['gate'],
@@ -107,7 +91,7 @@ function main(): void {
       `-lean is ${leanRatio.toFixed(1)}x.`,
   );
   console.log(
-    `  Useful values returned: 24. Fields available per flight: ${flight.fields.length}.`,
+    `  Useful values returned: ${N * 2}. Fields available per flight: ${flight.fields.length}.`,
   );
 
   console.log('\nField-usage ratio — the swept parameter\n');
@@ -118,7 +102,11 @@ function main(): void {
     ['a 20-field task', 20],
   ] as const) {
     const selected = flight.fields.slice(0, n).map((f) => f.name);
-    const lean = projectCollection(twelve, flight, opts('lean', selected), page);
+    const lean = projectCollection(flights, flight, payloadOpts('lean', selected), {
+      limit: N,
+      nextCursor: null,
+      total: N,
+    });
     const ratio = bytes(restFat) / bytes(lean);
     console.log(
       `  ${label.padEnd(36)} ${String(n).padStart(2)}/${flight.fields.length} fields  ` +

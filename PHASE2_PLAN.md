@@ -12,25 +12,39 @@ surface size) into knobs we control.
 
 ## STATUS — read this first
 
-**Steps 1–5 of §9 are complete.** The backend exists, both surfaces are generated from one
+**Steps 1–6 of §9 are complete.** The backend exists, both surfaces are generated from one
 definition, the federated router composes and resolves M2 across all three services, the
-whole stack runs under `docker compose`, and all four MCP tool surfaces are built and
-measured against the live stack. Verified numbers are in §5.1 and §8.1.
+whole stack runs under `docker compose`, all four MCP tool surfaces are built and measured
+against the live stack, and the four tasks plus their computed ground truth exist. Verified
+numbers are in §5.1 (all eleven cells, re-measured 2026-09-02) and §8.1.
 
-The role/rank fixture defect found during step 5 is **fixed** (§5), fixtures are
-regenerated, and §5.1 is re-measured against the rebuilt stack.
+Four grading defects have been found and fixed by building this, not by running it: the
+role/rank fixture incoherence (step 5) and three more in step 6 — no reference date for
+"current", non-unique flight numbers in M1's sample, and M3@1 duplicating M2. All four are
+recorded in §5 with the guard that now catches each. **Expect more of these in step 7**; the
+pattern is a question that reads one way to the grader and another to the agent, with nothing
+erroring to say so.
 
-**NEXT: step 6 — tasks M1–M4 plus the expected-answer generator. Specified in §7.1:**
-`expected.json` shape, per-task N values and graded units, and how N threads through the
-runner without adding a dimension. §7 carries the answer-balance guard it must enforce.
+**NEXT: step 7 — harness wiring (§8) and reporting (§11).** §7.1's last block lists exactly
+what the runner side still needs: expand phase-2 tasks over N, pair phase-2 conditions with
+`phase: 2` tasks, render from `expected.json[<id>].placeholders`, and fail on any unrendered
+`{{…}}`. Grading rules live in `expected.json[<id>].grading` — `parse_logs.py` should read
+them, not re-derive them.
 
-Then step 7 (harness wiring, §8). Two parts of step 7 are easy to skip and shouldn't be:
-**§8.2** (the Goose shared-log race — PR #3 silenced the crash but not the corruption, and
-six parallel conditions make it worse) and **§11** (`parse_logs.py` drops unknown conditions
-silently rather than erroring, so every phase-2 row would vanish from the report).
+Three parts of step 7 are easy to skip and shouldn't be:
+**§8.2** (two shared-resource races under six parallel conditions — Goose's log directory,
+which PR #3 silenced without fixing, and `/__metrics`, which cannot attribute
+`backend_requests` per run as planned), **§7.1's `answer_grounded` gate** (a lucky guess on
+M2 or M4@20 otherwise scores as a cheap success — phase 1 already produced an agent
+hallucinating tool calls when a handshake broke), and **§11** (`parse_logs.py` drops unknown
+conditions silently rather than erroring, so every phase-2 row would vanish from the report).
 
-Matrix size and cost are in §4 under "Matrix size": 216 runs, ~$10–20 on haiku, with the
-context window rather than cost as the binding constraint.
+Matrix size and cost are in §4 under "Matrix size": **198 runs** (6 condition cells × 11 task
+instances × 3 reps), ~$10–20 on haiku, with the context window rather than cost as the binding
+constraint — the largest measured tool result is 446 KB, ~127k tokens.
+
+`tasks/expected.json` is authoritative for which cells exist. Regenerate it with
+`pnpm expected` after any fixture change; `pnpm test` fails if the committed copy has drifted.
 
 **Model: `claude-haiku-4-5`**, matching phase 1. See `NOTES.md` expectation 7 for the open
 question about whether discovery behaviour is model-dependent.
@@ -376,33 +390,40 @@ counts come from the proxy's `usage` capture during runs.
 
 | Response | Bytes | ~Tokens |
 |---|---|---|
-| One Flight, `-fat` | 2,802 | ~801 |
-| One Flight, `-lean` (`?fields=scheduledDeparture,gate`) | 376 | ~107 |
-| **M1 at N=12, REST `-fat`** | **29,131** | **~8,323** |
-| M1 at N=12, REST `-lean` | 2,848 | ~814 |
-| M1 at N=12, GraphQL | 1,023 | ~292 |
+| One Flight, `-fat` | 2,910 | ~831 |
+| One Flight, `-lean` (`?fields=flightNumber,scheduledDeparture,gate`) | 535 | ~153 |
+| **M1 at N=20, REST `-fat`** | **49,049** | **~14,014** |
+| M1 at N=20, REST `-lean` | 5,752 | ~1,643 |
+| M1 at N=20, GraphQL | 1,683 | ~481 |
 
-So M1 costs **~8.3K tokens on `-fat` REST to extract 24 scalars**, against ~292 for the
-equivalent GraphQL query — a **28.5×** payload ratio. On `-lean` the ratio falls to
-**2.8×**.
+So M1 costs **~14K tokens on `-fat` REST to extract 40 scalars**, against ~481 for the
+equivalent GraphQL query — a **29.1×** payload ratio. On `-lean` the ratio falls to
+**3.4×**.
+
+*Updated 2026-09-02 to report N=20, one of the four M1 breadths the matrix runs, replacing
+an N=12 figure no condition measures. `pnpm measure` now draws its sample from
+`src/tools/sample.ts` and its byte counts from `src/tools/rest-payload.ts` — the same modules
+§5.1 uses — so those three rows are byte-identical to the M1 (N=20) row there. They previously differed — 28.5× here against 29.1× there, for the same
+task on the same data — because this tool sliced its own twelve flights and passed a stub
+`self` link.*
 
 That spread is the entire argument for bracketing rather than picking. Choosing `-fat`
-alone yields a 28× headline; choosing `-lean` alone yields 2.8×. Both are true statements
+alone yields a 29× headline; choosing `-lean` alone yields 3.4×. Both are true statements
 about different REST services, and reporting only one would be a choice about the
 conclusion.
 
 ### The field-usage sweep
 
 Because field cardinality is now a knob rather than an accident of someone else's API
-design, the advantage can be reported as a curve. Same 12 flights, varying how many of
+design, the advantage can be reported as a curve. Same 20 flights, varying how many of
 Flight's 46 fields the task actually needs:
 
 | Task shape | Fields needed | `-fat` vs `-lean` |
 |---|---|---|
-| M1 (departure, gate) | 2 / 46 | 22.8× |
-| M2 (aircraft model + crew ratings) | 3 / 46 | 12.3× |
+| M1 (departure, gate) | 2 / 46 | 24.6× |
+| M2 (aircraft model + crew ratings) | 3 / 46 | 12.9× |
 | a 10-field task | 10 / 46 | 1.9× |
-| a 20-field task | 20 / 46 | 1.4× |
+| a 20-field task | 20 / 46 | 1.5× |
 
 The curve collapses fast. Past roughly 10 of 46 fields — a ~20% usage ratio — over-fetch
 stops mattering much, and any remaining GraphQL advantage has to come from the join
@@ -463,13 +484,20 @@ Commit the M-G2 operation set in a dated file so the ordering is auditable.
 ### Matrix size
 
 Six condition cells (`M-R1-fat`, `M-R1-lean`, `M-R2-fat`, `M-R2-lean`, `M-G1`, `M-G2`) ×
-twelve task instances (M1 and M3 at N ∈ {1,5,20,50}, M2 at N=1, M4 at N ∈ {20,50,103}) ×
-3 reps = **216 runs**, against phase 1's 24.
+**eleven task instances** × 3 reps = **198 runs**, against phase 1's 24.
+
+The eleven are M1 at N ∈ {1,5,20,50}, M2 at N=1, M3 at N ∈ {5,20,50}, M4 at N ∈ {20,50,103}
+— the keys of `tasks/expected.json`, which is authoritative. **M3 does not run at N=1**: at
+one flight it is M2 asked a different way about the same flight, and the duplicate-cell guard
+in §7 rejects it. M2 *is* the N=1 point of M3's slope. That is 18 runs saved on a cell that
+would have measured nothing new.
 
 **Cost is not the constraint.** Phase 1 ran 24 runs for $1.27 total on `claude-haiku-4-5`
 ($0.053/run); phase 2 is roughly $10–20, dominated by the fat REST cells at high N. The
-constraint is the **context window** — see `NOTES.md` expectation 8. Use the smoke run to
-settle that before committing to the full matrix.
+constraint is the **context window** — see `NOTES.md` expectation 8. The largest single tool
+result is now measured: **446 KB (~127k tokens) for M4@103 `-fat`**, with M3@50 `-fat` just
+behind at 425 KB. Both fit a 200k window alone; neither leaves much room for a conversation
+around it. Use the smoke run to settle that before committing to the full matrix.
 
 If it needs trimming, drop N=5 first (it sits between two measured points and adds no shape),
 not N=50 — the high end is where the interesting failure lives.
@@ -488,9 +516,11 @@ didn't anticipate — a claim that survives review, unlike a bare cost multiple.
 | **M1** | Parallel / breadth | "For flight numbers X1…X12, give scheduled departure and gate." | Single service, all calls independently issuable, REST batches into 1 round. Isolates **payload precision** with joins held out. Outcome depends entirely on the payload profile (§3.1). |
 | **M2** | Series / depth | "For flight FL-0142, is every assigned **pilot** (captain and first officer) type-rated and current for the aircraft's model?" | REST: 3 forced serial rounds + client-side join. GraphQL: 1 query. **Headline.** |
 | **M3** | Breadth × depth | M2 over N flights | REST grows ~linearly, GraphQL flat. Yields a slope, not a point. |
-| **M4** | Predicate placement | "Which of the next `<n>` flights departing SFO have an aircraft with an open grounding advisory?" | List in A, predicate in B. REST must over-fetch A, fan out to B, filter in context. |
+| **M4** | Predicate placement | "Of the first `<n>` flights the API returns for departures from SFO, which have an aircraft with an open grounding advisory?" | List in A, predicate in B. REST must over-fetch A, fan out to B, filter in context. |
 
-Breadth sweep: M1 and M3 at **N ∈ {1, 5, 20, 50}**; M4 at **N ∈ {20, 50, 103}** — see below.
+Breadth sweep: M1 at **N ∈ {1, 5, 20, 50}**, M3 at **N ∈ {5, 20, 50}**, M4 at
+**N ∈ {20, 50, 103}** — see below. The exact wording of all four lives in `tasks/tasks.yaml`;
+the sketches above are shorthand and have twice now been wrong where the wording was right.
 
 **M4's sweep runs only at the high end, and carries no date filter.** Both are forced by the
 data rather than chosen:
@@ -510,6 +540,14 @@ perfect `answer_f1`. N=103 is the full SFO departure list, not an arbitrary cap.
 The date is gone from the prompt because the fixtures span 14 days at 7.4 SFO departures a
 day: a single date leaves ~10 candidates and **zero hits on most days**. The implementation
 never filtered by date; the prompt sketch did, and the prompt was wrong.
+
+**The word "next" is gone for the same reason.** Collections sort by id
+(`src/server/data.ts`), which is not time order, so "the next `<n>` flights departing SFO"
+asks for something neither surface serves — and both surfaces would answer the *id-ordered*
+question instead, making the grader wrong rather than the agent. The prompt now says "the
+first `<n>` flights the API returns for departures from SFO", which is exactly what
+`limit: n` means on both surfaces. Second instance of the same class of error in this one
+task; the first was the date.
 
 **Report M4 on `pass_through_tokens`, not payload ratio.** At N=103, REST fetches 446 KB —
 103 flights and ~90 airframes — to return eight flight numbers. That fetched-to-needed blowup
@@ -567,6 +605,38 @@ never occupy a pilot slot, but it does mean the "cabin crew hold no ratings" rat
 that once justified pilots-only scoping was never true of the fixtures. The scoping stands
 on the conjunction argument above instead.
 
+### Three grading defects found while building the tasks — ✅ fixed 2026-09-02
+
+Step 6 turned up three more ways the ground truth and the agent could have been asked
+different questions. All three are fixed, and each now has a guard in `pnpm expected` that
+was verified to fail before it was trusted (§7).
+
+**1. "Current" had no reference date — the worst of the three.** M2 and M3 ask whether a type
+rating is *still current*. The fixtures are dated 2026-03-14; an agent has no way to know
+that and will reasonably use its own idea of today. **404 of the 1,490 type ratings expire
+between the fixture base date and 2026-09-01 alone, and 17 of M3@50's 50 flights flip
+verdict across that gap** — a third of the headline task's graded items, drifting further
+every month the benchmark stays runnable. Both prompts now carry an `{{as_of}}` placeholder
+and say "as of that date". Nothing would have failed: the runs complete, the answers look
+plausible, and the accuracy column is quietly wrong.
+
+**2. M1's flight numbers were not unique.** M1 names flights by *number* rather than id,
+because that is what a human quotes. Airlines reuse numbers across days and these fixtures
+span 14 days, so 49 of the 2,000 numbers are carried by two flights — and one of them
+(DL3432, on FL-0014 and FL-1396) sat in the first 20. That is not merely ambiguous, it is
+asymmetric: `flightsByNumbers` flat-maps every match, so GraphQL returns 21 flights for 20
+numbers with two different gates for DL3432, while REST's `limit=20` truncates the same
+result set to one. The two surfaces answer the same prompt differently. M1 now samples only
+flights whose number is unique across the fixtures (`pickFlightsForM1`), which keeps numbers
+in the prompt without asking an ambiguous question. The already-published M1 (N=12) row was
+unaffected — the collision starts at the 14th flight — but N=20 and N=50 both were.
+
+**3. M3 at N=1 was M2.** Same flight, same predicate, same answer, 18 runs. Dropped; see §4.
+
+None of the three is exotic. All three are the same failure as the role/rank defect above:
+a question that reads one way to the grader and another way to the agent, with no error
+anywhere to say so.
+
 ### 5.1 Verified end-to-end (`pnpm verify:federation --live`)
 
 GraphQL figures are live responses from the real Apollo Router over the three subgraphs.
@@ -575,34 +645,51 @@ REST figures come from the same projection functions the live REST server calls,
 byte-for-byte on every call. Request counts and dependency depth follow from the ownership
 rules in §3.
 
+**Every cell the matrix runs, and only those** — the eleven task ids in
+`tasks/expected.json`, driven from the one sweep definition in
+`src/tools/ground-truth.ts` so the table cannot describe cells that do not exist.
+
 | Task | GraphQL | REST reqs | `-fat` | `-lean` | serial depth | backend fan-out |
 |---|---|---|---|---|---|---|
-| M1 (N=12) | 1,023 B | 1 | 29,271 B (28.6×) | 3,569 B (3.5×) | 1 vs 1 | 1 |
+| M1 (N=1) | 114 B | 1 | 2,722 B (23.9×) | 554 B (4.9×) | 1 vs 1 | 1 |
+| M1 (N=5) | 445 B | 1 | 12,425 B (27.9×) | 1,652 B (3.7×) | 1 vs 1 | 1 |
+| M1 (N=20) | 1,683 B | 1 | 49,049 B (29.1×) | 5,752 B (3.4×) | 1 vs 1 | 1 |
+| M1 (N=50) | 4,165 B | 1 | 122,832 B (29.5×) | 13,966 B (3.4×) | 1 vs 1 | 1 |
 | M2 (N=1) | 513 B | 4 | 10,341 B (20.2×) | 4,229 B (8.2×) | **3 vs 1** | 4 |
+| M3 (N=5) | 2,531 B | 4 | 46,829 B (18.5×) | 16,649 B (6.6×) | **3 vs 1** | 4 |
 | M3 (N=20) | 8,959 B | 4 | 182,260 B (20.3×) | 55,423 B (6.2×) | **3 vs 1** | 4 |
+| M3 (N=50) | 22,121 B | 4 | 424,863 B (19.2×) | 125,501 B (5.7×) | **3 vs 1** | 4 |
 | M4 (N=20) | 1,812 B | 2 | 89,841 B (49.6×) | 11,756 B (6.5×) | **2 vs 1** | 2 |
 | M4 (N=50) | 4,601 B | 2 | 217,838 B (47.3×) | 27,375 B (5.9×) | **2 vs 1** | 2 |
 | M4 (N=103) | 10,329 B | 2 | 446,234 B (43.2×) | 62,924 B (6.1×) | **2 vs 1** | 2 |
 
-*Re-measured 2026-08-31, after adding the `roles` filter to both surfaces (§3). M2 and M3
-dropped ~31% in absolute payload on both sides, because the pilot-scoped tasks no longer
-carry cabin crew. M1 and M4 are unchanged — they touch no crew data. Superseded numbers,
-for the record: M2 17.9×/7.7×, M3 17.6×/6.4×.*
+*Measured 2026-09-02 against the containerized stack, every row cross-checked with `--live`
+against real HTTP responses. Supersedes the 2026-08-31 six-row table, which measured M1 at
+N=12 — a breadth no condition runs — and reported nothing for M1@50 or M3@50, two of the
+three largest cells. The rows that appeared in both are byte-identical.*
 
-*The absolute drop matters more than the ratio. M3 at N=50 `-fat` was ~610 KB (~174k
-tokens, against a 200k window); it is now ~423 KB (~121k). That is the difference between
-the N=50 cell being measurable and being an unpredictable context failure.*
+*Earlier, superseded for the record: before the `roles` filter (§3) M2 was 17.9×/7.7× and M3
+17.6×/6.4×; adding it dropped M2 and M3 ~31% in absolute payload on both sides, because the
+pilot-scoped tasks stopped carrying cabin crew. It also took M3@50 `-fat` from ~610 KB (~174k
+tokens, against a 200k window) to 425 KB (~121k) — the difference between the N=50 cell being
+measurable and being an unpredictable context failure.*
 
-*M4 is now swept too (previously one row at N=40, a breadth the matrix never runs). Note
-its ratio DECLINES with N — 49.6× → 43.2× — because flights increasingly share airframes,
-so REST's deduped aircraft call grows sublinearly while GraphQL's response grows linearly.
-REST's batching genuinely helps more at scale here, and the sweep is what makes that
-visible. M4 at N=103 `-fat` is 446 KB (~127k tokens), the second-largest cell after M3 at
-N=50.*
+**Two things the sweep makes visible that a single row could not:**
+
+*M1's ratios move in opposite directions — `-fat` climbs 23.9× → 29.5× while `-lean` falls
+4.9× → 3.4×.* Both are the REST envelope amortizing. It is a fixed ~400 B of `links`, `meta`,
+and `requestId` per response, which dominates the tiny `-lean` payload at N=1 and is
+irrelevant by N=50; the `-fat` ratio meanwhile converges on the per-record field-count ratio.
+Neither number is wrong, and quoting either alone at one N would be.
+
+*M4's ratio DECLINES with N — 49.6× → 43.2×.* Flights increasingly share airframes, so
+REST's deduped aircraft call grows sublinearly while GraphQL's response grows linearly.
+REST's batching genuinely helps more at scale here, and reporting it is the point: the
+finding survives because it is not the largest number available.
 
 **The headline finding is the `-fat`/`-lean` split, not either column alone.** On `-lean` —
-a REST API that has already solved over-fetching — M1's advantage collapses to 3.5×, but
-M2, M3, and M4 hold at 5.9–7.7×. That separates the two claims cleanly:
+a REST API that has already solved over-fetching — M1's advantage collapses to 3.4–4.9×,
+but M2, M3, and M4 hold at 5.7–8.2×. That separates the two claims cleanly:
 
 - *"GraphQL wins because REST over-fetches"* — largely dissolves under the steelman.
 - *"GraphQL wins because the agent has to perform the join"* — survives it.
@@ -638,90 +725,187 @@ blocks. Maps to user-perceived latency in a way call count does not.
 will likely make *more* backend calls than the REST agent while using far less context.
 Publish that. Without it the first reviewer says the cost was moved from the token bill to
 the infrastructure bill; with it the claim becomes "same backend work, less agent context."
+**`/__metrics` is a global counter and the six conditions run in parallel, so this cannot be
+attributed per run as currently planned — see §8.2 before wiring it up.**
 
 **`answer_f1`** — field-level precision/recall against computed expected results,
 replacing phase 1's binary completion gate. Required at M3 / N=50, where the interesting
-failure mode is the agent silently dropping records rather than erroring.
+failure mode is the agent silently dropping records rather than erroring. Grading rules per
+task come from `expected.json[<id>].grading` (§7.1), and every run passes an
+`answer_grounded` check first: an answer whose facts never entered the context via a
+`tool_result` is fabricated, not correct, and is reported separately rather than scored.
 
 ---
 
-## 7. Ground truth
+## 7. Ground truth — ✅ built 2026-09-02
 
-Retire hand-authored `tasks/ground_truth.json` (phase 1 keeps its copy). Replace with
-`services/src/tools/expected.ts`, which reads the same fixtures and emits
-`tasks/expected.json` per task per N. Objective, regenerable, and it scales with the sweep —
-a hand-written file cannot.
+Hand-authored `tasks/ground_truth.json` is retired (phase 1 keeps its copy). It is replaced by
+`services/src/tools/ground-truth.ts` (the logic) and `expected.ts` (the CLI: `pnpm expected`,
+`pnpm expected --check`), which read the fixtures and emit `tasks/expected.json` per task per
+N. Objective, regenerable, and it scales with the sweep — a hand-written file cannot.
 
-**It must emit the SAMPLE as well as the answer.** The prompt interpolates a flight list and
-the grader checks an answer; if those are derived independently they can disagree, and every
-result is then wrong in a way that looks like agent error. One artifact owns both, and it
-reuses `pickFlights(n)` from `verify-federation.ts` so the tasks measure the same flights the
-§5.1 table was measured on.
+**It emits the SAMPLE as well as the answer.** The prompt interpolates a flight list and the
+grader checks an answer; if those are derived independently they can disagree, and every
+result is then wrong in a way that looks like agent error. `src/tools/sample.ts` now owns the
+selection and **both** `ground-truth.ts` and `verify-federation.ts` import it, so the tasks
+measure the flights the §5.1 table was measured on — not by convention, but because there is
+one function.
 
-**Required guard: fail generation if any `(task, N)` yields an empty or trivially satisfiable
-expected answer.** This has nearly slipped through twice — M2 scoped to all four crew made
-the answer "no" ~69% of the time, and M4 at N≤5 has no qualifying flights at all. Both would
-have scored a do-nothing agent as perfect. Answer *balance* is a property of the task that
-needs checking mechanically, not eyeballing:
+Prompts get their substitutions from `expected.json[<id>].placeholders`, pre-rendered by the
+generator, so the artifact that computes the answer also decides which records the prompt
+names and how the list is formatted. `pnpm test` fails on a placeholder a prompt does not use
+and on a prompt placeholder no cell supplies.
 
-- an empty expected set means the task cannot discriminate at that N — drop the cell or
-  change the breadth, and say which in `NOTES.md`
-- a heavily skewed set (say beyond 80/20) is worth flagging too, since `answer_f1` against a
-  near-constant answer measures very little
+**The guards, as built.** Generation fails — no file written — on any of these, and each was
+verified to fail before it was trusted, the way the provenance gates were:
 
-Treat a failure here the way `pnpm test`'s parity failures are treated: a design regression,
+| # | Fails when | Caught in practice |
+|---|---|---|
+| G1 | a graded set is empty, or every candidate qualifies | M4@5: zero hits, so "none" scores a perfect F1 |
+| G2 | a **per-item verdict** is more than 80/20 skewed (≥5 items) | — (M3 sits at 54/46) |
+| G3 | two cells have the same records *and* the same answer | M3@1 was M2 |
+| G4 | an M1 sample holds a flight number carried by >1 flight | DL3432, in the first 20 |
+| G5 | an M2 flight's two pilots share a name or a role | — |
+| G6 | M4's candidates repeat a flight number | — |
+| G7 | a date-sensitive task has no `{{as_of}}` placeholder | M2 and M3, both |
+
+**G2 applies to M3 and deliberately not to M4.** M3 grades a verdict on every flight, so a
+lopsided answer is a lopsided metric — at 80/20 an agent that answers the majority class for
+everything already scores 0.8. M4 grades a *set*, so a small positive class is the point
+rather than a defect: 8 hits in 103 candidates is a realistic AOG rate, and F1 punishes the
+agent that hedges by returning everything (precision 0.08). Applying a skew limit there
+failed all three M4 cells on the first run and would have pushed the task toward an
+unrealistic grounding rate to satisfy a metric that does not apply to it.
+
+Two conditions are reported as **warnings** rather than failures, because suppressing them
+would be lying and failing on them would be wrong: M4@20 has a single qualifying flight (so
+F1 has no partial-credit resolution there — it grades pass/fail, and the higher-N cells carry
+the F1 signal), and M1@50 includes a CANCELLED flight whose expected gate is `null` (the
+grader must accept "none" and reject an invented gate — worth keeping, since hallucinating a
+gate is exactly the failure worth catching).
+
+Treat a guard failure the way `pnpm test`'s parity failures are treated: a design regression,
 not a broken script.
 
-### 7.1 Step 6 spec — what to build
+**The guards run in `pnpm test` too**, not only in the generator. A fixture change can make a
+cell degenerate, and the generator is only run when someone remembers to run it.
 
-Pinned here so step 6 is a transcription job rather than a design job, the way §8.1 was for
-step 5.
+### 7.1 What step 6 built — ✅ 2026-09-02
 
-**`tasks/expected.json`**, keyed `<task>@<N>` so the key doubles as the runner's task id:
+`tasks/expected.json` (29 KB, committed), keyed `<task>@<N>` so the key doubles as the
+runner's task id. Eleven cells: `M1@{1,5,20,50}`, `M2@1`, `M3@{5,20,50}`, `M4@{20,50,103}`.
 
 ```json
 {
   "_meta": {
-    "baseDate": "2026-03-14",
-    "fixtureManifestSha": "<sha256 of fixtures/manifest.json>",
-    "generated": "<ISO date>"
+    "baseDate": "2026-03-14T00:00:00Z",
+    "fixtureManifestSha": "bf902d910362accb…",
+    "sweep": { "M1": [1, 5, 20, 50], "M2": [1], "M3": [5, 20, 50], "M4": [20, 50, 103] },
+    "generated": "2026-09-02T…Z",
+    "readme": "Generated by … Do not hand-edit …"
   },
   "M3@20": {
     "task": "M3",
     "n": 20,
-    "sample": { "flightIds": ["FL-0001", "…"] },
-    "gradedUnit": "per-flight boolean",
+    "gradedUnit": "per-flight boolean — N items",
+    "grading": { "kind": "perKeyBoolean", "keyedBy": "flightId", "positiveClass": false,
+                 "requireCoverage": true, "asOf": "2026-03-14T00:00:00Z" },
+    "placeholders": { "{{ids}}": "FL-0001, FL-0002, …", "{{as_of}}": "2026-03-14",
+                      "{{n}}": "20" },
+    "sample": { "flightIds": ["FL-0001", "…"], "flightNumbers": ["AA5751", "…"] },
     "expected": { "FL-0001": true, "FL-0002": false }
   }
 }
 ```
 
+Three fields were added to the spec'd shape while building it, each because leaving it out
+would have split a decision across two languages:
+
+- **`placeholders`** — pre-rendered substitutions. The alternative (`render_task()` formatting
+  `sample` itself) puts "how is the id list joined" in Python while "which ids" is in
+  TypeScript. The generator owns both.
+- **`grading`** — how to score the cell, not just what the answer is: the positive class, the
+  reference date, whether coverage is required, what `null` means. Otherwise `parse_logs.py`
+  re-derives per-task grading rules and can disagree with the guards.
+- **`_meta.sweep`** — the authoritative N list, so `tasks.yaml`'s copy can be cross-checked.
+
 `fixtureManifestSha` matters: a stale `expected.json` grades against data that no longer
 exists, and that failure is invisible. Same reasoning as the `/__health` fingerprints — the
 generator records what it read, and the grader refuses to run against a mismatch.
+`pnpm expected --check` (and `pnpm test`) fails when the committed file drifts.
 
-**Per task:**
+**Per task, as built:**
 
 | Task | N values | Prompt supplies | Graded unit | Metric |
 |---|---|---|---|---|
-| M1 | 1, 5, 20, 50 | `{{ids}}` = flight **numbers** (what a human quotes) | (flight, field) pairs — 2N values | `answer_f1` |
-| M2 | 1 | one flight id | single boolean | correct / incorrect, not F1 |
-| M3 | 1, 5, 20, 50 | `{{ids}}` = flight **ids** | per-flight boolean — N items | `answer_f1` |
-| M4 | 20, 50, 103 | `{{n}}` only; the agent discovers the list | set of flight numbers | `answer_f1` |
+| M1 | 1, 5, 20, 50 | `{{ids}}` = flight **numbers** (what a human quotes), `{{n}}` | (flight, field) pairs — 2N values | `answer_f1` |
+| M2 | 1 | `{{ids}}` = one flight id, `{{as_of}}` | overall verdict **+ one verdict per pilot, by name** | correctness, not F1 |
+| M3 | 5, 20, 50 | `{{ids}}` = flight **ids**, `{{as_of}}`, `{{n}}` | per-flight boolean — N items | `answer_f1` on the minority class + coverage |
+| M4 | 20, 50, 103 | `{{n}}`, `{{origin}}`; the agent discovers the list | set of flight numbers | `answer_f1` |
 
-**M2 is not an F1 task.** F1 over a single boolean is degenerate; report plain correctness
-across reps. It is still the headline for the *cost* metrics — it is the cleanest forced-serial
--depth case in the suite — but the accuracy column for it is a pass rate.
+**M2 needed the per-pilot detail to be gradeable at all.** As spec'd — one boolean about one
+fixed flight — its answer is "yes", so an agent that says "yes" without issuing a single call
+scores 100%. No guard can catch that (skew is meaningless over one item), so the fix is in the
+task: the prompt asks for each pilot's role, **name**, and verdict, and the names live in the
+personnel service behind two dependent hops. It costs nothing to measure — both surfaces
+already fetch `crew { name typeRatings }` for M2, so §5.1 is unchanged.
+
+**M3 grades the minority class, and coverage separately.** F1 needs a positive class; using
+the majority one rewards guessing, since an all-"yes" answer would score F1 0.70 at N=50 while
+doing no work. On the "a pilot is not current" class it scores 0. Coverage is reported
+alongside because the prompt asks for a verdict on every flight, and the interesting failure
+at N=50 is the agent silently dropping records rather than erroring (§6) — a set-membership
+answer would hide exactly that.
 
 **M4 grades set membership**, which is the case `answer_f1` was actually chosen for: the
 interesting failure is the agent returning 6 of the 8 qualifying flights, which a binary gate
 scores identically to returning all 8.
 
-**Threading N through the runner.** `run_benchmark.py:359` computes
-`total = len(conds) * len(tasks) * REPS` with no N axis. Rather than adding a dimension,
-expand N into the task list — `M3@20` is simply another task id — so the runner loop, the
-`runs/<cond>/<task>/rep<k>` layout, and `raw.csv` keep working unchanged. `render_task()`
-substitutes `{{n}}` and `{{ids}}` from `expected.json[taskId].sample`.
+**Threading N through the runner** — unchanged from the spec, and still to do in step 7.
+`run_benchmark.py:359` computes `total = len(conds) * len(tasks) * REPS` with no N axis.
+Rather than adding a dimension, expand N into the task list — `M3@20` is simply another task
+id — so the runner loop, the `runs/<cond>/<task>/rep<k>` layout, and `raw.csv` keep working
+unchanged. What step 7 must do:
+
+- build the task list by expanding each phase-2 `tasks.yaml` entry over the `n` values of its
+  `expected.json` cells, and **fail** if `tasks.yaml`'s `ns` and `expected.json` disagree
+  (`pnpm test` already checks this from the TypeScript side; the runner is the other end)
+- pair phase-2 conditions with `phase: 2` tasks only — a condition serves one backend
+- `render_task()` applies `expected.json[taskId].placeholders` by plain replacement, and must
+  fail on any `{{…}}` left in the rendered prompt rather than shipping it to the model
+
+**Grade the evidence, not just the answer.** A correct answer is not proof of work, and phase
+2 is the first phase where that gap can bite: in phase 1 the model knew GitHub's real data
+from training, so a lucky answer was still *plausibly* retrieved, and against synthetic
+fixtures it cannot know anything — but it can still guess. M2's answer is one boolean; M4's at
+N=20 is one flight number. **This is not hypothetical.** When Apollo's startup logs broke the
+stdio handshake in phase 1, Goose registered the extension with zero tools and the agent
+hallucinated tool calls from training data (`NOTES.md`). The same failure now scores as a
+cheap success.
+
+So each run needs a per-run `answer_grounded` check, computed in `parse_logs.py` from that
+run's `proxy.jsonl`: **every graded fact in the answer must appear in some `tool_result` that
+entered the context before it.** For M2 that means the aircraft model and both pilots' names;
+for M1 each departure and gate; for M3/M4 the flight identifiers. Ungrounded runs are
+**excluded from the accuracy column and reported separately as fabricated**, never averaged
+in — a guess that lands is worse than a wrong answer, because it inflates accuracy and
+deflates cost at the same time.
+
+Two properties make this the right instrument rather than a heuristic:
+
+- **It is per-run by construction.** `proxy.jsonl` is written per run; no shared state, so no
+  attribution problem (unlike `backend_requests` — see §8.2).
+- **It is protocol-neutral.** It asks whether the data entered the context, not how many calls
+  it took. Call counts differ between REST and GraphQL *by design* — that difference is the
+  measurement, so it cannot also be the validity gate.
+
+It also shares machinery with `pass_through_tokens`, which already has to diff tool-result
+fields against the graded answer (§6).
+
+**Do not put tool names in the prompt.** It is tempting as a fix for the same worry, and it
+would destroy the experiment: tool discovery and selection is what the 2×2 measures, and the
+prompt must go into every condition identical word-for-word. The tool surface is the
+condition, delivered by the recipe.
 
 Keep an `n` column in `raw.csv` anyway (§11), parsed from the task id, so the slope charts do
 not have to re-split strings.
@@ -734,10 +918,10 @@ Small, additive changes:
 
 | File | Change |
 |---|---|
-| `run_benchmark.py` | Add `M-*` entries to `CONDITIONS` (~line 131); add a `services_up()` health gate beside the existing `docker info` check; plumb an `N` breadth parameter into task rendering next to the current `{{repo}}` substitution |
-| `tasks/tasks.yaml` | Add M1–M4 with `{{n}}` / `{{ids}}` placeholders |
+| `run_benchmark.py` | Add `M-*` entries to `CONDITIONS` (~line 131); add a `services_up()` health gate beside the existing `docker info` check; expand phase-2 tasks over N and render from `expected.json` placeholders (§7.1) |
+| ~~`tasks/tasks.yaml`~~ | ✅ Done in step 6 — M1–M4 with `phase:`, `ns:`, and `{{ids}}` / `{{n}}` / `{{as_of}}` / `{{origin}}` placeholders |
 | `recipes/` | New: `recipe_m_r1.yaml`, `recipe_m_r2.yaml`, `recipe_m_g1.yaml`, `recipe_m_g2.yaml` |
-| `parse_logs.py` | Three new metric columns + the F1 grader |
+| `parse_logs.py` | Three new metric columns + the grader. Grading rules come from `expected.json[<id>].grading` — do not re-derive them per task (§7.1), and refuse to grade when `_meta.fixtureManifestSha` does not match the fixtures |
 | `bench.sh` | Add the four `M-*` captures to `do_capture()` (see §8.2) |
 | ~~`servers/openapi_mcp.py`~~ | ✅ Done in step 5, with `servers/supergraph_mcp.py` and `servers/_mcp_stdio.py` |
 | ~~`lib/setup.sh`~~ | ✅ Done in step 5 — renders `config/apollo-mcp.phase2.local.yaml` with absolute paths |
@@ -843,7 +1027,12 @@ ad-hoc query, and **M4 needs one board read plus one detail read per flight** �
 1+N shape as REST. A domain-sized frozen set does not perfectly fit every task; a set that
 did would be a set that was not actually frozen.
 
-### 8.2 Fix before the matrix — the Goose log race
+### 8.2 Fix before the matrix — two shared-resource races
+
+Both have the same shape: a resource that is global while conditions are parallel
+(`ThreadPoolExecutor` at `run_benchmark.py:398`). Neither fails loudly.
+
+#### The Goose log race
 
 PR #3 stopped this crashing but not the underlying problem, and phase 2 makes it worse: **six**
 conditions run in parallel instead of four, all against Goose's single shared log directory.
@@ -866,6 +1055,32 @@ conditions run in parallel instead of four, all against Goose's single shared lo
 Real fix: per-run log isolation, or serialize the snapshot behind a lock, or accept that the
 cross-check cannot work under parallelism and say so in the report instead of printing a
 column that looks like corroboration.
+
+#### `/__metrics` cannot attribute `backend_requests` per run
+
+The planned mechanism — reset `/__metrics`, run, read `/__metrics` — is a global counter on a
+single shared stack, and the six conditions all hit it at once. A `DELETE` from one condition
+zeroes another's counter mid-run, and every read mixes traffic from all six. Nothing has been
+wired up yet (nothing in `run_benchmark.py`, `parse_logs.py`, or `bench.sh` touches
+`/__metrics`), so this is a design fix rather than a repair — which is the good case, since the
+alternative is a plausible-looking infrastructure-cost column that is silently the sum of
+whatever else was running.
+
+Options, roughly in order of preference:
+
+1. **Scope the counter per run.** Have each MCP server pass a run id through to the services
+   (a header the request accounting buckets on) and read `/__metrics?run=<id>`. Cleanest, and
+   it survives parallelism. Needs checking whether Apollo MCP Server can attach a static
+   header for M-G2; the two Python servers trivially can.
+2. **Measure it in a serial pass.** Take `backend_requests` from a dedicated single-condition
+   run per cell rather than the parallel matrix. It is a property of the protocol and the
+   query plan, not of the agent's reps, so one clean measurement per cell is defensible.
+3. **Drop the column** and cite `pnpm verify:federation`'s fan-out numbers (§5.1) instead,
+   saying plainly that they come from the harness rather than the matrix.
+
+What is not acceptable is publishing the column as if it were per-run. The whole reason it
+exists is to answer "did you just move the cost to the infrastructure bill" — a reviewer's
+question — and an unattributable number cannot answer it.
 
 ### 8.3 Verification before the matrix
 
@@ -900,9 +1115,32 @@ column that looks like corroboration.
    `config/apollo-mcp.phase2.yaml` over the seven frozen operations in
    `services/operations/`. Measured surfaces in §8.1; `pnpm test` validates every
    operation against the composed supergraph and fails if the frozen set changes.*
-6. Tasks + expected-answer generator. **Spec: §7.1.**
-7. Harness wiring (§8) **and reporting (§11)**, then a 2-condition × 1-task smoke run
-   before committing to the full matrix.
+6. ✅ **Tasks + expected-answer generator.** *Done: `tasks/tasks.yaml` carries M1–M4;
+   `pnpm expected` emits the eleven cells of `tasks/expected.json` from the fixtures and
+   fails on a degenerate cell (seven guards, §7); `src/tools/sample.ts` gives the §5.1 table
+   and the ground truth one shared sample; 100/100 tests pass, including three that recompute
+   every answer from what the subgraphs actually serve. Three grading defects found and fixed
+   along the way — §5.*
+7. Harness wiring (§8) **and reporting (§11)**, then a smoke run before committing to the
+   full matrix. Order matters here, so it is written down:
+
+   1. **`run_benchmark.py`** — six `M-*` `CONDITIONS` entries, a `services_up()` gate beside
+      the existing `docker info` check, and phase-2 task expansion: build the task list from
+      `expected.json` keys, render from `placeholders`, fail on any surviving `{{…}}`, and
+      pair `M-*` conditions with `phase: 2` tasks only. Details in §7.1.
+   2. **Four recipes** — `recipe_m_r1.yaml`, `recipe_m_r2.yaml`, `recipe_m_g1.yaml`,
+      `recipe_m_g2.yaml`.
+   3. **`parse_logs.py`, starting with the unknown-condition blocker (§11).** It comes first
+      because until it is fixed every phase-2 row is dropped from the report *silently* — you
+      would run the matrix and see a phase-1 report. Then grading from
+      `expected.json[<id>].grading` plus the `answer_grounded` gate (§7.1), then the two PR-#3
+      prose bugs (§11).
+   4. **The two shared-resource races (§8.2)** — before the matrix, not after. Neither fails
+      loudly, and both get worse with six parallel conditions.
+   5. **Smoke run** — 2 conditions × 1 task to prove the wiring, then **one deliberate
+      M4@103 `-fat` run** to settle whether a 127 KB tool result produces a clean API error
+      or gets silently truncated. Those are different results needing different columns
+      (`NOTES.md` expectation 8), and it is far cheaper to learn which now than 198 runs in.
 
 ---
 
