@@ -811,3 +811,66 @@ tool-design effect.
     more stable than absolute tokenization, since JSON keys and punctuation are spread evenly
     through used and unused fields alike. The same "one owner per number" move as `sample.ts`
     and `rest-payload.ts`: whoever owns the exact count keeps owning it.
+
+40. **A published tool-surface number had already drifted, and the check that would have said
+    so did not exist yet.** §8.1 recorded M-R1's `tools_list_bytes` as 9,440 on 2026-08-28.
+    The first time `./bench.sh capture` measured it (2026-09-02) it came back **9,601**.
+
+    The cause is legitimate: commit `14d8973` added a `roles` filter to the assignments
+    endpoint on both surfaces, which grew `listAssignment`'s `inputSchema` by 161 bytes. That
+    filter is *wanted* — it is what stopped pilot-scoped tasks carrying cabin crew and took
+    M3@50 `-fat` from ~610 KB to 425 KB. But it moved a published cost, in the one place where
+    a change is paid on every single run: a front-loaded condition's tool surface sits in the
+    cached prefix, so 161 bytes are billed 33 times per payload pass whether or not the agent
+    touches those nine tools.
+
+    What is worth keeping is *why* it went unnoticed for five days. The change was reviewed on
+    its merits — better payloads, both surfaces, a test for DataLoader batching — and it was
+    correct on all of them. Nothing in reviewing "does this filter work" prompts "what does
+    this do to the cached prefix of the front-loaded REST condition". The number lived in
+    prose in a plan document, so nothing could compare it to anything.
+
+    Now `capture/expected-tool-surfaces.json` owns the four surfaces and
+    `capture/check_surfaces.py` fails the capture on any difference — count, byte size, or
+    tool names — with §8.1 quoting the file rather than holding its own copy. Same "one owner
+    per number" move as `sample.ts` and `rest-payload.ts`, applied to a number that lived in
+    documentation.
+
+    Phase 1 deliberately gets no such baseline: A1/A2/B/B2 come from GitHub's live MCP server
+    and live schema, so re-measuring compares against today's upstream rather than June's.
+    Pinning a number you cannot reproduce would just be a test that fails for the wrong reason.
+
+    **And the baseline was gitignored on its first commit attempt.** `.gitignore` had
+    `capture/*.json` — correct, because everything in there had been run *output*. The
+    baseline is an *input*: it is what the gate compares against. Ignored, it would have
+    worked perfectly on this machine and pinned nothing anywhere else, and a fresh clone would
+    have had no baseline at all. Two related holes closed at the same time, both of which made
+    the gate report success while checking nothing: a missing baseline now errors instead of
+    crashing or passing, and `--require=M-R1,...` makes a capture that crashed before writing
+    its file a failure rather than a skip. The lesson is narrow and reusable — **a check whose
+    reference data can go missing needs to fail closed**, and "no data to compare" is the most
+    likely way for a gate to stop working without anyone noticing.
+
+    And the drift turned out to *illustrate* the 2x2 rather than threaten it. Adding an API
+    capability grew the front-loaded REST surface by 161 bytes and left the two on-demand
+    surfaces byte-identical, while M-G2 absorbed the same capability at zero prefix cost
+    because its tools are frozen operations, not generated endpoint schemas. That is a real
+    property of front-loading, measured by accident.
+
+41. **The stale-phase-1-copy bug, third instance.** `capture/SUMMARY.md`'s footer asserted
+    "GraphQL exposes only 4 tools" — true of phase-1 condition B, printed directly beneath
+    phase-2 rows where the GraphQL conditions have 3 and 7. The same generator also globbed
+    `capture/*.json`, picked up the new pinned-baseline file, and rendered it as a
+    `| None | ? | ? |` row in the published table.
+
+    Three for three now: PR #3's T2 copy explained a mechanism for a task that had changed
+    under it; `parse_logs.py`'s concepts explainer printed "REST conditions (A1/A2)" and
+    "~82 KB for 5 PRs" into a phase-2 report; and now this. Every one was **generated prose
+    with a fact baked into it**, every one kept rendering, and every one was found by reading
+    the output rather than the code.
+
+    The pattern to watch for is narrower than "stale comments": it is a *generator* that
+    hardcodes a measurement or a condition name in text it emits. Those facts have no owner
+    and nothing checks them, so they age silently while the numbers beside them stay live.
+    Both generators are now parameterised by phase, and the summary groups its table so a row
+    from one experiment is never printed as if comparable with the other.

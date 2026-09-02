@@ -41,9 +41,14 @@ deliberate failures planted in them — a truncated answer, an all-"yes" answer,
 answer, and **a perfect answer with no data behind it**, which the grounding gate catches at a
 would-be F1 of 1.00 (§11 item 4).
 
-**NEXT: step 7 item 5 — the smoke run.** That is the first step needing real inference, and it
-also settles the two harness caps (`MAX_TURNS=50`, `RUN_TIMEOUT=420`) and whether a 127k-token
-tool result errors cleanly or truncates silently. Commands are in §9 step 7.
+§8.3 is also done: `./bench.sh capture` records all four phase-2 tool surfaces and **fails on
+drift against a pinned baseline**. It caught drift immediately — M-R1's `tools_list_bytes` had
+moved 9,440 → 9,601 back in `14d8973` and nothing had said so (§8.1).
+
+**NEXT: step 7 item 5 — the smoke run.** Everything buildable without inference is built. The
+smoke run is the first step needing the API key, and it also settles the two harness caps
+(`MAX_TURNS=50`, `RUN_TIMEOUT=420`) and whether a 127k-token tool result errors cleanly or
+truncates silently. Commands are in §9 step 7.
 
 The part of step 7 that is easy to skip and shouldn't be: **§7.1's `answer_grounded` gate**
 — a lucky guess on M2 or M4@20 otherwise scores as a cheap success, and phase 1 already
@@ -980,7 +985,7 @@ Small, additive changes:
 | ~~`parse_logs.py`~~ | ✅ Done in step 7 — condition blocker, phase-mixing guard, grading, Accuracy and Join-tax sections, `n`/`profile` columns, both prose bugs |
 | `grade.py`, `test_grade.py` | ✅ New in step 7 — the four grading kinds, driven by `expected.json[<id>].grading`, refusing to grade when `_meta.fixtureManifestSha` does not match the fixtures |
 | ~~`proxy/anthropic_logging_proxy.py`~~ | ✅ Done in step 7 — writes a per-run `tool_io.jsonl` sidecar with tool-call arguments and tool-result bodies, unblocking `pass_through_tokens`, `forced_serial_depth`, and per-fact grounding (§11 item 4) |
-| `bench.sh` | Add the four `M-*` captures to `do_capture()` (see §8.3) |
+| ~~`bench.sh`~~ | ✅ Done in step 7 — `do_capture()` split by phase, four `M-*` captures, and a pinned-baseline gate that already caught drift (§8.3) |
 | ~~`servers/openapi_mcp.py`~~ | ✅ Done in step 5, with `servers/supergraph_mcp.py` and `servers/_mcp_stdio.py` |
 | ~~`lib/setup.sh`~~ | ✅ Done in step 5 — renders `config/apollo-mcp.phase2.local.yaml` with absolute paths |
 | ~~`capture/capture_mcp.py`~~ | ✅ Confirmed: works unmodified against all four new servers |
@@ -990,12 +995,32 @@ Small, additive changes:
 **✅ Step 5 complete, 2026-08-28.** Measured `tools/list` from the live stack, captured
 with `capture/capture_mcp.py` into `capture/M-*.json`:
 
-| Condition | Server | Tools | `tools_list_bytes` |
-|---|---|---|---|
-| M-R1 | `servers/openapi_mcp.py --mode tools` | 9 | 9,440 |
-| M-R2 | `servers/openapi_mcp.py --mode discovery` | 3 | 2,439 |
-| M-G1 | `servers/supergraph_mcp.py` | 3 | 2,159 |
-| M-G2 | `bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml` | 7 | 4,040 |
+| Condition | Server | Tools | `tools_list_bytes` | Representative calls (result bytes) |
+|---|---|---|---|---|
+| M-R1 | `servers/openapi_mcp.py --mode tools` | 9 | **9,601** | `listFlight` 14,312 · `getFlight` 3,110 · `listAircraftAdvisories` 350 |
+| M-R2 | `servers/openapi_mcp.py --mode discovery` | 3 | 2,439 | `openapi_search` 123 · `openapi_describe` 4,494 · `rest_request` 14,312 |
+| M-G1 | `servers/supergraph_mcp.py` | 3 | 2,159 | `schema_search` 3,487 · `schema_describe` 440 · `graphql_execute` 363 |
+| M-G2 | `bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml` | 7 | 4,040 | `FlightSchedule` 1,082 · `FlightRoster` 2,335 · `FlightAirworthiness` 455 |
+
+**M-R1 moved from 9,440 to 9,601 bytes, and nothing said so.** Commit `14d8973` added a
+`roles` filter to the assignments endpoint on both surfaces, which grew `listAssignment`'s
+`inputSchema` by 161 bytes. A real, wanted change — the filter is what stopped pilot-scoped
+tasks carrying cabin crew and took M3@50 `-fat` from ~610 KB to 425 KB (§5) — but it also
+moved a published cost, and it sat unnoticed from 2026-08-28 until the baseline check existed
+on 2026-09-02. These numbers are now owned by
+[`capture/expected-tool-surfaces.json`](capture/expected-tool-surfaces.json), and this table
+quotes it.
+
+The drift illustrates the 2×2 rather than violating it: **adding an API capability grows a
+front-loaded tool surface and leaves an on-demand one untouched.** M-R2 and M-G1 are
+byte-identical to before, and M-G2 absorbed the same capability at zero prefix cost because
+its tools are frozen operations rather than generated endpoint schemas. That is a genuine
+property of front-loading, and the kind of thing this study exists to measure.
+
+The last column is new, and `listFlight` at 14,312 B against `FlightSchedule` at 1,082 B is
+§3.1's over-fetch measured through the real MCP tool surfaces rather than from the projection
+functions. `rest_request` returning exactly the same 14,312 B as `listFlight` is the
+consistency check: same endpoint, same profile, different packaging.
 
 Every tool was exercised against the live stack: all nine M-R1 endpoint tools resolve,
 both discovery surfaces search/describe/execute, and M-G2's `FlightRoster` and
@@ -1138,12 +1163,41 @@ measures inference cost and inference calls (§6). `/__metrics` remains as a har
 for `pnpm verify:federation`, which uses it to prove DataLoader batches subgraph reads. That
 is design verification, not a reported result, and it should not be promoted into one.
 
-### 8.3 Verification before the matrix
+### 8.3 Verification before the matrix — ✅ done 2026-09-02
 
-`./bench.sh capture` must record the real tool surface of all four servers (count +
-`tools/list` bytes) the way it does for A1/A2/B/B2. **Numbers already captured by hand in
-§8.1** (`capture/M-*.json`); what remains is wiring the four invocations into
-`do_capture()` so a schema or spec change can't silently move them.
+`./bench.sh capture` now records all four phase-2 tool surfaces and, crucially, **checks them
+against a pinned baseline and fails on any difference.** It found drift on its first run: see
+the M-R1 note in §8.1.
+
+- **`do_capture()` is split** into `capture_phase1` and `capture_phase2`, selected by the
+  `CONDITIONS` filter, because the two have different prerequisites. A down phase-2 stack must
+  not stop A1/A2 being captured, and a missing GitHub PAT must not stop the phase-2 surfaces
+  being checked.
+- **`capture/expected-tool-surfaces.json`** owns the four surfaces — count, `tools_list_bytes`,
+  and tool names. `capture/check_surfaces.py` compares and exits non-zero on a mismatch,
+  verified to fire on a byte-count change, a tool appearing, an introspection tool showing up
+  on M-G2, a capture that did not complete, a capture that never wrote its file
+  (`--require=`), and a missing baseline. The last three matter because they are the ways a
+  gate stops checking anything while still reporting success — **it fails closed.** The
+  baseline is also committed via an explicit `!`-exception in `.gitignore`, which otherwise
+  ignores `capture/*.json` as run output; ignored, it would have pinned nothing outside the
+  machine that wrote it.
+- **Phase 1 is deliberately not pinned.** A1/A2/B/B2 come from GitHub's live MCP server and
+  live schema, so re-measuring compares against today's upstream rather than June's (§11).
+  Phase 2's come from hash-pinned local fixtures, so there is no excuse for letting one drift.
+- **`tools/list` needs no running stack** (the specs and SDL are on disk), so the surface check
+  works with the backend down; only the representative calls need the services, and the capture
+  says so rather than letting three calls fail mysteriously.
+- **`capture/SUMMARY.md` is grouped by phase**, and two bugs were fixed in generating it: the
+  pinned-baseline JSON was being globbed into the table as a `| None | ? | ? |` row, and the
+  footer asserted "GraphQL exposes only 4 tools" — a phase-1 fact (condition B) printed under
+  phase-2 rows where the GraphQL conditions have 3 and 7. Third instance of that exact class
+  of bug; see `NOTES.md`.
+
+This is a hard gate rather than a warning for the same reason the fixture fingerprints are: a
+front-loaded condition's tool surface sits in the cached prefix of **every** run, so M-R1's
+9,601 bytes are paid on all 33 runs of a payload pass whether the agent touches those tools or
+not. When it moves, the cost moves, the ratio moves, and the report still renders.
 
 ---
 
@@ -1259,8 +1313,18 @@ is design verification, not a reported result, and it should not be promoted int
       own run directory, so the race is gone by construction) and `backend_requests` is
       descoped (§6), which removes the `/__metrics` attribution problem instead of solving
       it. Both were going to be engineering; both turned out to be scope questions.
-   5. **Smoke run** — 2 conditions × 1 task to prove the wiring, then **one deliberate
-      M4@103 `-fat` run** to settle whether a 127 KB tool result produces a clean API error
+   5. **Smoke run — the only item left, and the first that spends anything.** Everything
+      above it is verified against 72 synthetic runs and a live local stack; nothing below
+      can be. Run it as: bring the stack up (`docker compose up -d --wait` then
+      `cd services && pnpm health`), `./bench.sh capture` to confirm the tool surfaces are
+      unmoved, then
+
+      ```bash
+      SMOKE=1 CONDITIONS=M-R1,M-G1 TASKS=M1@5 ./bench.sh run
+      RESULTS_DIR=results/phase2 python3 parse_logs.py runs
+      ```
+
+      2 conditions × 1 task to prove the wiring, then **one deliberate M4@103 `-fat` run** to settle whether a 127 KB tool result produces a clean API error
       or gets silently truncated. Those are different results needing different columns
       (`NOTES.md` expectation 8), and it is far cheaper to learn which now than 198 runs in.
 

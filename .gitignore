@@ -11,6 +11,11 @@ runs/
 results/
 capture/*.json
 capture/SUMMARY.md
+# ...but the pinned phase-2 tool surfaces are an INPUT, not an output. They are
+# what `capture/check_surfaces.py` compares each capture against, so an ignored
+# copy would pin nothing: a fresh clone would have no baseline and the gate would
+# silently pass. See PHASE2_PLAN.md §8.3.
+!capture/expected-tool-surfaces.json
 
 # macOS
 .DS_Store
