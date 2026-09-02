@@ -289,10 +289,14 @@ the tool counts in the plan.
 
 | Condition | Packaging | Tools | `tools_list_bytes` |
 |---|---|---|---|
-| M-R1 | one tool per REST endpoint | 9 | 9,440 |
+| M-R1 | one tool per REST endpoint | 9 | 9,601 |
 | M-R2 | REST discovery (`rest_request` + 2) | 3 | 2,439 |
 | M-G1 | GraphQL discovery (`graphql_execute` + 2) | 3 | 2,159 |
 | M-G2 | 7 persisted operations | 7 | 4,040 |
+
+`capture/expected-tool-surfaces.json` owns these four numbers; this table is a copy and
+was wrong for a week (M-R1 read 9,440 after commit `14d8973` moved it to 9,601 — see
+surprise 40). If they disagree, the baseline file is right.
 
 **M-R2 and M-G1 land within 13% of each other (2,439 vs 2,159 B).** That near-symmetry is
 deliberate and load-bearing: those two conditions are the clean protocol comparison, so
@@ -1143,3 +1147,73 @@ tool-design effect.
     Which conflation to make headline is a reporting choice, not a measurement one: both
     columns are now in `raw.csv` and the summary prints `disc` beside `depth` only when it
     exceeds 1.
+
+50. **The M4@103 run never tested what it was designed to test — the turn cap fired first, and
+    Goose exited 0 while doing it.** The run existed to settle whether a ~127k-token tool
+    result errors cleanly or truncates silently. It answered a different question. At N=103,
+    REST needs roughly 1+103 calls; `--max-turns` stopped it at 26 inference calls / 56 tool
+    calls, having gathered 14,485 tokens of payload — an order of magnitude short of any
+    context limit. **The context-window question is still open**, and it is not reachable at
+    this cap.
+
+    The dangerous part is the exit code. Goose prints "I've reached the maximum number of
+    actions I can do without user input. Would you like me to continue?" and **exits 0**.
+    `goose_exit: 0`, `timed_out: false`, `budget_killed: false` — every completion signal in
+    `meta.json` says the run succeeded. What it actually produced was a partial answer that
+    the grader scored `answer_f1 = 0.00`, and `_accuracy_section` averaged that into the table
+    as **`M-R1 M4@103 → 0.00 ± 0.00`**, in a report arguing that agent-side joins struggle at
+    high N. A reader would have read the harness's turn limit as REST failing the task.
+
+    Two things caught it, both of them guards built for other reasons. `completed()` greps
+    stdout for the truncation banner, so the run was flagged. And the tool-result conservation
+    check read **56 tool calls, 55 results** — the missing one is the call that was in flight
+    when the cap hit, which is exactly the shape of a run stopped mid-turn. An invariant built
+    to catch a proxy bug identified a harness cap.
+
+    `completed` is now `stop_cause`: `None`, `turn cap (25)`, `timeout`, `budget kill`, or
+    `no output`. A bare boolean collapsed three causes that mean different things, and the
+    turn cap is the one that must never be read as accuracy — so capped runs are excluded from
+    the accuracy means and listed in their own table, the same treatment fabricated runs get,
+    for the same reason: **both errors point the way the thesis predicts.** That is now four
+    of five measurement bugs this phase that flattered the hypothesis.
+
+    Also a plain documentation error found by reading the meta: STATUS said `MAX_TURNS=50`,
+    the repo default is 50, and the run recorded **25** — `.env` overrides it. The matrix
+    inherits that. M4@50 and M4@103 will both cap on the REST arm unless it is raised, and
+    a capped cell is not a cheap cell, it is a missing one.
+
+51. **Prompt caching has never once hit — in any run, on either arm — and the resulting cost
+    inflation scales with call count, which is the axis the whole experiment is about.**
+    `cache_read_input_tokens` is `0` for all 8 runs. Not because the runs are short:
+    M-G1/M1@5 wrote 4,584 / 4,752 / 4,923 / 5,085 / 5,235 / 5,385 / 5,535 tokens of cache on
+    seven consecutive calls and read back nothing. Each call rewrites the entire prefix from
+    scratch. M4@103 wrote **387,353 tokens** of cache across 26 calls for a conversation whose
+    final prefix is about 25k — a 15x inflation of input cost, all of it at the 1.25x write
+    rate, none of it at the 0.1x read rate.
+
+    Why this is not a footnote: cost under a never-hitting cache is roughly
+    `n_calls x mean_prefix`, where a hitting cache would pay `mean_prefix + n_calls x delta`.
+    The penalty is proportional to **call count**. REST's 1+N join makes many calls; a
+    federated query makes one. So the defect inflates the REST arm specifically, in the
+    direction the thesis predicts, and any cost ratio measured under it is partly a
+    measurement of the client rather than of the protocol. Fifth of five, same direction.
+
+    The proxy is not the cause: it forwards the body byte-for-byte (`content=body`), which the
+    module docstring says is deliberate for exactly this reason. Something the client sends
+    ahead of the cache breakpoint must differ per call — the system prompt (a clock or session
+    id), the tools array, or the transcript head, which Goose is already known to rewrite on
+    fan-out (surprise 42). Three candidates, one paid run per guess, and four such runs have
+    already been spent guessing at the tool-result boundary.
+
+    So: instrument instead of guessing. `_prefix_fingerprint` logs `sys_sha`, `tools_sha`,
+    `msg0_sha`, `n_tools` and `cache_breakpoints` on every request, with `cache_control`
+    stripped before hashing — the breakpoint legitimately walks to the end of the transcript
+    each call, and counting that as drift would report drift always and explain nothing. The
+    next run of any size names the moving part. Its tests assert the hashes **move** on a
+    changed clock, a reordered tools array and a rewritten first message, because a hash
+    function that returned a constant would report "the prefix is stable" while meaning "I
+    did not look" — the same trap as the three test fixtures that passed for the wrong reason
+    earlier this session.
+
+    `parse_logs.py` now warns on it every parse: 4+ calls, zero reads, nonzero writes. It
+    currently prints **5 of 5 multi-call runs read 0 cached tokens while writing 513,423**.

@@ -46,6 +46,7 @@ Run:   uv run proxy/anthropic_logging_proxy.py
 Check: uv run proxy/anthropic_logging_proxy.py --selfcheck
 """
 import asyncio
+import hashlib
 import json
 import os
 import sys
@@ -124,6 +125,62 @@ async def _get_client() -> httpx.AsyncClient:
             if _client is None:
                 _client = httpx.AsyncClient(timeout=httpx.Timeout(600.0, connect=10.0))
     return _client
+
+
+def _prefix_fingerprint(body: bytes) -> dict:
+    """Why prompt caching is or is not hitting — the cheapest possible answer.
+
+    Every run so far reports `cache_read_input_tokens == 0` on every call while
+    writing the whole prefix afresh each time: M-G1/M1@5 wrote 4,584 / 4,752 /
+    4,923 / 5,085 / 5,235 / 5,385 / 5,535 tokens on seven consecutive calls and
+    read nothing back. That is not a short run, it is a prefix that never matches.
+    Since the proxy forwards the body byte-for-byte (see the module docstring), the
+    mismatch is in what the client sends, and only three things sit ahead of the
+    cache breakpoint: the system prompt, the tools array, and the leading messages.
+
+    So hash each one separately. If `sys` changes call to call, the client is
+    injecting something per-request (a clock, a session id) ahead of everything
+    cacheable; if `tools` changes, the tool list is being re-ordered; if both hold
+    steady and reads are still zero, the cause is downstream and worth a real
+    investigation. Guessing which of the three it is costs a paid run per guess,
+    and I have already spent four of those on the tool-result boundary.
+
+    `bp` counts cache_control markers: zero of them explains a zero read all by
+    itself.
+    """
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, ValueError):
+        return {}
+
+    def sha(obj) -> str:
+        blob = json.dumps(obj, sort_keys=True, separators=(",", ":")).encode()
+        return hashlib.sha256(blob).hexdigest()[:12]
+
+    def strip_cc(obj):
+        """cache_control moves between calls by design; it is not prefix drift."""
+        if isinstance(obj, dict):
+            return {k: strip_cc(v) for k, v in obj.items() if k != "cache_control"}
+        if isinstance(obj, list):
+            return [strip_cc(v) for v in obj]
+        return obj
+
+    system = parsed.get("system")
+    tools = parsed.get("tools") or []
+    bp = json.dumps(parsed).count('"cache_control"')
+    out = {
+        "sys_sha": sha(strip_cc(system)) if system is not None else None,
+        "tools_sha": sha(strip_cc(tools)),
+        "n_tools": len(tools),
+        "cache_breakpoints": bp,
+    }
+    # The first message too: if the system prompt is stable but message[0] is not,
+    # the client is rewriting the transcript head — which it already does on
+    # fan-out (§11), and which would invalidate the prefix just as thoroughly.
+    msgs = parsed.get("messages") or []
+    if msgs:
+        out["msg0_sha"] = sha(strip_cc(msgs[0]))
+    return out
 
 
 def _message_shape(body: bytes) -> list:
@@ -557,6 +614,8 @@ async def app(scope, receive, send):
         "n_tool_results": len(new_blocks),
         "n_messages": len(msgs),
     }
+    if is_messages:
+        rec.update(_prefix_fingerprint(body))
     rec.update(parsed)
     await _write_log(rec)
 

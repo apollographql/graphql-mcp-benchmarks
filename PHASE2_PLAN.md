@@ -18,21 +18,57 @@ surfaces, the four tasks with computed ground truth, the runner, the four recipe
 and the report all exist and are verified. Verified numbers: §5.1 (all eleven cells) and §8.1
 (the four tool surfaces, pinned in `capture/expected-tool-surfaces.json`).
 
-**NEXT: the M4@103 `-fat` run**, then the matrix.
+**The M4@103 run is done and it answered a different question than the one asked.** The
+**turn cap fired first**: `.env` sets `MAX_TURNS=25` (not the repo default of 50, which this
+block wrongly claimed), and REST at N=103 needs ~104 calls. It stopped at 26 inference calls
+/ 56 tool calls with 14,485 tokens of payload — nowhere near a context limit. Goose printed
+"I've reached the maximum number of actions" and **exited 0**. Details in `NOTES.md` 50.
+
+**NEXT: two blocking decisions, both about cost, before any matrix run.**
+
+**(1) The turn cap.** M4@50 and M4@103 on the REST arm cannot complete at 25 turns. A capped
+cell is not a cheap cell — it is a missing one that renders as a low f1. Raising the cap to
+~120 makes those cells real, and REST at N=103 then costs far more than the $0.51 the capped
+run cost, because cost grows with the square of turn count while the cache never hits (below).
+The alternatives are to raise the cap, to drop N=103 from the REST arm and report it as
+untested, or to cap deliberately and report *turns-to-completion* as the finding rather than
+accuracy. The report no longer permits the accidental fourth option: capped runs are excluded
+from the accuracy means and listed separately.
+
+**(2) Prompt caching has never hit, in any run, on either arm** — `cache_read_input_tokens`
+is 0 for all 8 runs while writes total 513,423 tokens. This is not a short-run artifact:
+M-G1/M1@5 wrote a growing prefix on seven consecutive calls and read back nothing each time.
+It inflates cost per call, so it inflates the many-call REST arm most — the direction the
+thesis predicts. Any cost ratio measured under it is partly a measurement of Goose. The proxy
+forwards bodies byte-for-byte, so the moving part is in what the client sends ahead of the
+cache breakpoint; `_prefix_fingerprint` now logs `sys_sha` / `tools_sha` / `msg0_sha` on every
+request, and the next run of any size names it. `NOTES.md` 51.
+
+The cheapest way to answer (2) is a rerun of a cell that already exists, which also confirms
+the two report fixes on live data:
 
 ```bash
 docker compose up -d --wait && cd services && pnpm health && cd ..
-CONDITIONS=M-R1 TASKS=M4@103 REPS=1 MODEL=claude-haiku-4-5-20251001 ./bench.sh run
-CONDITIONS=M-R1 ./bench.sh parse
+CONDITIONS=M-G1 TASKS=M1@5 REPS=1 MODEL=claude-haiku-4-5-20251001 ./bench.sh run
+CONDITIONS=M-G1 ./bench.sh parse
+python3 - <<'PY'
+import json
+keys = ("call", "sys_sha", "tools_sha", "msg0_sha", "cache_breakpoints",
+        "cache_read_input_tokens", "cache_creation_input_tokens")
+for line in open("runs/phase2/M-G1/M1@5/rep1/proxy.jsonl"):
+    r = json.loads(line)
+    if r.get("is_messages"):
+        print({k: r.get(k) for k in keys})
+PY
 ```
 
-One run, under a dollar. It settles three things at once: whether a **127k-token tool result**
-produces a clean API error or gets silently truncated (different findings needing different
-columns — `NOTES.md` expectation 8), and whether **`MAX_TURNS=50` and `RUN_TIMEOUT=420`**
-survive REST's 1+N pattern at N=103. Both are phase-1 constants from a phase where no task
-needed more than a handful of calls, and a cap that truncates REST would read exactly like the
-context-window finding while being an artifact of the harness. `max_turns` is recorded per run
-so the two can be told apart.
+~$0.04, 8 calls. It overwrites `M-G1/M1@5/rep1`; rep2 and rep3 are untouched, and the new
+rep1 is strictly richer than the one it replaces, so nothing is lost. The hashes settle it:
+a `sys_sha` that changes every call means the client injects a clock or session id ahead of
+everything cacheable, and the fix is a Goose setting or a published caveat, not a harness
+change. A stable `sys_sha` and `tools_sha` with a moving `msg0_sha` means Goose rewrites the
+transcript head, which is surprise 42's mechanism showing up in a second metric. **The 127k-token tool-result question
+(`NOTES.md` expectation 8) remains open** and is unreachable until (1) is decided.
 
 ### What the smoke runs established, and what they cost
 
@@ -41,9 +77,11 @@ M4@20), all exit 0, `answer_f1` 1.00 throughout, **7 of 7 fact-verified with 0 f
 and no payload-completeness warning. The grader reads real model prose correctly — the one
 thing 72 synthetic runs could not tell us.
 
-**They also found four measurement bugs, and this is the part worth reading before trusting
-any phase-2 number.** All four are fixed; all four are in §11 under "What the smoke run found"
-with the evidence.
+**They also found six measurement bugs, and this is the part worth reading before trusting
+any phase-2 number.** Four are fixed, two are open decisions in the block above. **Five of
+the six pointed the way the thesis predicts** — that is the pattern to distrust, and the one
+bug that pointed the wrong way (#3) was caught in minutes while the others survived for days.
+§11 has the evidence under "What the smoke run found".
 
 1. **`tool_result_tokens` undercounted any fan-out by the fan-out factor**, since phase 1. It
    took **four** attempts, because the first three were all *positional* rules and the client
@@ -59,11 +97,26 @@ with the evidence.
    the join. Now split: `forced_serial_depth` (data) and `discovery_depth`.
 4. **The health gate had a false positive** — one 3s attempt, no retry — which blocked a run on
    a transient Docker port-forwarder stall. Now 3 attempts, with flaky endpoints reported.
+5. **A turn-capped run's `answer_f1 = 0.00` was averaged into the accuracy table.** Goose exits
+   0 when it hits `--max-turns`, so nothing in `meta.json` distinguished "REST got the answer
+   wrong at N=103" from "the harness stopped it at turn 26 of ~104". `completed` is now
+   `stop_cause`, and capped runs are excluded from the means and listed separately.
+   `NOTES.md` 50.
+6. **Prompt caching has never hit on any run**, inflating cost per call — and therefore
+   inflating the many-call REST arm most. Not yet diagnosed; `_prefix_fingerprint` is in place
+   to name the moving part on the next run. `NOTES.md` 51.
 
-**Three of those four produced exactly the answer the GraphQL hypothesis predicts**, which is
+**Five of those six produced exactly the answer the GraphQL hypothesis predicts**, which is
 why they survived. The one that pointed the wrong way (#3, on M1@5 — the task deliberately
 built so REST wins) was caught within minutes. **A metric that quietly confirms the thesis is
 the one to distrust**, and tasks with predictable directions are what make a wrong one visible.
+
+Note what found #5 and #6: neither was a test. #5 was caught by two guards written for other
+purposes — the stdout truncation grep and the `n_tool_results == n_tool_use` conservation
+check, which read 56 calls / 55 results because one call was in flight when the cap hit. #6
+was caught by reading a `cache_read` column that had been printed in every report since phase
+1 and never looked at. Both are now parse-time warnings, because the next person will not read
+the column either.
 
 This class of loss is now self-detecting: every tool call gets a result back, so
 `parse_logs.py` asserts `n_tool_results == n_tool_use` per run and excludes any run that fails
@@ -1365,8 +1418,16 @@ not. When it moves, the cost moves, the ratio moves, and the report still render
       ```
 
    6. **The M4@103 `-fat` run** — one run, under a dollar, still to do. Settles whether a
-      127k-token tool result errors cleanly or truncates silently, and whether `MAX_TURNS=50`
-      and `RUN_TIMEOUT=420` survive REST's 1+N pattern at N=103. Commands in STATUS.
+      127k-token tool result errors cleanly or truncates silently, and whether the turn and
+      time caps survive REST's 1+N pattern at N=103. Commands in STATUS.
+
+      **Done, and it answered only the second half.** The turn cap fired at 26 calls — `.env`
+      sets `MAX_TURNS=25`, overriding the repo default of 50 — so the run never approached a
+      context limit and the 127k question is still open. `RUN_TIMEOUT=420` was never close
+      (60.8s). Goose exits 0 on a cap, and the run's `answer_f1 = 0.00` was being averaged
+      into the accuracy table until `stop_cause` replaced the `completed` boolean. Two
+      blocking decisions came out of it — the cap, and never-hitting prompt caching — both in
+      STATUS, both requiring a cost call before the matrix. `NOTES.md` 50 and 51.
 
    7. **The matrix.** Two passes, `PAYLOAD_PROFILE=fat` then `=lean`, 198 runs total.
 

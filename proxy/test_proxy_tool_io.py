@@ -232,6 +232,45 @@ check("...and both see the same number of them",
 check("a request with no new results counts zero",
       tokens_of(json.dumps({"messages": [{"role": "user", "content": "task"}]}).encode()), 0)
 
+print("\nthe prefix fingerprint can actually see drift")
+# The whole point of this diagnostic is to distinguish "the system prompt is stable"
+# from "I did not look". A hash function that returns a constant would report the
+# first while meaning the second, so test that it MOVES on the drift it hunts.
+_sys = [{"type": "text", "text": "You are goose. The time is 12:00:00."}]
+_tools = [{"name": "listFlight", "input_schema": {"type": "object"}}]
+_msgs = [{"role": "user", "content": "task"}]
+
+
+def fp(system=None, tools=None, messages=None, cc=False):
+    body = {"system": system if system is not None else _sys,
+            "tools": tools if tools is not None else _tools,
+            "messages": messages if messages is not None else _msgs}
+    if cc:
+        body["system"][-1]["cache_control"] = {"type": "ephemeral"}
+    return prox._prefix_fingerprint(json.dumps(body).encode())
+
+
+base = fp()
+check("the same request fingerprints the same", fp()["sys_sha"], base["sys_sha"])
+check("a clock in the system prompt moves sys_sha",
+      fp(system=[{"type": "text", "text": "You are goose. The time is 12:00:01."}])["sys_sha"]
+      != base["sys_sha"], True)
+check("a reordered tools array moves tools_sha",
+      fp(tools=[{"name": "listAircraft", "input_schema": {"type": "object"}}])["tools_sha"]
+      != base["tools_sha"], True)
+check("a rewritten first message moves msg0_sha",
+      fp(messages=[{"role": "user", "content": "other"}])["msg0_sha"] != base["msg0_sha"], True)
+# cache_control legitimately moves between calls — Goose walks the breakpoint to the
+# end of the transcript. Counting that as prefix drift would make the diagnostic
+# report drift on every call and explain nothing.
+check("a moved cache_control breakpoint is NOT prefix drift",
+      fp(cc=True)["sys_sha"], base["sys_sha"])
+check("breakpoints are counted", fp(cc=True)["cache_breakpoints"], 1)
+check("zero breakpoints is reported as zero", base["cache_breakpoints"], 0)
+check("tool count travels with the hash", base["n_tools"], 1)
+check("a malformed body yields nothing rather than a fake hash",
+      prox._prefix_fingerprint(b"nope"), {})
+
 print()
 if _fails:
     print(f"{len(_fails)} failure(s):")

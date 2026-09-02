@@ -371,19 +371,34 @@ def parse_proxy(p: Path, task_model: str = "") -> dict:
     return {**agg, **extra}
 
 
-def completed(meta: Path, stdout: Path) -> bool:
+def stop_cause(meta: Path, stdout: Path) -> str | None:
+    """Why a run stopped, or None if the agent finished on its own.
+
+    `completed` used to be a bare boolean, which collapsed three causes that mean
+    different things. The turn cap is the one that matters: Goose prints "I've
+    reached the maximum number of actions" and **exits 0**, so a capped run looks
+    successful in `goose_exit`, `timed_out`, and `budget_killed` alike, and its
+    answer is whatever partial text it had. Averaging that answer's f1 in reads as
+    the condition getting the task wrong — and the cap binds first on exactly the
+    high-N REST cells this experiment is about, so the error points the way the
+    thesis predicts. The report needs the cause, not just the boolean (§11).
+    """
     try:
         m = json.loads(meta.read_text())
     except Exception:
-        return False
+        return "no meta"
     if m.get("budget_killed"):
-        return False
+        return "budget kill"
     text = stdout.read_text() if stdout.exists() else ""
     trunc = ("maximum number of actions", "reached the maximum",
              "Would you like me to continue")
     if any(mk in text for mk in trunc):
-        return False
-    return not m.get("timed_out") and len(text.strip()) > 40
+        return f"turn cap ({m.get('max_turns', '?')})"
+    if m.get("timed_out"):
+        return "timeout"
+    if len(text.strip()) <= 40:
+        return "no output"
+    return None
 
 
 def collect():
@@ -406,7 +421,7 @@ def collect():
             "toolsets": meta.get("toolsets"), "goose_exit": meta.get("goose_exit"),
             "timed_out": meta.get("timed_out"), "budget_killed": meta.get("budget_killed", False),
             "duration_s": meta.get("duration_s"), "agent_active_s": proxy.get("agent_active_s", 0.0),
-            "completed": completed(meta_path, run_dir / "stdout.txt"),
+            "stop_cause": stop_cause(meta_path, run_dir / "stdout.txt"),
             **{f"proxy_{k}": proxy[k] for k, _ in METRICS},
             "aux_calls": proxy["aux_calls"], "aux_tokens": proxy["aux_tokens"],
             "unparsed_calls": proxy["unparsed_calls"],
@@ -424,6 +439,7 @@ def collect():
                  if c["cache_creation_input_tokens"] > 0), 0
             ),
         }
+        row["completed"] = row["stop_cause"] is None
         row["cost_usd"] = cost_usd(row, run_model)
         # Every tool call the model issued gets a result back, so a completed run
         # must record as many results as calls. Fewer means the proxy lost
@@ -732,6 +748,13 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
     that lands is worse than a wrong answer: it inflates accuracy and deflates cost
     at the same time, so averaging it in corrupts both columns in the same
     direction (§7.1).
+
+    **Runs the harness stopped are excluded too**, for a different reason: they
+    carry no accuracy information at all. A run cut off at the turn cap was never
+    asked for its answer, so its low f1 measures the cap, not the condition. Both
+    exclusions matter most where the experiment is most interesting — the high-N
+    REST cells — and both errors would have pushed the result the way the thesis
+    predicts, which is why neither is a warning.
     """
     out = ["\n## Accuracy\n"]
     graded = [r for r in rows if r.get("answer_f1") is not None]
@@ -739,8 +762,10 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
         out.append("_No graded runs._\n")
         return out
 
-    fabricated = [r for r in graded if r.get("answer_grounded") is False]
-    scorable = [r for r in graded if r.get("answer_grounded") is not False]
+    capped = [r for r in graded if r.get("stop_cause")]
+    finished = [r for r in graded if not r.get("stop_cause")]
+    fabricated = [r for r in finished if r.get("answer_grounded") is False]
+    scorable = [r for r in finished if r.get("answer_grounded") is not False]
     review = [r for r in scorable if r.get("needs_review")]
 
     out.append("`answer_f1` is field-level precision/recall against `tasks/expected.json`, "
@@ -765,6 +790,21 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
                 cell += f"<br>cov {cov:.0%}"
             cells.append(cell)
         out.append("| " + " | ".join(cells) + " |")
+
+    if capped:
+        out.append(f"\n### ⚠️ {len(capped)} run(s) stopped by the harness — excluded from the "
+                   f"means above\n")
+        out.append("These runs never produced a final answer: the harness stopped the agent "
+                   "mid-task. **The f1 below measures the stop, not the condition** — Goose "
+                   "exits 0 on a turn cap, so nothing else in the row marks it. Raise the cap "
+                   "and re-run, or report the cell as untested; do not read it as accuracy.\n")
+        out.append("| Condition | Task | Rep | stopped by | inference calls | tool calls | "
+                   "would-be f1 |")
+        out.append("|---|---|---|---|---|---|---|")
+        for r in sorted(capped, key=lambda r: (r["condition"], task_n(r["task_id"]), r["rep"])):
+            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+                       f"**{r['stop_cause']}** | {r.get('proxy_n_inference_calls', '?')} | "
+                       f"{r.get('proxy_n_tool_calls', '?')} | {r['answer_f1']:.2f} |")
 
     if fabricated:
         out.append(f"\n### ⚠️ {len(fabricated)} fabricated run(s) — excluded from the means "
@@ -791,7 +831,7 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
 
     verified = [r for r in scorable if r.get("answer_grounded") is True]
     unassessed = [r for r in scorable if r.get("answer_grounded") is None]
-    out.append(f"\n**On grounding.** {len(verified)} of {len(graded)} run(s) are "
+    out.append(f"\n**On grounding.** {len(verified)} of {len(finished)} finished run(s) are "
                f"fact-verified: every fact the answer states was traced to a `tool_result` "
                f"that entered the context before it, using the proxy's `tool_io.jsonl` "
                f"sidecar. {len(fabricated)} failed that check. "
@@ -802,6 +842,25 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
                   "`answer_grounded` is never `True` by default, so a blank means "
                   "unassessed, not passed.\n"))
     return out
+
+
+def _surface_bytes_phrase() -> str:
+    """Tool-surface sizes read from the file that owns them, never retyped.
+
+    This sentence said "9,440 / 4,040 bytes" for a week after commit 14d8973 grew
+    M-R1's surface to 9,601 (§8.1). §8.1 was corrected; this copy was not, because
+    nothing connects them — the same failure the baseline file was created to stop,
+    reappearing one layer up in the prose that quotes it.
+    """
+    try:
+        b = json.loads((ROOT / "capture" / "expected-tool-surfaces.json").read_text())
+    except Exception:
+        return "in PHASE2_PLAN.md §8.1 and capture/expected-tool-surfaces.json"
+    def n(c):
+        return f"{b[c]['tools_list_bytes']:,}"
+    return (f"{n('M-R1')} / {n('M-G2')} bytes front-loaded against "
+            f"{n('M-R2')} / {n('M-G1')} on-demand "
+            f"(capture/expected-tool-surfaces.json, which owns these numbers)")
 
 
 def _concepts_section(phase: int = 1) -> list[str]:
@@ -819,9 +878,8 @@ def _concepts_section(phase: int = 1) -> list[str]:
         schema_eg = (
             "For the front-loaded conditions that's nine generated endpoint tools (M-R1) or "
             "seven frozen persisted operations (M-G2); for the on-demand pair it is three "
-            "generic tools each (M-R2, M-G1). Measured `tools/list` sizes are in "
-            "PHASE2_PLAN.md §8.1: 9,440 / 4,040 bytes front-loaded against 2,439 / 2,159 "
-            "on-demand."
+            "generic tools each (M-R2, M-G1). Measured `tools/list` sizes: "
+            + _surface_bytes_phrase() + "."
         )
         growth_eg = (
             "The REST conditions are penalised on both axes, and phase 2 is built to "
@@ -1210,7 +1268,7 @@ def write_summary(rows):
                  "active_s | aux calls | aux tok | unparsed | completed | exit |")
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in sorted(rows, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
-        done_cell = "**$killed**" if r.get("budget_killed") else ("yes" if r["completed"] else "**NO**")
+        done_cell = "yes" if r["completed"] else f"**{r['stop_cause']}**"
         lines.append("| {condition} | {task_id} | {rep} | {pc} | {pi} | {prc} | "
                      "{cost} | {wall} | {active} | "
                      "{aux} | {auxt} | {unp} | {done} | {exit} |".format(
@@ -1226,8 +1284,10 @@ def write_summary(rows):
                          exit=r["goose_exit"],
                          **r))
     lines.append("\n*Every figure comes from the per-run proxy log — raw `usage` off the wire, "
-                 "one file per run, no shared state. `completed=NO` = goose bailed early. "
-                 "`$killed` = the runner killed goose when per-run cost exceeded "
+                 "one file per run, no shared state. Anything but `yes` under `completed` "
+                 "names what stopped the run: a **turn cap** exits 0 and is invisible "
+                 "everywhere else in this row, so this column is the only place it shows. "
+                 "`budget kill` = the runner killed goose when per-run cost exceeded "
                  "`PER_RUN_BUDGET_USD` — the partial cost is real and reported; the answer is "
                  "incomplete. Both should be re-run or excluded.*\n")
 
@@ -1260,7 +1320,31 @@ def write_summary(rows):
           f"({len(rows)} runs)")
     incomplete = [r for r in rows if not r["completed"]]
     if incomplete:
-        print(f"WARNING: {len(incomplete)} run(s) flagged incomplete — review before publishing.")
+        by_cause = {}
+        for r in incomplete:
+            by_cause.setdefault(r["stop_cause"], []).append(f"{r['condition']}/{r['task_id']}")
+        for cause, cells in sorted(by_cause.items()):
+            print(f"WARNING: {len(cells)} run(s) stopped by {cause} — excluded from the "
+                  f"accuracy means, since a stopped run was never asked for its answer. "
+                  f"Affected: {', '.join(sorted(set(cells)))}")
+
+    # A cache that never hits is a cost artifact, not a protocol result. Anthropic
+    # charges a cache WRITE at 1.25x and a read at 0.1x, so a client whose prefix
+    # never matches pays ~12x what a hitting one does — and it pays that per call,
+    # which means the inflation scales with call count. REST's 1+N pattern makes
+    # far more calls than a federated query does, so this lands hardest on exactly
+    # the arm the thesis expects to lose. Any cost ratio measured under it is
+    # partly a measurement of the client. Loud, and checked every parse.
+    multi = [r for r in rows if (r.get("proxy_n_inference_calls") or 0) >= 4]
+    blind = [r for r in multi if (r.get("proxy_cache_read_input_tokens") or 0) == 0
+             and (r.get("proxy_cache_creation_input_tokens") or 0) > 0]
+    if blind:
+        wrote = sum(r["proxy_cache_creation_input_tokens"] for r in blind)
+        print(f"WARNING: {len(blind)} of {len(multi)} multi-call run(s) read 0 cached tokens "
+              f"while writing {wrote:,} — the prompt prefix is not matching between calls. "
+              f"Cache writes cost 1.25x and reads 0.1x, so this inflates cost per call, and "
+              f"it inflates the many-call conditions most. Check `sys_sha`/`tools_sha`/"
+              f"`msg0_sha` in proxy.jsonl to see which part of the prefix moves.")
     lossy = [r for r in rows if r.get("payload_complete") is False]
     if lossy:
         print(f"WARNING: {len(lossy)} run(s) recorded fewer tool results than tool calls. "
