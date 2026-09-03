@@ -51,6 +51,11 @@ On `M4@50` the two brackets differ by **66 tokens out of 46,665**. The mechanism
 available, documented in the tool schema, and simply unused. A protocol capability the
 client does not exercise is not a defence of the protocol.
 
+> **Phase 1's payload figure is partly recoverable after all.** The fan-out undercount only
+> misreports requests carrying more than one tool result, so the six single-tool-call cells are
+> exact — including the trivial GitHub task, where REST's one response is **4,459 tokens
+> against GraphQL's 47**. Only the two ten-call REST cells stay suppressed (`NOTES.md` 64).
+
 > **This half of tax one is a claim about one model.** Every run in both phases used
 > `claude-haiku-4-5`. Whether a response returns unwanted fields is structural — fat REST
 > serves all 46 fields regardless of who asks — but *whether the agent narrows them* is

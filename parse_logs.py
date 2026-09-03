@@ -73,8 +73,21 @@ METRICS = [
 UNRECOVERABLE = {1: {"tool_result_tokens"}}
 
 
-def metric_ok(key: str, phase: int) -> bool:
-    return key not in UNRECOVERABLE.get(phase, ())
+def metric_ok(key: str, phase: int, rows=None) -> bool:
+    """Whether a metric can be reported for this phase — and for these rows.
+
+    Blanket suppression by phase was too aggressive. The undercount only misreports
+    a request carrying MORE THAN ONE tool result, so a run that made at most one
+    tool call in total has no fan-out and its figure is exact. Six of phase 1's
+    eight condition/task cells are single-call, including both conditions on the
+    task built to measure payload precision — which is the number the blanket rule
+    was throwing away. Withdrawing sound data is its own kind of wrong answer.
+    """
+    if key not in UNRECOVERABLE.get(phase, ()):
+        return True
+    if key == "tool_result_tokens" and rows is not None:
+        return all((r.get("proxy_n_tool_calls") or 0) <= 1 for r in rows)
+    return False
 # Every condition this script knows how to report, in report order, by phase.
 # A condition that appears in `runs/` but not here is a hard error: the previous
 # behaviour was to filter rows against a hardcoded list, which meant an unknown
@@ -1500,7 +1513,7 @@ def write_summary(rows):
             cells = [f"**{c}** — {cell_label(c)}"]
             for k, _ in METRICS:
                 cells.append(fmt(*agg_stats(r[f"proxy_{k}"] for r in sub))
-                             if metric_ok(k, phase) else "n/a")
+                             if metric_ok(k, phase, sub) else "n/a")
             out.append("| " + " | ".join(cells) + " |")
         return out
 
@@ -1533,7 +1546,7 @@ def write_summary(rows):
         cells = [f"**{c}** — {cell_label(c)}"]
         for k, _ in METRICS:
             cells.append(fmt(*agg_stats(d[k] for d in per_rep.values()))
-                         if metric_ok(k, phase) else "n/a")
+                         if metric_ok(k, phase, [r for r in rows if r["cell"] == c]) else "n/a")
         lines.append("| " + " | ".join(cells) + " |")
 
     # --- rover (C): reported separately ---
@@ -1661,7 +1674,7 @@ def write_summary(rows):
                 row = [c, cell_cond(c), sub[0].get("profile") or "", t,
                        task_n(t) if task_n(t) is not None else "", len(sub)]
                 for k, _ in METRICS:
-                    if not metric_ok(k, phase):
+                    if not metric_ok(k, phase, sub):
                         row += ["", ""]   # see UNRECOVERABLE — blank, never a wrong number
                         continue
                     m, sd = agg_stats(r[f"proxy_{k}"] for r in sub)

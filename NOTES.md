@@ -1654,3 +1654,48 @@ tool-design effect.
     predictable directions — and it explains why the pre-registration (3 confirmed, 1 half
     wrong) turned out more reliable than the instrumentation.
 
+63. **Two claims about phase 1's tool surfaces were wrong, and a third was too pessimistic.
+    All three were caught by one reader asking "is this truly tools/list?"** The writeup had
+    said the trivial GitHub task's 4× cost gap sat entirely in tool descriptions, citing the
+    captured 144,710 bytes for A1's 54-tool surface. Decomposing the run says otherwise.
+
+    **The advertised surface never reaches the model.** A1's `tools/list` is 144,710 B —
+    roughly 40,000 tokens — and its observed prefix is **4,431 tokens**. A 9x shortfall, so
+    the client is not forwarding what the server advertises. Every other condition in either
+    phase lines up (advertised tools + ~1,500 tokens of system prompt), which is exactly why
+    this went unnoticed: `M-R1` advertises 9,601 B and shows a 3,830-token prefix, `M-G1`
+    2,159 B and 2,517. Only the 54-tool REST server diverges. **"Our MCP server exposes N
+    tools" is an upper bound on cost, not a measurement of it.**
+
+    **The payload, not the schema, is where the trivial task's difference lives.** One tool
+    call each, so it decomposes cleanly: REST's single result is **4,459 tokens** against
+    GraphQL's **47** — 95x — while the schema-plus-system prefix is 4,431 against 1,851, only
+    2.4x. Comparable in absolute size, nothing like the same ratio. That is the
+    payload-precision effect T2 was designed to measure, and the writeup had been asserting
+    the opposite mechanism.
+
+    **And it consequently kills the "phase 2 understates real-world REST" claim.** Measured at
+    the model rather than at the server, phase 2's REST prefix is 3,830 tokens against
+    GitHub's 4,431 — within 16%, not 15x apart. Every condition in both experiments sits
+    between 1,851 and 4,431 tokens of prefix. The tool surface is a modest, broadly similar
+    cost everywhere and is not where either result comes from.
+
+64. **The blanket phase-1 suppression was withdrawing data that was provably exact.** Surprise
+    59 suppressed `tool_result_tokens` for all of phase 1 because the fan-out undercount made
+    it unrecoverable. But the undercount only misreports a request carrying **more than one**
+    tool result — so a run that made at most one tool call in total has no fan-out, and its
+    figure is exact by construction. No stored field needed to prove it; `proxy_n_tool_calls`
+    is enough.
+
+    **Six of phase 1's eight condition/task cells are single-call**, including all four
+    conditions on T2 — the task built to measure payload precision, whose number is the single
+    most useful figure phase 1 produced. The blanket rule had thrown it away. Only A1/T1 and
+    A2/T1 (ten tool calls each) remain suppressed, and the phase-1 report now shows `n/a` for
+    exactly those two rows and real figures for the rest.
+
+    Worth naming the failure mode, because it is the mirror of the one this project keeps
+    hitting: **withdrawing sound data is its own kind of wrong answer.** A blanket rule is
+    safe against reporting a bad number and unsafe against reporting nothing, and I reached
+    for it because the conservative direction felt free. It was not — it cost the one number
+    that answered the question the task existed for.
+

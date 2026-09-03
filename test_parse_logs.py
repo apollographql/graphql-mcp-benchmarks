@@ -147,6 +147,24 @@ check("nothing else in phase 1 is suppressed", P.metric_ok("input_tokens", 1), T
 check("the suppressed key names a real metric",
       "tool_result_tokens" in {k for k, _ in P.METRICS}, True)
 
+# ...but blanket suppression by phase threw away sound data. The undercount only
+# misreports a request carrying more than one tool result, so a run that made at
+# most one tool call has no fan-out and its figure is exact. Six of phase 1's eight
+# cells are single-call, including both conditions on the task built to measure
+# payload precision — the number the blanket rule was discarding.
+_one = [row(phase=1, condition="A1", profile=None, task="T2", proxy_n_tool_calls=1)]
+_many = [row(phase=1, condition="A1", profile=None, task="T1", proxy_n_tool_calls=10)]
+check("a single-tool-call phase-1 run reports its exact payload",
+      P.metric_ok("tool_result_tokens", 1, _one), True)
+check("a fan-out phase-1 run stays suppressed",
+      P.metric_ok("tool_result_tokens", 1, _many), False)
+check("one fan-out run in the group suppresses the group",
+      P.metric_ok("tool_result_tokens", 1, _one + _many), False)
+check("with no rows to judge, it stays suppressed",
+      P.metric_ok("tool_result_tokens", 1, None), False)
+check("phase 2 is unaffected by the row check",
+      P.metric_ok("tool_result_tokens", 2, _many), True)
+
 
 # ── capped runs are not accuracy (NOTES 50) ──────────────────────────────────
 # Goose exits 0 on a turn cap, so a partial answer scored answer_f1 0.00 and was
