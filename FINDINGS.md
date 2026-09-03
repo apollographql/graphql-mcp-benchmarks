@@ -183,13 +183,16 @@ F1 averaged in as accuracy, never-hitting caching, the fat/lean brackets average
 row, an M3 verdict misparse that scored correct answers at recall 0.5, seven silent API
 400s, and a totals table of zeros.
 
-**Most produced exactly the answer the GraphQL hypothesis predicts, which is why they
-survived.** The ones pointing the other way were caught fast — discovery depth within
-minutes, because it made GraphQL look *deeper* on the task built for REST to win. Every
-guard in the parser exists because something got through it first.
+**Four of the nine were conservative for the hypothesis** — they understated the effect the
+study exists to measure — two favoured it, one is mixed, two are neutral (`NOTES.md` 62).
+So bias is not what let them survive. **Collision with a prediction is what caught them:**
+discovery depth countered the thesis and was found in minutes, because M1@5 was built as
+the task where REST wins and GraphQL reading deeper there contradicted a written-down
+expectation. Nobody had a prior for the magnitude of a payload column, so a 10× error sat
+in it unquestioned for months.
 
-A metric that quietly confirms the thesis is the one to distrust. Tasks built with
-predictable directions are what make a wrong one visible.
+A bug is caught when it contradicts something you predicted — not when it is large, and not
+when it is biased. Every guard in the parser exists because something got through it first.
 
 ---
 

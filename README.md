@@ -211,16 +211,29 @@ test_grade.py  test_parse_logs.py  proxy/test_proxy_tool_io.py   test suites (st
 services/                 the phase-2 backend: three services, REST + GraphQL from one field spec
 docker-compose.yml        the phase-2 stack — 3 subgraphs, 3 REST services, Apollo Router
 runs/  results/  capture/ outputs, split by phase
-FINDINGS.md               the phase-2 written result + the scored pre-registration
+WRITEUP.md                the phase-2 result, written as a narrative
+FINDINGS.md               the phase-2 result, terse + the scored pre-registration
 PHASE2_PLAN.md            phase-2 design, decisions, and STATUS — read this first for phase 2
 NOTES.md                  every surprise, in order, with what it cost
 ```
 
 ## Phase 2 findings
 
-**Read [`FINDINGS.md`](FINDINGS.md)** for the written result — the two taxes, the
-pre-registration scored against the runs, and the caveats that have to travel with any
-number quoted from it. The condensed version follows here.
+**Headline: GraphQL-over-MCP is more token-efficient — a GraphQL condition won all ten tasks,
+by 3.4× on wasted tokens against the best REST configuration and 5.3× against a typical one.**
+The six caveats are where the useful detail is, and one of them (entity-shaped persisted
+operations) is large enough to put GraphQL *behind* plain REST. Full argument in
+[`WRITEUP.md`](WRITEUP.md).
+
+Two written versions, for different readers:
+
+- **[`WRITEUP.md`](WRITEUP.md)** — the narrative one. Why the protocol framing collapsed,
+  what replaced it, and the section on our own instruments being worse than the experiment.
+  Start here if you have not seen this repo before.
+- **[`FINDINGS.md`](FINDINGS.md)** — the terse one. Tables, the pre-registration scored
+  against the runs, and the caveats that must travel with any number quoted from it.
+
+The condensed version follows here.
 
 Machine-generated detail is in `results/phase2/summary.md`, whose lede is **computed from
 the run rows at render time** rather than written — prose that states a mechanism the data
@@ -287,11 +300,22 @@ individually in `NOTES.md` 42-59: the tool-result fan-out undercount, a
 run's f1 averaged in as accuracy, never-hitting prompt caching, the fat/lean fold, the
 M3 verdict misparse, seven silent API 400s, and a totals table of zeros.
 
-**Most of them produced exactly the answer the GraphQL hypothesis predicts, which is
-why they survived.** The ones that pointed the other way were caught fast: discovery
-depth was spotted within minutes because it made GraphQL look *deeper* on the task
-built for REST to win, and the fat/lean fold was found while reading an accuracy table
-for something else. Every guard in
+**Direction is not what determined survival — collision with a prediction was.** Counted
+properly, four of these errors were *conservative* for the GraphQL hypothesis (they
+understated the effect the study exists to measure), two favoured it, one is mixed and two
+are neutral — the full tally is `NOTES.md` 62, which also corrects an earlier claim here
+that most of them flattered the thesis. What separates the bug caught in minutes from the
+one that survived months is not bias: discovery depth (which *countered* the thesis) was
+caught fast because M1@5 was deliberately built as the task where REST wins, so GraphQL
+reading deeper there contradicted a written-down expectation. Nobody had a prior for the
+absolute magnitude of a payload column, so a 10x error sat in it unquestioned.
+
+**A bug is caught when it contradicts something you predicted** — not when it is large, and
+not when it is biased. That is the argument for pre-registration and for tasks with
+predictable directions, and it is why the pre-registration proved more reliable than the
+instrumentation.
+
+Every guard in
 `parse_logs.py` exists because something got through: the tool-result conservation law,
 the `stop_cause` split, the zero-cache-read warning, the non-200 warning, the
 tool-surface baseline, and the refusal to print a totals row it could not populate.

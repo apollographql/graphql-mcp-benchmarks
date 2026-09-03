@@ -1266,8 +1266,10 @@ tool-design effect.
     `no output`. A bare boolean collapsed three causes that mean different things, and the
     turn cap is the one that must never be read as accuracy — so capped runs are excluded from
     the accuracy means and listed in their own table, the same treatment fabricated runs get,
-    for the same reason: **both errors point the way the thesis predicts.** That is now four
-    of five measurement bugs this phase that flattered the hypothesis.
+    for the same reason: an error in either direction corrupts a column. (An earlier draft
+    of this paragraph claimed "four of five measurement bugs this phase flattered the
+    hypothesis" — that tally was never checked and is wrong; see surprise 62 for the counted
+    version. Most of these errors were conservative for the thesis, not favourable to it.)
 
     Also a plain documentation error found by reading the meta: STATUS said `MAX_TURNS=50`,
     the repo default is 50, and the run recorded **25** — `.env` overrides it. The matrix
@@ -1575,7 +1577,9 @@ tool-design effect.
     30 of 60 runs and proceeds, and a `PARSE_MODEL` matching nothing exits rather than
     reporting an empty matrix as a success.
 
-    **What is still open is the science, not the plumbing.** The structural findings are
+    **The science is deferred by decision (2026-09-03), and the plumbing is fixed.** The
+    sonnet comparison was offered and declined on cost; the limitation is disclosed inline in
+    `FINDINGS.md` instead, which is the honest resolution rather than a gap. The structural findings are
     model-independent by construction: `FlightRoster($flightId: ID!)` cannot accept fifty
     flights, so any model must loop, and fat REST returns all 46 fields regardless of who
     is asking. The findings **at risk** are the agent-behaviour half of tax one — "`?fields=`
@@ -1608,4 +1612,45 @@ tool-design effect.
     from a normal return. All three read as "not working" to a human skimming output, but
     only the first is the intended behaviour, and a guard that raises `KeyError` instead of
     exiting would otherwise pass a naive `assert raises`.
+
+62. **The "most of these bugs flattered the thesis" claim was wrong, and I propagated it into
+    four documents including a published post.** Counted properly, by which arm each error
+    favoured:
+
+    | Bug | Effect | Direction |
+    |---|---|---|
+    | Fan-out payload undercount (42) | understated REST's payload ~10x | **countered** |
+    | Depth off-by-one (46) | read 1 for REST's genuine 2-hop chain | **countered** |
+    | Discovery counted as data depth (49) | made GraphQL look structurally deeper | **countered** |
+    | Fat/lean fold (54) | averaged the steelman into fat, understating fat REST | **countered** |
+    | Turn-capped f1 averaged in (50) | a REST cell scored 0.00 as if wrong | flattered |
+    | Silent API 400s (56) | inflated one REST-lean cell's cost, depressed its f1 | flattered |
+    | Prompt caching never hits (51) | inflates by call count — worst for M-G2, a *GraphQL* condition, in phase 2; worst for A1, a REST one, in phase 1 | mixed |
+    | M3 verdict misparse (55) | recall 0.5 in every condition at once | neutral |
+    | Totals table of zeros (58) | no arm favoured | neutral |
+
+    **Four countered, two flattered, one mixed, two neutral.** So the majority of these errors
+    were *conservative* — they understated the effect the study exists to measure.
+
+    Where the wrong claim came from: surprise 42 got this right on the day
+    ("the error was conservative for the thesis, which is why nothing looked wrong"), and then
+    surprise 50 asserted "four of five measurement bugs this phase flattered the hypothesis"
+    without recounting. That sentence was never checked against 42's own analysis, and from
+    there it went into `PHASE2_PLAN.md` §11, `README.md`, `FINDINGS.md` and a published blog
+    post. **A tally is a number and needed sourcing like any other number in this repo** — the
+    one class of claim I never applied that rule to was a claim about my own errors.
+
+    **The real lesson survives, and it is better than the one I had.** Direction is not what
+    determines survival — look at the catch times. Discovery depth (49) *countered* the thesis
+    and was caught in minutes; the fan-out undercount (42) also countered it and survived
+    since phase 1. What separates them is not bias but **collision with a written-down
+    expectation**: M1@5 was deliberately built as the task where REST wins, so GraphQL reading
+    deeper there contradicted a prior and got investigated within minutes. Nobody had a prior
+    for the absolute magnitude of a payload column, so a 10x error in it sat unquestioned for
+    months.
+
+    So: **a bug is caught when it contradicts something you predicted, not when it is large
+    and not when it is biased.** That is the argument for pre-registration and for tasks with
+    predictable directions — and it explains why the pre-registration (3 confirmed, 1 half
+    wrong) turned out more reliable than the instrumentation.
 

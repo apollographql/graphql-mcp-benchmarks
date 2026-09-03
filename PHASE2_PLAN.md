@@ -111,46 +111,29 @@ Two harness defects between them cost that comparison.
 
 **NEXT, in the order I would take it:**
 
-1. ~~**The writeup.**~~ **Done** — `FINDINGS.md` (2026-09-03). Every numeric claim in it was
+1. ~~**The writeup.**~~ **Done** — `FINDINGS.md` (terse) and `WRITEUP.md` (narrative),
+   both 2026-09-03. **They restate the same figures, which is a stale-number surface** — the
+   most-repeated bug class in this project. `results/phase2/summary.md` remains the only
+   generated one; if a number moves, both hand-written documents need the edit, and neither
+   should be trusted over the generated report. Every numeric claim in it was
    checked back against `results/phase2/raw.csv` rather than transcribed from a message; the
    ratios it quotes (15.6x, 13.2x, 35.5x, 14.3x, 3.4x, the 66-token M4 delta) all recompute.
    It carries the scored pre-registration and the caching caveat, and `README.md` points at it.
-2. **The model qualifier — the last open item from the pre-registration itself.**
-   Expectation 7 said resolving it was "worth doing before the results are written up, not
-   after", and `FINDINGS.md` shipped without it. Both phases ran entirely on
-   `claude-haiku-4-5`.
+2. **The model qualifier — deferred by decision, 2026-09-03, not forgotten.** Every run in
+   both phases used `claude-haiku-4-5`. Expectation 7 said resolving this was "worth doing
+   before the results are written up, not after"; it was not, and that is now an accepted
+   limitation rather than an outstanding task.
 
-   The structural findings do not depend on the model and do not need this: `FlightRoster($flightId: ID!)`
-   cannot accept fifty flights, so **any** model loops, and fat REST serves all 46 fields
-   regardless of who asks. What is at risk is the agent-behaviour half of tax one —
-   "`?fields=` erases it" and "the agent opts in inconsistently" — since a collaborator
-   already found discovery behaviour to be model-dependent on `claude-sonnet-4-6`.
-   `FINDINGS.md` now carries a `>` note saying so, which is a disclosure, not a resolution.
+   Why it is safe to defer: the structural findings cannot move.
+   `FlightRoster($flightId: ID!)` cannot accept fifty flights, so **any** model loops, and
+   fat REST serves all 46 fields regardless of who asks. Only the agent-behaviour half of
+   tax one is model-scoped — "`?fields=` erases it" and "the agent opts in inconsistently" —
+   and `FINDINGS.md` states that inline, so no claim in the writeup overreaches its evidence.
 
-   ~12 runs, about **$3**, on the two tasks where haiku's behaviour diverged most — M1@20
-   (used `?fields=`, 13.2x) and M4@50 (did not, 1.0x):
-
-   ```bash
-   # fat pass — M-G1 included because discovery behaviour is the collaborator's finding
-   CONDITIONS=M-R1,M-G1 TASKS=M1@20,M4@50 REPS=2 MODEL=claude-sonnet-4-6 \
-       PAYLOAD_PROFILE=fat ./bench.sh run
-   PAYLOAD_PROFILE=lean docker compose up -d --force-recreate --wait \
-       scheduling-rest fleet-rest personnel-rest
-   CONDITIONS=M-R1 TASKS=M1@20,M4@50 REPS=2 MODEL=claude-sonnet-4-6 \
-       PAYLOAD_PROFILE=lean ./bench.sh run
-   ```
-
-   These land in `runs/phase2` beside the haiku runs, so **every later parse of that tree
-   needs `PARSE_MODEL=`** — the parser refuses a mixed-model tree rather than averaging
-   across price lists (`NOTES.md` 60):
-
-   ```bash
-   PARSE_MODEL=claude-haiku-4-5 CONDITIONS=M-R1,M-R2,M-G1,M-G2 ./bench.sh parse
-   PARSE_MODEL=claude-sonnet-4-6 RESULTS_DIR=results/phase2-sonnet \
-       python3 parse_logs.py runs/phase2
-   ```
-
-   The single number to read: does `-fat` vs `-lean` on M4@50 still come out at 1.0x?
+   If it is ever wanted it is ~12 runs and about $3: `CONDITIONS=M-R1,M-G1
+   TASKS=M1@20,M4@50 REPS=2 MODEL=claude-sonnet-4-6` in each bracket, then
+   `PARSE_MODEL=` to keep the two models apart (`NOTES.md` 60). The single number to read is
+   whether fat-vs-lean on M4@50 is still 1.0x. **Do not re-propose it unasked.**
 
 3. **One $0.04 rerun to read `bp_at`**, optional. The content hypotheses are dead and
    breakpoint placement is what is left. Worth it only if the answer is *actionable* — a Goose
@@ -194,10 +177,20 @@ bug that pointed the wrong way (#3) was caught in minutes while the others survi
    inflating the many-call REST arm most. Not yet diagnosed; `_prefix_fingerprint` is in place
    to name the moving part on the next run. `NOTES.md` 51.
 
-**Five of those six produced exactly the answer the GraphQL hypothesis predicts**, which is
-why they survived. The one that pointed the wrong way (#3, on M1@5 — the task deliberately
-built so REST wins) was caught within minutes. **A metric that quietly confirms the thesis is
-the one to distrust**, and tasks with predictable directions are what make a wrong one visible.
+**Direction is not what determined survival — collision with a prediction was.** Counted
+properly, four of these errors were *conservative* for the GraphQL hypothesis (they
+understated the effect the study exists to measure), two favoured it, one is mixed and two
+are neutral — the full tally is `NOTES.md` 62, which also corrects an earlier claim here
+that most of them flattered the thesis. What separates the bug caught in minutes from the
+one that survived months is not bias: discovery depth (which *countered* the thesis) was
+caught fast because M1@5 was deliberately built as the task where REST wins, so GraphQL
+reading deeper there contradicted a written-down expectation. Nobody had a prior for the
+absolute magnitude of a payload column, so a 10x error sat in it unquestioned.
+
+**A bug is caught when it contradicts something you predicted** — not when it is large, and
+not when it is biased. That is the argument for pre-registration and for tasks with
+predictable directions, and it is why the pre-registration proved more reliable than the
+instrumentation.
 
 Note what found #5 and #6: neither was a test. #5 was caught by two guards written for other
 purposes — the stdout truncation grep and the `n_tool_results == n_tool_use` conservation
