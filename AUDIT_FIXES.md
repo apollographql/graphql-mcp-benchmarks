@@ -8,6 +8,44 @@ item needs re-deriving.
 
 ---
 
+## STATUS — 2026-09-03: phases A–E executed, working tree only, nothing committed
+
+| Phase | State | Notes |
+|---|---|---|
+| **A1** accuracy fold | **done** | `_accuracy_spread` keys on `cell`; reports 41 of 60. Guard + mutation test in `test_parse_logs.py`. |
+| **A2** prefix + cache minimum | **done** | `_prefix_tokens()`, `prefix_tokens`/`prefix_n_tools`/`prefix_note` columns, `cache_min_tokens()` + `_CACHE_MIN_TOKENS`, per-model parse warning, new *Prompt prefix and the cache minimum* section in both `summary.md`s. Proxy's wrong-diagnosis docstrings annotated RESOLVED rather than rewritten. |
+| **A3** Stage 1/2 relabel | **done** | "Schema injection" → "First cache write" everywhere; `~1 000 tokens` corrected to the per-model minimum; both cross-condition caveats rewritten; `_stage_costs` docstring updated. |
+| **A4** two metric defects | **done** | Both **disclosed and instrumented**, per D-2: `pass_through_*_ex_discovery` reported beside the headline, printed in the join-tax table wherever it moves the number. Tokenizer claim corrected at source (proxy), in `grade.py`, and in the generated footnote, with the ~15% undercount measured over 429 call pairs. |
+| **B** regenerate | **done** | Both phases re-parsed. **Acceptance met exactly:** `raw.csv` diffs are purely additive columns, zero pre-existing values changed; `summary.md` diffs are the accuracy count, the new prefix section, the `ex-disc` figures and the A3 relabels. |
+| **C1–C9** prose | **done** | See below for the two places the plan itself was wrong. |
+| **D** NOTES ledger | **done** | Entries **67–72** appended; **51** and **63** annotated with RESOLVED/RETRACTED blocks; entry **62** given a postscript; the §370 scoreboard note now states 3-of-4-scoreable. Bug count **9 → 15** in `WRITEUP`, `FINDINGS`, `README`, `PHASE2_PLAN`, `NOTES`. A "how the audit's figures were re-derived" section at the end of `NOTES.md` satisfies ground rule 3. |
+| **E1** 60-cell assert | **done** | Plus the sibling-contamination case. Mutation-verified. |
+| **E2** prefix assert | **done** | Fixture is the real warm A1/T2 call (`cache_read = 15,911`) — the case the old tests never exercised — plus the cold replicate and the three-state None paths. |
+| **E3** freeze operation text | **done** | `FROZEN_SIGNATURES` in `operations.test.ts`, compared exactly. Mutation-verified: widening `FlightRoster` to a list now fails. |
+| **E4** traversal-arg parity | **done** | Two tests in `parity.test.ts`. Both mutation-verified. **The batch-entry-point test initially passed vacuously** — it keyed on `API_VERSION`, which is `"2024-11-01"`, not the path prefix — so it now asserts which collections it reached. Fourth instance of that failure mode in this repo. |
+| **E5** doc-lint | **done** | `doclint.py`, wired into `./bench.sh parse` (advisory there, since a single-phase parse cannot see the other phase's figures). Found four real misses on first run, including a `WRITEUP` table cell that disagreed with the generated table by 21%. |
+| **E6** record versions | **done** | `_harness_versions()` writes `goose_version`, `apollo_mcp_version`, `apollo_mcp_binary_version` and `harness_platform` into every `meta.json`. `lib/setup.sh` pins `GOOSE_VERSION=1.37.0` and warns on mismatch; the aarch64-only download now fails loudly off Apple Silicon instead of silently. |
+| **D-4** commit `results/` | **staged, not committed** | `.gitignore` un-ignores `results/` (charts included, since `summary.md` embeds them) and keeps `results/_phase2-preproxyfix/` out. 9 files newly trackable. |
+| **D-5** re-run | **not done, by design** | Standing constraint: no benchmark runs. See *Not in scope*. |
+
+**Two places this plan was itself wrong**, corrected in the deliverables rather than carried
+through:
+
+1. **"Lean REST costs more than fat"** (C4) does not survive an outlier check. It is one
+   replicate. Now published as the *illustration* of why unweighted means are gone, with the
+   median going the other way. The plan's C4 bullet is corrected in place below.
+2. **Caveat 2's crossover claim** — *"by twenty flights it is ahead"* — is false in a way the
+   audit did not catch. `M-G1` never overtakes the best REST cell on the single-service task at
+   any N in the matrix (0.27× / 0.33× / 0.55× / 0.68×); the crossover is by **task shape**, not
+   cardinality. Rewritten.
+
+**Verification run at the end:** `python3 test_parse_logs.py`, `python3 test_grade.py`,
+`pnpm test` (104 tests), `python3 doclint.py`, and `./bench.sh parse` for both phases — all
+green. `proxy/test_proxy_tool_io.py` **could not be run**: `httpx` is not installed in any
+Python on this machine, so the module fails at import. The change there is docstring-only.
+
+---
+
 ## Ground rules
 
 1. **Do not run the benchmark.** No `./bench.sh run`, no `capture`, no inference against
@@ -29,7 +67,7 @@ until they're settled.
 
 | # | Decision | Default if you don't care |
 |---|---|---|
-| D-1 | Does the title change? `WRITEUP.md:1` asserts the protocol claim that `README:22`, `FINDINGS:5` and `PHASE2_PLAN:44` all explicitly disown. | Retitle to the operation-granularity finding. |
+| D-1 | How far do the stated conclusions go? `WRITEUP:1` claims protocol superiority; `FINDINGS:5`/`README:22`/`PHASE2_PLAN:44` claim protocol is "the wrong question". **Both overclaim** — a synthetic three-service app supports neither. | Make all four descriptive: report the measurement, name the mechanism, let readers conclude. |
 | D-2 | Does the headline metric stop counting schema/spec discovery output as wasted payload? This moves `M-G1`'s average from **6,172 → 889** and is the flagship number. | Report both columns; don't silently swap. |
 | D-3 | Keep the 5.3× / 3.4× averages, qualify them, or drop them for the 10/10 best-cell claim? | Drop; lead with 10/10. |
 | D-4 | Commit `results/` (currently gitignored, so `WRITEUP:346`'s pointer resolves to nothing in a clone)? `runs/` is ~large; `results/` is small. | Commit `results/` only. |
@@ -207,8 +245,29 @@ cut from the writeup"* — FINDINGS still reasons from it and calls it *exact*.
 
 ### C4. Framing (blocked on D-1, D-3)
 
-- Title/abstract/`:284` assert protocol superiority; `README:22`, `FINDINGS:5`,
-  `PHASE2_PLAN:44`, `NOTES:338` all say protocol was the wrong question.
+**The governing distinction.** A synthetic three-service backend with one model and n=3 can
+support a *measurement* and a *mechanism*; it cannot support a verdict about protocols in
+either direction. Sort every conclusion by which it is:
+
+| Survives generalization | Does not |
+|---|---|
+| An operation whose argument is a scalar id needs N calls for N records | "GraphQL is more token-efficient for AI agents" |
+| An endpoint serving 46 fields serves 46 unless asked otherwise | "The protocol axis turned out to be the wrong question" |
+| A capability the client never exercises is not a capability | The five-way ranking of approaches |
+| Agent-side fan-out is paid in inference, not backend | Every multiple: 3.4×, 5.3×, 15.6×, 64×, 35× — facts about these fixtures and this agent |
+
+These are arithmetic, not measurement — which is why `WRITEUP:274-276` (caveat 6) already
+gets this right: *"The structural results can't move — an operation taking a single id forces
+any model to loop."* The same test just isn't applied to the title or the conclusions.
+
+- **Both directions overclaim, and both need fixing.** `WRITEUP:1` and `:284` assert protocol
+  superiority. `FINDINGS:5`, `README:22`, `PHASE2_PLAN:44`, `NOTES:338` assert protocol is
+  "the wrong question" — equally underivable from a toy app, and a strong negative claim is
+  not a safe default. Neither is the honest version of the other.
+- Keep the mechanism, drop the verdict. `FlightSchedule(flightNumbers: [String!]!)` vs
+  `FlightRoster(flightId: ID!)` at 1 call vs 100 is a measurement with a legible cause and
+  should stay exactly as it is. What goes is the leap from "in this matrix, packaging
+  predicted cost better than protocol did" to "protocol doesn't matter."
 - `:3-4` *"beat a REST-backed one on every task"* works only by picking the best GraphQL
   condition per task. `:142`'s *"A GraphQL condition wins all ten"* is the honest phrasing.
 - **Ranking item 5** (*"worse than plain REST. The trap."*): on the study's own headline
@@ -218,8 +277,13 @@ cut from the writeup"* — FINDINGS still reasons from it and calls it *exact*.
 - **Averaging.** 5.3×/3.4× are ratios of unweighted means over 10 cells — arithmetically
   weighted by N. **M3@50 alone is 46.6% of the lean-REST numerator; the three N=50 cells
   are 70.2%.** Best-REST beats `M-G1` on **5 of 10 cells**; median cell ratio **1.60×**.
-- **Mixed baselines:** 3.4× is vs lean, 2.8× is vs fat. Unreported: **lean REST costs more
-  than fat** ($0.1365 vs $0.1261/task) — `?fields=` cut tokens 36% and raised cost 8%.
+- **Mixed baselines:** 3.4× is vs lean, 2.8× is vs fat. On the mean, lean REST *appears* to
+  cost more than fat ($0.1365 vs $0.1261/task) while cutting tokens 36% — but **that finding
+  does not survive its own outlier check** and must not be published as stated. It is one
+  replicate: `M-R1-lean/M3@20/rep2` made 34 inference calls against its siblings' 6 and cost
+  $1.192 against $0.109. Excluding `M3@20`, lean is cheaper on the mean ($0.0994 vs $0.1155);
+  by median across the ten cells lean is 35% cheaper ($0.0492 vs $0.0759). Use it as the
+  *illustration* of why unweighted means are gone, not as a finding.
 - **Replacement claim (verified 10/10 on both tokens and cost):** *the best GraphQL
   packaging beats the best REST packaging on all ten task instances, margin rising in N and
   reversing below N≈20* — plus the caveat that best-REST wins or ties on tool calls 6/10.

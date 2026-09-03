@@ -58,6 +58,7 @@ Filtering:
 """
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -450,6 +451,37 @@ def wait_health(port: str, timeout=25.0) -> bool:
     return False
 
 
+def _harness_versions() -> dict:
+    """Versions of the tools whose behaviour the caveats blame.
+
+    `goose --version` is a subprocess call and it runs once per run, which is
+    negligible next to an inference run and worth it: a caveat that names a
+    component without recording its version cannot be checked by anyone, including
+    later versions of me. Cached so the cost is once per process.
+    """
+    global _HARNESS_VERSIONS
+    if _HARNESS_VERSIONS is None:
+        def probe(*cmd) -> str | None:
+            try:
+                out = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                return None
+            if out.returncode != 0:
+                return None
+            lines = (out.stdout or out.stderr).strip().splitlines()
+            return lines[0] if lines else None
+        _HARNESS_VERSIONS = {
+            "goose_version": probe("goose", "--version"),
+            "apollo_mcp_version": os.environ.get("APOLLO_BIN_VERSION") or None,
+            "apollo_mcp_binary_version": probe(str(ROOT / "bin" / "apollo-mcp-server"), "--version"),
+            "harness_platform": f"{platform.system()}/{platform.machine()}",
+        }
+    return _HARNESS_VERSIONS
+
+
+_HARNESS_VERSIONS: dict | None = None
+
+
 def count_messages(proxy_log: Path) -> int:
     if not proxy_log.exists():
         return 0
@@ -579,6 +611,14 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
 
     n_messages = count_messages(proxy_log)
     meta = {
+        # Harness versions. Goose is unpinned in lib/setup.sh (`brew install
+        # block-goose-cli`, or the `stable` release channel) and its version was
+        # recorded in NO meta.json for the whole study — while Goose is the
+        # component the largest cost caveat blames, which made that caveat
+        # unfalsifiable. Same for the MCP server binary. Recorded here so a
+        # re-run can be compared to a published one; `null` where the tool is
+        # absent, never a guess.
+        **_harness_versions(),
         "condition": cond, "task_id": task["id"], "task_title": task["title"], "rep": rep,
         # Phase-2 report axes (§11). `n` is recorded rather than re-split from the
         # task id downstream, and `profile` is None for conditions a REST payload

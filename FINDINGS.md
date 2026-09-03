@@ -2,8 +2,13 @@
 
 **Phase 2 · synthetic three-service stack · 180 runs · `claude-haiku-4-5` · $42.84**
 
-We built a 2×2 to test REST against GraphQL. **The protocol axis turned out to be the
-wrong question.**
+We built a 2×2 to test REST against GraphQL. **The protocol axis is not what separated the
+six cells here** — which is a description of this matrix, not a verdict on protocols. A
+synthetic three-service app with one model and three reps can show what these tool surfaces
+cost and name the mechanism; it cannot establish that protocol does or does not matter in
+general, and an earlier version of this document overclaimed in the negative direction by
+calling it "the wrong question". Readers should draw their own conclusion; below is the
+measurement.
 
 On the same 50-flight question, one GraphQL condition answered in a **single request for
 $0.079**. The other needed **100 requests and cost $2.803** — 35× more, and 5× more than
@@ -51,10 +56,12 @@ On `M4@50` the two brackets differ by **66 tokens out of 46,665**. The mechanism
 available, documented in the tool schema, and simply unused. A protocol capability the
 client does not exercise is not a defence of the protocol.
 
-> **Phase 1's payload figure is partly recoverable after all.** The fan-out undercount only
-> misreports requests carrying more than one tool result, so the six single-tool-call cells are
-> exact — including the trivial GitHub task, where REST's one response is **4,459 tokens
-> against GraphQL's 47**. Only the two ten-call REST cells stay suppressed (`NOTES.md` 64).
+> **Phase 1's payload figure, corrected.** This blockquote used to read *"the trivial GitHub
+> task, where REST's one response is 4,459 tokens against GraphQL's 47"*. Re-measured after
+> the phase-1 re-run, that cell is **334 tokens against 47** — a ratio of 7.1×, not 95×. The
+> 4,459 was retracted in `NOTES.md` 65 and this file was not regenerated with it. `NOTES.md`
+> 65 also records that **the trivial task no longer supports a protocol claim and was cut
+> from the writeup**; it is kept here only as the correction.
 
 > **This half of tax one is a claim about one model.** Every run in both phases used
 > `claude-haiku-4-5`. Whether a response returns unwanted fields is structural — fat REST
@@ -118,10 +125,14 @@ Nor is the join being paid for in latency instead. Non-inference wall time on `M
 | `M-G2` | 100 | 24.5 s |
 | `M-R1-fat` | 4 | 31.1 s |
 
-The single federated join is the *cheapest* of the three outside inference. `M-G2`'s
-hundred calls add ~5 s of server time over `M-G1` while adding ~45 s of agent time.
-Agent-side fan-out costs inference, not backend. (In-memory backend, no network between
-router and subgraphs — only the ordering is meaningful.)
+**The ordering is not significant and this table cannot support one.** `M-G1`'s three
+identical replicates came in at **33.0 / 20.0 / 6.0 s** (sd 13.5) — its own spread covers
+every other condition's mean, and an earlier version read "the single federated join is the
+cheapest of the three". What the table does support is the negative: no condition shows a
+latency penalty large enough to see through that noise, so agent-side fan-out costs inference,
+not backend. (In-memory backend, no network between router and subgraphs, so the absolute
+numbers mean nothing in either direction; `active_s` is the operative column in
+`results/phase2/summary.md`.)
 
 ---
 
@@ -139,9 +150,17 @@ determine them.
 
 ## Where the difference is not: accuracy
 
-137 of 180 graded runs scored a perfect F1, and 28 of 40 condition/task cells were perfect
-outright. **All 180 finished runs were fact-verified** — every fact stated in an answer
-traced to a tool result that entered the context before it — with **zero fabricated**.
+137 of 180 graded runs scored a perfect F1, and **41 of 60** condition/task cells were perfect
+outright. (An earlier version said 28 of 40: the accuracy table was the one grouping site
+that still folded the `fat`/`lean` brackets together, contradicting this document's own
+"six cells, never averaged together" — bug #54, second instance. `NOTES.md` 67.)
+
+All 180 finished runs passed the grounding check. Being exact about what that check does: for
+each *correct* value an answer states, it verifies the value appears somewhere in the
+concatenated tool results that arrived. Nothing asserted a correct fact no tool returned. It
+is a retrieval-happened check, not per-fact provenance — a run that flips a verdict or reports
+the wrong record scores f1 0.00 and still passes it, because the check only inspects the values
+the run got right. "Zero fabricated" claims more than it can support.
 
 Widest protocol gap: `M2@1`, GraphQL 1.00 against REST 0.85. Most of the matrix shows no
 accuracy difference at all. *The agents get the answer either way. What differs is the
@@ -152,7 +171,9 @@ cost of getting it.*
 ## Pre-registered, then scored
 
 Eight expectations were written before the matrix executed, so results arriving in the
-predicted shape would read as prediction rather than post-hoc explanation. Full scoring in
+predicted shape would read as prediction rather than post-hoc explanation. All eight are
+below — an earlier version showed six and silently dropped the two that could not be
+scored. **Of the four that were scoreable at all, three came out right.** Full scoring in
 `NOTES.md`.
 
 | | Expectation | Outcome |
@@ -161,19 +182,35 @@ predicted shape would read as prediction rather than post-hoc explanation. Full 
 | **confirmed** | M1 close to a tie on lean, large GraphQL win on fat | 1.1× and 15.6×. Fat came in below its 29.5× static projection — which the expectation itself required us to report as agent behaviour rather than payload. |
 | **confirmed** | Front-loading costs M-R1 ~4× M-R2's prefix, M-G2 ~2× M-G1's | 3.94× and 1.87×. The repayment question resolved against its own framing: front-loading pays off when the frozen operation fits the question, and catastrophically not when it does not. |
 | **half wrong** | On lean, M1 dissolves while M2/M3/M4 hold at 6–8× | M1 dissolved; only M3 landed in the band (8.2×), M2 came in at 3.6×. Its guard clause fired at N=1 instead, where fat and lean are identical — the profile is fine, the agent's use of it is inconsistent. A well-designed guard caught something true that was not what it was watching for. |
-| **unscoreable** | Phase-2 GraphQL will look worse than phase 1's 20× | Phase 1's 20× is a cost ratio of which 96% is one condition's cache-creation charges, and caching never hit in either phase. The payload column that would have been comparable is the one a fan-out counting bug made unrecoverable. **Two of our own defects cost this comparison.** |
-| **untested** | REST hits the context window before GraphQL, around N≈80 | The run built to test it never reached a context limit — the harness turn cap fired first, at 26 calls. The honest statement is that phase 2 never reached a context limit, not that REST does not have one. |
+| **unscoreable** | Phase-2 GraphQL will look worse than phase 1's 20× | Phase 1's ratio is **7.9×** on the re-run, not 20×, and **80.9%** of it is one condition's cache-creation charges (the 20× and 96% here were retracted in `NOTES.md` 65 and this row was not regenerated). Caching *did* hit in phase 1, in REST's favour. The payload column that would have been comparable is the one a fan-out counting bug made unrecoverable. **Two of our own defects cost this comparison.** |
+| **untested** | REST hits the context window before GraphQL, around N≈80 | The run built to test it never reached a context limit — the harness turn cap fired first, at 26 calls. The honest statement is that phase 2 never reached a context limit, not that REST does not have one. **Still open.** |
+| **retired** | `backend_requests` as a metric | Descoped before the matrix ran, and visibly so — not scored. |
+| **held** | Discovery behaviour is model-dependent | Not a prediction about this matrix but a model-selection decision, and deferred rather than answered: everything ran on one model. A collaborator found related discovery behaviour to differ on `claude-sonnet-4-6`. |
 
 ---
 
 ## Caveats that travel with the result
 
-### Prompt caching never hit once, in either phase
+### Prompt caching never hit in phase 2 — and did hit in phase 1
 
-Zero of 181 phase-2 runs read a single cached token, against 32.2M written. Phase 1 shows
-the same. Cache writes cost 1.25× and reads 0.1×, so the inflation scales with **call
-count** — which penalises exactly the many-call conditions, in the direction the
-hypothesis predicts.
+Zero of 181 phase-2 runs read a single cached token, against **32.6M written**. An earlier
+version added "Phase 1 shows the same", which is **false**: phase 1 read back **356,070
+tokens**, all of it in the REST conditions (A1 read 241,672 against 149,020 written; A2 read
+114,398). The GraphQL conditions wrote and read exactly zero.
+
+The cause is not the client's breakpoint placement, which is what was previously diagnosed.
+Anthropic's prompt cache has a **minimum cacheable prefix**, model-dependent and non-monotone
+in model size: **4,096 tokens on `claude-haiku-4-5`**, against 1,024 on Sonnet 5 and 512 on
+Opus 5. A prompt below it is not cached, silently, with nothing in `usage` to say why. Every
+phase-2 prefix is 1,491–4,053 tokens, so **no phase-2 run ever cached its tool surface**;
+phase 1's A1 prefix is 18,438 and did. There is no client-side fix — the levers are a model
+with a lower minimum or a larger prefix, both of which need new runs.
+
+Cache writes cost 1.25× and reads 0.1×, so the phase-2 inflation scales with **call count**,
+penalising exactly the many-call conditions, in the direction the hypothesis predicts. **In
+phase 1 it runs the other way:** REST read 356,070 tokens at a tenth price while GraphQL, too
+small to cache, paid full input rate throughout. Charge REST's reads at the uncached rate and
+T1 goes from 7.9× to **12.6×**, so phase 1's cost gap is understated.
 
 **The call counts and token ratios above are cache-independent and hold. The dollar
 magnitudes are inflated, and only their direction should be quoted.** A modelled
@@ -182,15 +219,21 @@ would age against pricing, cache semantics, and one client's breakpoint placemen
 
 ### The harness found more bugs than the experiment found effects
 
-Nine are documented individually in `NOTES.md` 42–59: a tool-result fan-out undercount, a
-serial-depth off-by-one, schema discovery counted as data dependency, a turn-capped run's
-F1 averaged in as accuracy, never-hitting caching, the fat/lean brackets averaged into one
-row, an M3 verdict misparse that scored correct answers at recall 0.5, seven silent API
-400s, and a totals table of zeros.
+**Fifteen.** Nine are documented individually in `NOTES.md` 42–59: a tool-result fan-out
+undercount, a serial-depth off-by-one, schema discovery counted as data dependency, a
+turn-capped run's F1 averaged in as accuracy, never-hitting caching, the fat/lean brackets
+averaged into one row, an M3 verdict misparse that scored correct answers at recall 0.5, seven
+silent API 400s, and a totals table of zeros. Six more came out of a hostile audit of the
+writeup (`NOTES.md` 67–72), and **five of those six sit in the caching and prefix
+instrumentation** — a cache-write delta published as a prompt prefix, the wrong cache
+threshold, the fat/lean fold's second instance, this file never being regenerated after the
+phase-1 re-run, discovery payload charged as waste by one metric and excluded by another, and
+a tokenizer described as Anthropic's when it is OpenAI's.
 
-**Four of the nine were conservative for the hypothesis** — they understated the effect the
-study exists to measure — two favoured it, one is mixed, two are neutral (`NOTES.md` 62).
-So bias is not what let them survive. **Collision with a prediction is what caught them:**
+**Four of the original nine were conservative for the hypothesis** — they understated the
+effect the study exists to measure — two favoured it, one is mixed, two are neutral
+(`NOTES.md` 62). So bias is not what let them survive. **Collision with a prediction is what
+caught them:**
 discovery depth countered the thesis and was found in minutes, because M1@5 was built as
 the task where REST wins and GraphQL reading deeper there contradicted a written-down
 expectation. Nobody had a prior for the magnitude of a payload column, so a 10× error sat
@@ -204,9 +247,14 @@ when it is biased. Every guard in the parser exists because something got throug
 ## Method
 
 Synthetic three-service airline backend — scheduling, fleet, personnel — with REST and
-federated-GraphQL surfaces **generated from one field definition**, so neither surface is
-hand-favoured. Fixtures are hash-pinned and deterministic; ground truth is computed, not
-written. Local and synthetic on purpose: it removes a real vendor's API design from the
+federated-GraphQL surfaces **generated from one field definition**, so neither surface's
+*field representations* can be hand-favoured; a test enforces three-way parity and requires a
+cited real-world precedent for every REST padding key. The **entry points** are hand-written
+on both sides (`codegen/sdl.ts` renders each `Query` root from a hardcoded switch, the REST
+collection filters come from a hand-maintained list, `/advisories` is bespoke) — two mirrored
+lists with no automated cross-check. Audited: parity holds, every GraphQL entry point has a
+one-for-one REST counterpart and REST has two extras, so there is no REST endpoint deficit.
+Fixtures are hash-pinned and deterministic; ground truth is computed, not written. Local and synthetic on purpose: it removes a real vendor's API design from the
 result and turns field cardinality and tool-surface size into knobs.
 
 | Condition | Underneath | Packaging |
@@ -225,5 +273,9 @@ sidecar recording every tool call's arguments and result body. Tool results are 
 by `tool_use_id`, never by position — three positional rules were tried and all three
 undercounted parallel calls.
 
-Full report: `results/phase2/summary.md`. Design and decisions: `PHASE2_PLAN.md`. Every
-surprise, in order, with what it cost: `NOTES.md`.
+Full report: `results/phase2/summary.md` (committed, so the path resolves in a clone). Design
+and decisions: `PHASE2_PLAN.md`. Every surprise, in order, with what it cost: `NOTES.md`.
+
+**Disclosure:** this work was done by an Apollo GraphQL employee in an Apollo-owned repository.
+`M-G2` runs `apollo-mcp-server` v1.14.0 and the GraphQL backend is Apollo Router v2.17.0 — a
+commercial interest in one of the answers. See `WRITEUP.md` for the full statement.

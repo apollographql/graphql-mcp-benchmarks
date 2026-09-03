@@ -8,7 +8,14 @@ config/*.local.yaml
 
 # run outputs (kept locally for audit; large)
 runs/
-results/
+# ...but the PARSED results are the artifact every published document cites, and
+# WRITEUP.md links straight at results/phase2/summary.md. Ignored, that link
+# resolved to nothing in a clone — a benchmark whose numbers cannot be checked
+# from a checkout. They are small (a few hundred KB against runs/'s gigabytes),
+# so they are committed — charts included, since summary.md embeds them — and the
+# quarantined pre-proxy-fix tree is not.
+!results/
+results/_phase2-preproxyfix/
 capture/*.json
 capture/SUMMARY.md
 # ...but the pinned phase-2 tool surfaces are an INPUT, not an output. They are

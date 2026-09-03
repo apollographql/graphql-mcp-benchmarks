@@ -41,10 +41,13 @@ of this section reproduced it (an asserted "payloads within a factor of three" t
 only of the GraphQL pair, and a hardcoded M2@1 accuracy comparison now located in the data by
 `_accuracy_spread`).
 
-**The frame the matrix actually supports is not the 2x2 it was designed around.** Protocol
-turned out to be the wrong question — GraphQL is both the cheapest and the most expensive
-condition here. Two independent properties of the tool surface predict cost, and M1 and M3
-isolate them almost perfectly:
+**The frame the matrix actually supports is not the 2x2 it was designed around.** Protocol is
+not what separated these six cells — GraphQL is both the cheapest and the most expensive
+condition here. Two independent properties of the tool surface predicted cost, and M1 and M3
+isolate them almost perfectly. Note the scope: that is a fact about this matrix, not a verdict
+that protocol does not matter, which three synthetic services and one model cannot establish
+either way. This paragraph read "protocol turned out to be the wrong question" until the audit;
+a strong negative claim is no safer a default than a strong positive one.
 
 - **The selectivity tax.** On M1@50 *every* condition makes one data call, so call count is
   controlled and the whole spread is which fields come back: 36,598 pass-through tokens for
@@ -65,19 +68,31 @@ isolate them almost perfectly:
   question, or expose the query language.**
 - **A capability the client never uses is not a defence.** `-lean` cut M1@20 pass-through 13.2x
   and changed M4@50 by 66 tokens out of 46,665, because the agent never sent `?fields=` there.
-- **Accuracy is not where the difference lives.** 137 of 180 graded runs are perfect, 28 of 40
-  condition/task cells perfect outright, 0 fabricated. Widest protocol gap: M2@1, GraphQL 1.00
-  against REST 0.85. The agents get the answer either way; what differs is the cost.
+- **Accuracy is not where the difference lives.** 137 of 180 graded runs are perfect, **41 of
+  60** condition/task cells perfect outright (28 of 40 until `_accuracy_spread` stopped folding
+  the fat/lean brackets — bug #54's second instance, `NOTES.md` 67). The grounding check
+  passed on all 180; it verifies that every *correct* value an answer states appears in the
+  tool results that arrived, which is retrieval-happened rather than per-fact provenance, so
+  "0 fabricated" overstates it. Widest protocol gap: M2@1, GraphQL 1.00 against REST 0.85. The
+  agents get the answer either way; what differs is the cost.
 - **Depth separates cleanly.** REST runs at data depth 2.0-2.7 on M2/M3/M4; GraphQL at 1.0
   everywhere except M-G2 on M4. `discovery_depth` is reported beside it and never folded in.
 
 Two disclosures the writeup must carry, both harness properties rather than results.
 
-**Prompt caching never hit once — in either phase.** 0 of 181 phase-2 runs read a cached token
-against 32.2M written, and re-parsing `runs/phase1` prints the same thing: 6 of 6 multi-call
-runs, 817,596 written, zero read. So the defect predates phase 2 and sits in every cost number
-this project has published, phase 1's committed report included. It does not invalidate either
-comparison — the inflation applies to both arms.
+**Prompt caching never hit in phase 2, and did hit in phase 1.** 0 of 181 phase-2 runs read a
+cached token, against **32.6M written**. This paragraph claimed "re-parsing `runs/phase1`
+prints the same thing"; it does not. Phase 1 read back **356,070 tokens**, all in the REST
+conditions (A1 241,672 read / 149,020 written; A2 114,398 read). B and B2 wrote and read zero.
+
+Nor is the cause the client, which is what was diagnosed here for two months. Anthropic's
+**minimum cacheable prefix** is model-dependent and non-monotone in model size — 4,096 tokens
+on `claude-haiku-4-5`, 1,024 on Sonnet 5, 512 on Opus 5 — and a prompt below it is silently
+uncached. Every phase-2 prefix is 1,491–4,053, so no phase-2 run ever cached its tool surface;
+phase 1's A1 prefix is 18,438 and did. The inflation therefore does **not** apply symmetrically
+to both arms: in phase 2 it penalises the many-call conditions, and in phase 1 it *helped*
+REST, which read at a tenth price while GraphQL paid full input rate — T1 goes from 7.9× to
+12.6× if REST's reads are charged at the uncached rate. `NOTES.md` 68, 69.
 
 **A modelled "as-if-cached" column was considered and rejected** (2026-09-03): it is a
 conjecture with decimal places, it would age against Anthropic's pricing, the cache's matching
@@ -95,19 +110,23 @@ travels with it: a blank cell asks a question, a wrong number answers one. Drive
 one-line registry (`UNRECOVERABLE`) rather than a phase check at each of the four print sites.
 `NOTES.md` 42 and 59.
 
-**The report generator is now tested** (`test_parse_logs.py`, 44 assertions, `NOTES.md` 61).
-It was the largest module in the repo with none, which is why six of the nine measurement
-bugs lived there. Every case is a bug that actually shipped, and each guard was
+**The report generator is now tested** (`test_parse_logs.py`, `NOTES.md` 61).
+It was the largest module in the repo with none, which is why **four of the nine** measurement
+bugs lived there — 50, 54, 56 and 58. This said "six of the nine" and counted 59 and 60, which
+are not among the nine. Every case is a bug that actually shipped, and each guard was
 mutation-tested — reverting the fix turns the corresponding assertions red.
 
 **The pre-registered expectations are scored** (`NOTES.md`, "SCORED"): 3 confirmed,
 1 half-falsified, 1 unscoreable, 1 untested, 1 retired, 1 held. Two are worth carrying
 into the writeup. Expectation **5** predicted M-G2's 1+N blowup on M4 — the study's
 headline finding — *before the tasks were authored*, and the mechanism generalized to M3
-(7 calls against 100). Expectation **1** is **unscoreable**, because phase 1's 20× is a
-cost ratio of which 96% is A1's cache-creation, and caching never hit in either phase;
-the payload column that would have been comparable is the one bug 42 made unrecoverable.
-Two harness defects between them cost that comparison.
+(7 calls against 100). Expectation **1** is **unscoreable**, because phase 1's ratio is
+**7.9×** on the re-run (not the 20× this sentence used to cite) and **80.9%** of it is A1's
+cache-creation; the payload column that would have been comparable is the one bug 42 made
+unrecoverable. Two harness defects between them cost that comparison. Note for any writeup:
+**3 of the 4 scoreable predictions confirmed** is the honest summary — untested, retired and
+held are not failures, but they are not confirmations either, and #7 is a model-selection
+decision rather than a prediction about this matrix.
 
 **Phase 1 was re-run 2026-09-03** ($0.53, all 24 runs, captures taken the same morning) and
 the re-run changed it materially — `NOTES.md` 65. What held: the N+1 structure, 10 REST tool
@@ -117,10 +136,16 @@ GitHub's MCP server now returns filtered responses. **That task has been cut fro
 — a finding that evaporates on re-measurement was never a finding about protocols — and phase 1
 now carries the N+1 result alone.
 
-Confirmed by the re-run, with run and capture an hour apart so drift cannot explain it:
-GitHub's server advertises 54 tools / 144,710 B and the model's prefix is **2,525 tokens**. The
-client does not forward the advertised surface. Tool count is an upper bound on cost, not a
-measurement of it.
+**RETRACTED (audit, `NOTES.md` 68).** This paragraph said: *"GitHub's server advertises 54
+tools / 144,710 B and the model's prefix is 2,525 tokens. The client does not forward the
+advertised surface."* The 2,525 was `cache_creation_input_tokens` on a **warm** call that also
+read 15,911 back from cache; the prefix was `input + cache_read + cache_creation` = **18,438**,
+and a cold replicate of the same condition gives 18,471. The client does forward all 54 tools
+(`n_tools: 54` on every tool-bearing request), and the prefix tracks advertised bytes to
+`prefix ≈ 1,381 + bytes/8.43`, r = 0.9998 across all four phase-1 conditions. So the tool count
+is **not** a loose upper bound — it is roughly the answer. Re-parsing with the corrected
+formula was what the run-and-capture-an-hour-apart check could never have caught, because the
+capture was never the problem.
 
 **NEXT, in the order I would take it:**
 

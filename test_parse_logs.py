@@ -98,6 +98,29 @@ check("...so neither group is the 3.13x average that used to be printed",
       [statistics.mean(x["pass_through_tokens"] for x in _mixed if x["cell"] == c)
        for c in ("M-R1-fat", "M-R1-lean")], [36598, 2652])
 
+# One grouping site outlived the fix: `_accuracy_spread` went on keying on
+# cell_cond, so the perfect-cell count it prints was folded to four conditions and
+# read "28 of 40" for a matrix of six brackets and ten tasks. Six brackets over two
+# tasks is twelve cells; the fold makes it eight.
+_brackets = [("M-R1", "fat"), ("M-R1", "lean"), ("M-R2", "fat"), ("M-R2", "lean"),
+             ("M-G1", None), ("M-G2", None)]
+_matrix = [row(condition=c, profile=p, task=t, rep=rp)
+           for c, p in _brackets for t in ("M1@1", "M3@50") for rp in (1, 2, 3)]
+check("six brackets over two tasks are twelve cells",
+      len({(r["task_id"], r["cell"]) for r in _matrix}), 12)
+check("...which the fold counted as eight",
+      len({(r["task_id"], P.cell_cond(r["cell"])) for r in _matrix}), 8)
+check("_accuracy_spread's denominator is the cell count, not the folded count",
+      "12 of 12" in P._accuracy_spread(_matrix), True)
+
+# And the reason the denominator matters: one bad rep in one bracket must not cost
+# its sibling bracket a perfect score, which is what the fold did.
+_one_bad = [dict(r, answer_f1=0.5)
+            if (r["cell"], r["task_id"], r["rep"]) == ("M-R2-lean", "M3@50", 1) else r
+            for r in _matrix]
+check("one imperfect rep costs exactly one cell",
+      "11 of 12" in P._accuracy_spread(_one_bad), True)
+
 
 # ── the model dimension (NOTES 60) ───────────────────────────────────────────
 # Nothing grouped on `model`, so two models averaged into one row and the stage
@@ -218,6 +241,66 @@ check("...across task families too",
       P.sort_tasks({"M4@20", "M1@5", "M3@50"}), ["M1@5", "M3@50", "M4@20"])
 check("N is parsed off the cell id", P.task_n("M4@103"), 103)
 check("a phase-1 task has no N", P.task_n("T1"), None)
+
+
+# ── the prefix is not the cache-write delta ──────────────────────────────────
+# The published prefix for GitHub's 54-tool surface was 2,525 tokens. 2,525 was
+# `cache_creation_input_tokens` on a WARM call that also read 15,911 back; the
+# prefix was 18,438. Three claims rested on it. The existing tests never exercised
+# a warm call, which is exactly why this survived — so the fixture below is the
+# real A1/T2/rep1 call 2, cache_read and all.
+print("\nprefix tokens — warm calls are where this broke")
+
+
+def call(n_tools=54, input_tokens=2, cache_read=0, cache_creation=0, ts=1):
+    return {"ts": ts, "input_tokens": input_tokens, "output_tokens": 0,
+            "cache_read_input_tokens": cache_read,
+            "cache_creation_input_tokens": cache_creation,
+            "n_tool_use": 0, "n_tools": n_tools}
+
+
+_warm = [call(n_tools=0, input_tokens=167, ts=1),
+         call(input_tokens=2, cache_read=15911, cache_creation=2525, ts=2)]
+check("a warm prefix sums all three usage fields",
+      P._prefix_tokens(_warm)["prefix_tokens"], 18438)
+check("...and is NOT the cache-write delta that was published",
+      P._prefix_tokens(_warm)["prefix_tokens"] == 2525, False)
+
+# The cold replicate of the same condition is the independent check: with
+# cache_read=0 the write IS the prefix, and it lands within 0.02% of the warm figure.
+_cold = [call(n_tools=0, input_tokens=200, ts=1),
+         call(input_tokens=2, cache_read=0, cache_creation=18469, ts=2)]
+check("the cold replicate agrees with the warm one",
+      abs(P._prefix_tokens(_cold)["prefix_tokens"] - 18438) < 40, True)
+
+# The first call carries no tools (the harness's own turn). Reading the prefix off
+# call 0 would report the system prompt and call it the tool surface.
+check("the prefix comes from the first call that carries a tool surface",
+      P._prefix_tokens([call(n_tools=0, input_tokens=167, ts=1),
+                        call(n_tools=54, input_tokens=3790, ts=2)])["prefix_tokens"], 3790)
+
+# Three-state, like payload_complete: a run that cannot answer must not answer.
+_old_proxy = [{**call(ts=1), "n_tools": None}, {**call(ts=2), "n_tools": None}]
+check("a run predating the n_tools field reports None, not a guess",
+      P._prefix_tokens(_old_proxy)["prefix_tokens"], None)
+check("...and says why", "predating" in P._prefix_tokens(_old_proxy)["prefix_note"], True)
+check("a run whose calls never carried tools also reports None",
+      P._prefix_tokens([call(n_tools=0, ts=1)])["prefix_tokens"], None)
+
+
+# ── the minimum cacheable prefix is model-dependent and non-monotonic ────────
+# The report said "~1 000 tokens" for every model. Haiku 4.5 requires 4,096, which
+# is why no phase-2 run ever cached its tool surface — and why the zero-read
+# finding sat for two months with the wrong diagnosis attached.
+print("\nminimum cacheable prefix")
+check("haiku 4.5 needs 4,096", P.cache_min_tokens("claude-haiku-4-5-20251001"), 4096)
+check("sonnet 4-6 needs 1,024", P.cache_min_tokens("claude-sonnet-4-6"), 1024)
+check("...so it is not monotonic in model size and cannot be guessed",
+      P.cache_min_tokens("claude-opus-5") < P.cache_min_tokens("claude-haiku-4-5"), True)
+check("an unknown model returns None, never a default",
+      P.cache_min_tokens("gpt-9"), None)
+check("every phase-2 prefix measured (1,491-4,053) is below haiku's minimum",
+      4053 < P.cache_min_tokens("claude-haiku-4-5-20251001"), True)
 
 
 # ── cache-blindness detection (NOTES 51) ─────────────────────────────────────

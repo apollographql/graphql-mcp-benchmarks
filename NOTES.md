@@ -370,8 +370,12 @@ that REST does not have one.
 **Scoreboard: 3 confirmed (2, 5, 6), 1 half-falsified (3), 1 unscoreable (1), 1 untested
 (8), 1 retired (4), 1 held (7).** The two that mattered most — 5 and the guard clause in
 3 — were both written before the data existed, and both changed what the study concluded.
-Worth noting against the nine measurement bugs on the other side of the ledger: the
-pre-registration was more reliable than the instrumentation.
+Worth noting against the fifteen measurement bugs on the other side of the ledger: the
+pre-registration was more reliable than the instrumentation. It is worth saying plainly that
+**3 of the 4 scoreable predictions were confirmed** — untested (8), retired (4) and held (7)
+are neither confirmations nor failures, and any writeup that reports "three confirmed" out of
+five or six items is dropping rows. #7 is a model-selection decision, not a prediction about
+this matrix.
 
 ## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
 
@@ -1319,6 +1323,17 @@ tool-design effect.
     committed report included. That does not invalidate either comparison, because the
     inflation applies to both arms.
 
+    > **RESOLVED and PARTLY RETRACTED — see 69 and 70.** Two things above are wrong. The cause
+    > is not the client: Anthropic's minimum cacheable prefix is **4,096 tokens on Haiku 4.5**
+    > (model-dependent and non-monotone in model size), every phase-2 prefix is 1,491–4,053, so
+    > no phase-2 run was ever *eligible* to cache its tool surface. There is no client-side fix
+    > and there never was. And the phase-1 claim is false as stated: those 6 multi-call runs
+    > are the pre-re-run tree; the current `runs/phase1` reads back **356,070 tokens**, all in
+    > A1/A2, while B/B2 write and read zero. So the inflation does **not** apply to both arms
+    > — in phase 1 caching *helped* REST, which is the opposite of what this entry assumed.
+    > The reason this took two months is 68: the prefix was believed to be 2,525, and a
+    > 2,525-token prefix should cache at the ~1,000 threshold the report also had wrong.
+
     **Decided against modelling it** (2026-09-03). The tempting move is a second cost column
     showing what a cache-respecting client would pay. Rejected: it is a conjecture dressed as
     a measurement, and it would age against three moving targets at once — Anthropic's
@@ -1654,6 +1669,17 @@ tool-design effect.
     predictable directions — and it explains why the pre-registration (3 confirmed, 1 half
     wrong) turned out more reliable than the instrumentation.
 
+    **Postscript, 2026-09-03.** Six more bugs (67–72) bring the total to fifteen, and the
+    tally above is now a tally of the first nine. It is also no longer the interesting number:
+    five of the six new ones sit in the caching and prefix instrumentation, the one area with
+    nothing pre-registered, which is this entry's own conclusion arriving as evidence. Two of
+    the six run against the thesis (72's discovery-payload finding, 67's fold), two run for it
+    (70's phase-1 caching direction, 68's prefix comparison), and two are neutral. The 4-vs-2
+    count over the first nine is honest **across the whole metric set** and does not certify
+    any published figure — two of the four conservative ones are `forced_serial_depth` bugs,
+    and `WRITEUP.md` publishes no depth metric at all. It said "so the gap reported above is,
+    if anything, conservative"; that inference does not follow and has been removed.
+
 63. **Two claims about phase 1's tool surfaces were wrong, and a third was too pessimistic.
     All three were caught by one reader asking "is this truly tools/list?"** The writeup had
     said the trivial GitHub task's 4× cost gap sat entirely in tool descriptions, citing the
@@ -1664,6 +1690,14 @@ tool-design effect.
     tokens**. I concluded the client was not forwarding the advertised surface. Every other
     condition lines up (advertised tools + ~1,500 tokens of system prompt): `M-R1` advertises
     9,601 B and shows 3,830, `M-G1` 2,159 B and 2,517.
+
+    > **RETRACTED — see 68.** The mismatch was arithmetic, not client behaviour. Every "observed
+    > prefix" in this entry, and the 2,525 that replaced 4,431 after the re-run, is
+    > `input + cache_creation` with `cache_read` dropped. On a warm call that is a cache-write
+    > delta, not a prompt. A1's real prefix is **18,438** (18,471 on a cold replicate), which
+    > lines up with 144,710 B at 7.85 B/token — the same ratio as every other condition. The
+    > client forwards all 54 tools and always did. The conclusion this entry drew, and the
+    > "measurement warning" the writeup ended on, were both built on the dropped term.
 
     **The real cause is dates, and it is embarrassing.** The phase-1 *runs* are from
     2026-06-26 and 2026-07-03. The phase-1 *captures* are from 2026-09-02. A June run paid for
@@ -1769,3 +1803,257 @@ tool-design effect.
     apart, and then it fails silently in whichever direction nobody is watching. Twice it
     withheld sound data; once it would have published a lower bound as a measurement.
 
+67. **The fat/lean fold was still live in the accuracy table — bug 54, second instance, in the
+    one place the report claims it never happens.** `_accuracy_spread` keyed its cell count on
+    `cell_cond(r["cell"])`, so `M-R1-fat` and `M-R1-lean` collapsed back into `M-R1` and the
+    published figure was **28 of 40 condition/task cells perfect**. Keyed on `cell`, where 54's
+    fix put every other grouping site, it is **41 of 60**.
+
+    ```
+    $ python3 - <<'PY'   # in repo root, against results/phase2/raw.csv
+    by 6 brackets   41 of 60 perfect
+    folded          28 of 40 perfect
+    PY
+    ```
+
+    What makes this worse than 54 itself: `FINDINGS.md` has said *"six cells, reported as six
+    rows and never averaged together"* since it was written, and README and PHASE2_PLAN both
+    printed the folded number underneath that sentence. The document asserted the invariant on
+    the same page where it violated it. 54's fix touched twelve grouping sites and missed the
+    thirteenth, and nothing failed, because **nothing asserted the denominator** — the one
+    number a fold always changes. `test_parse_logs.py` now builds six brackets over two tasks
+    and asserts `_accuracy_spread` reports twelve cells, plus that one bad rep in one bracket
+    costs exactly one cell rather than its sibling's score too.
+
+    The direction is the same as 54's and still uncomfortable: the fold **understated** how
+    much of the matrix is accuracy-neutral, which is a claim the study leans on.
+
+68. **A cache-write delta was published as a prompt prefix, and three claims were built on
+    it.** `WRITEUP.md`, `PHASE2_PLAN.md` §STATUS and `NOTES.md` 63 all reported GitHub's
+    54-tool surface as a **2,525-token** prefix and concluded that *"the client does not
+    forward the advertised surface"*. 2,525 is `cache_creation_input_tokens` on
+    `runs/phase1/A1/T2/rep1` call 2. That same call reads **15,911** tokens back from cache:
+
+    ```
+    call 1  n_tools=0   in=167  cr=0       cc=0        -> prefix    167
+    call 2  n_tools=54  in=2    cr=15,911  cc=2,525    -> prefix 18,438
+    ```
+
+    The prefix is `input + cache_read + cache_creation`. On a cold call the read term is zero
+    and `cache_creation` alone happens to be the prefix, which is exactly why this survived:
+    the formula is right on the first call of a run and wrong on every call after it, and
+    nothing recorded which calls were cold. The cold replicate of the identical condition
+    settles it — `runs/phase1/A1/T1/rep1` call 2: `cr=0, cc=18,469`, prefix **18,471**, within
+    0.02% of the warm figure.
+
+    All three dependent claims fail. (a) Every tool-bearing request logs `n_tools: 54`; all 54
+    are forwarded. (b) The prefix tracks advertised bytes closely — across A1/A2/B/B2
+    (144,710 / 60,886 / 2,900 / 2,253 B) it fits `prefix ≈ 1,381 + bytes/8.43` to within 8.3%
+    on every point, r = 0.9998. Tool count is not a loose upper bound on cost; it is roughly
+    the answer, which inverts the "measurement warning" the writeup ended on. (c) *"Every
+    condition sits between 1,851 and 3,830 tokens"* — measured, they run **1,491 to 18,471**,
+    and phase 2's REST prefix (3,874 mean) is **4.8× cheaper** than GitHub's (18,454), so phase
+    2 understates real-world tool-surface cost rather than flattering itself.
+
+    `prefix_tokens` and `prefix_n_tools` are now columns in `raw.csv`, and
+    `results/*/summary.md` carries a prefix table with the model's cache minimum beside it.
+    `test_parse_logs.py` asserts the sum against the real warm call — the existing tests never
+    exercised a call with `cache_read > 0`, which is the whole reason this lived.
+
+69. **The wrong cache threshold is what made surprise 51 unsolvable, and 68 is what hid it.**
+    The report generator has said *"Anthropic's caching system writes this description to a
+    server-side cache once it exceeds ~1 000 tokens"* since phase 1. ~1,000 is Sonnet's
+    minimum. **Haiku 4.5's minimum cacheable prefix is 4,096 tokens**, and the minimum is
+    model-dependent and *not monotone in model size* — 512 on Opus 5, 1,024 on Sonnet 5, 2,048
+    on Opus 4.7, 4,096 on Haiku 4.5 and Opus 4.6/4.5 — so it cannot be guessed from the name.
+
+    ```
+    condition      prefix (min-max)   cache write on the first tools-bearing call
+    M-G1            1,491-1,754              0 of 30
+    M-G2            1,823-2,086              0 of 30
+    M-R2-fat/lean   1,586-1,849              0 of 60
+    M-R1-fat/lean   3,790-4,053              0 of 60
+    ```
+
+    **Every phase-2 prefix is below 4,096, so no phase-2 run ever writes its tool surface to
+    cache at all.** The first `cache_creation` charge fires several turns later, when the
+    *conversation* crosses the minimum. That is the answer to surprise 51, and it was
+    unreachable while the prefix was believed to be 2,525: a 2,525-token prefix *should* cache
+    at a 1,000-token threshold, so the only remaining explanation was a client bug, and I spent
+    two months instrumenting `bp_at`, `sys_sha`, `tools_sha` and `msg0_sha` looking for prefix
+    drift that was never there. One error made the other undiagnosable.
+
+    Two consequences beyond the diagnosis. **Stage 1 is misnamed** wherever the tool surface
+    does not clear the minimum on its own: it is the first cache write, not schema injection,
+    and in every phase-2 cell it measures conversation growth. Both are now relabelled and the
+    prose says which case a row is. And **"prompt caching never hit in either phase" is false
+    for phase 1** — see 70.
+
+    `cache_min_tokens()` owns the thresholds, the parser warns per model when prefixes fall
+    below, and the wrong-diagnosis docstrings in the proxy are kept with a RESOLVED note rather
+    than rewritten, because they are what ruled the hypothesis out.
+
+70. **"Prompt caching never hit once in either phase" was false, and the truth runs the other
+    way.** Published in five documents. Measured:
+
+    ```
+    A1  read 241,672   create 149,020
+    A2  read 114,398   create 132,151
+    B   read       0   create       0
+    B2  read       0   create       0
+    phase 2 (181 runs)  read 0   create 32,617,100
+    ```
+
+    Phase 1 read back **356,070 tokens**, all of it in the REST conditions. Phase 2 read zero,
+    which is the part that was right. And the direction matters: A1 read 241,672 tokens at 0.1×
+    while B2, too small to cache, paid full input rate on every token of every call. **Caching
+    helped REST in phase 1.** Charge A1's reads at the uncached rate and T1 goes from 7.9× to
+    **12.6×** (A2 from 7.1× to 9.3×), so phase 1's cost gap is *understated*, not inflated —
+    the opposite of what caveat 5 claimed for it.
+
+    Also corrected in passing: the 46,169 that four documents called *"a conversation that grew
+    to 46,169 tokens"* is the mean of A1/T1's cache-write charges summed over four calls. The
+    largest request any A1/T1 run actually sent was **52,871** tokens of context. And the
+    "32.2M written" figure was the subtotal for the 134 runs the blindness warning names, not
+    the total, which is 32.6M for phase 2 and 32.9M across both phases.
+
+71. **`FINDINGS.md` was never regenerated by the commit that re-ran phase 1.** `git diff
+    f9a3ccf^ f9a3ccf -- FINDINGS.md` is **empty**. The commit is titled *"Improve writeup;
+    re-run phase-1 for up-to-date results"* and it updated NOTES, PHASE2_PLAN, README and
+    WRITEUP. FINDINGS went on publishing three figures that entry 65 retracts in the same
+    tree: T2 REST payload **4,459 tok** (actual 334, so 7.1× not 95×), *"phase 1's 20×"*
+    (7.9×), and *"96% is cache-creation"* (80.9%). It also went on reasoning from the trivial
+    task and calling it *exact*, which 65 records as **cut from the writeup**. `WRITEUP.md`
+    points readers at FINDINGS as authoritative.
+
+    This is the stale-number class the whole `_key_findings` design exists to prevent —
+    computed at render time, never asserted — and it reappeared one layer up, in the
+    hand-written document that quotes the generated one.
+
+    **The guard is `doclint.py`**, and it runs at the end of `./bench.sh parse`. Every
+    distinctive numeric literal — thousands separator, or four decimal places — in
+    `WRITEUP.md`, `FINDINGS.md` and `README.md` must appear somewhere in `results/**`, or be
+    listed in `ALLOWED` with the reason it cannot. It is deliberately dumb: a match is not
+    proof of correctness and a miss is not proof of error, so what it produces is a list of
+    figures to justify, and the allowlist is where each one gets justified in writing. The
+    cost of keeping a number that no longer derives from the data is now a line in a file,
+    which is more than the zero it cost before.
+
+    `PHASE2_PLAN.md` and this file are excluded on purpose. The plan is full of pre-run static
+    projections and the ledger's whole job is quoting retracted figures; linting either would
+    produce enough noise to get the check switched off, which is worse than not having it.
+
+    It found four real misses on its first run, one of them a number in no generated table at
+    all: `WRITEUP.md`'s table cell for `M-R2-lean/M3@50` was the mean of three replicates
+    where the join-tax table reports the mean of two, because one is the lossy run the
+    documented exclusion rule drops. The document and the report disagreed by 21% on one cell
+    and nothing said so. Both figures are now printed with the rule beside them.
+
+72. **Two metrics faced the same question about discovery payload and answered it opposite
+    ways, silently.** `forced_serial_depth` excludes `DISCOVERY_TOOLS` with four paragraphs of
+    rationale — a chain through schema lookups is real serialization but not a *data*
+    dependency, and counting it would make the metric track tool packaging instead of who
+    performs the join. `pass_through_tokens` iterated every `tool_result` unconditionally, so
+    the same SDL and OpenAPI text counted as payload-carried-and-unused at ~100%.
+
+    It is not a rounding difference. Excluding discovery, **`M-G1`'s ten-cell mean falls from
+    6,172 to 889** — the headline metric was charging the query-language condition for 86% of
+    its measured waste — while `M-R2` moves ~2% and `M-R1`/`M-G2` not at all. Direction:
+    **against** the thesis, and it is the second-largest correction in this audit.
+
+    Resolved by reporting both rather than picking one, because which one a reader wants is
+    editorial: `pass_through_fraction` charges an agent for the schema it read to find its way
+    around, `pass_through_fraction_ex_discovery` does not, and they share a denominator so both
+    apportion the one exact token total. The `ex-disc` figure prints in the join-tax table
+    wherever it changes the number.
+
+    Same entry, smaller and unambiguous: the proxy's tokenizer comment asserted *"cl100k_base
+    is the BPE encoding Anthropic uses for Claude models."* It is OpenAI's. Cross-checked
+    against per-call context growth over 429 consecutive-call pairs it runs **~15% low** (median
+    implied/counted 1.18; 14–22% by condition, and the implied side carries per-result message
+    framing too, so 15% is an upper bound on the tokenizer's own error). So
+    `parse_logs.py`'s footnote — *"they share units with every other token column here"* — was
+    false: every other token column is Anthropic `usage` verbatim, and this one is not. The
+    sign is stable, so ratios survive and absolute counts are conservative. Comment, footnote
+    and docstrings corrected; the encoding is unchanged, since Anthropic publishes no local
+    tokenizer and the alternative is a `count_tokens` call per payload.
+
+    ---
+
+    **The pattern across 67–72, which is the uncomfortable part.** Five of these six sit in the
+    caching and prefix instrumentation. That is the one area of this study with **no
+    written-down prediction** — the pre-registration has eight expectations and not one of them
+    is about caching, prefixes or thresholds. Entry 62 and the writeup both argue that a bug is
+    caught when it contradicts something you predicted, not when it is large or biased. Six
+    bugs then survived in precisely the region with nothing to contradict, and were found by an
+    adversarial read of the writeup rather than by any guard, any test, or any of the fifteen
+    parse runs that rendered them. The thesis confirmed itself on its author, which is a worse
+    outcome than being wrong would have been.
+
+    Bug count for any document that cites it: **fifteen**, not nine.
+
+---
+
+## How the audit's figures were re-derived (2026-09-03)
+
+Ground rule for the fix work: **every number that changed had to come back out of `runs/` or
+`results/`, with the command recorded.** The two worst defects in 67–72 were both figures
+copied forward without re-derivation, so the rule is the direct response to them. Where a
+figure is now a column, the column is the record; where it is a prose aggregate, the command
+is here.
+
+**Now columns, so no command is needed again:** `prefix_tokens`, `prefix_n_tools`,
+`prefix_note`, `pass_through_tokens_ex_discovery`, `pass_through_fraction_ex_discovery` in
+`results/*/raw.csv`, plus the *Prompt prefix and the cache minimum* table in both
+`summary.md`s. `cache_min_tokens()` in `parse_logs.py` owns the thresholds.
+
+**Prose aggregates**, all against `results/*/raw.csv` after `./bench.sh parse` on both phases:
+
+```python
+# the accuracy fold (67): 41 of 60 by bracket, 28 of 40 folded
+rows = [r for r in csv.DictReader(open('results/phase2/raw.csv')) if r['task_id'] != 'M4@103']
+for key in (lambda c: c, lambda c: c.rsplit('-',1)[0] if c.endswith(('-fat','-lean')) else c):
+    by = collections.defaultdict(lambda: collections.defaultdict(list))
+    for r in rows: by[r['task_id']][key(r['cell'])].append(float(r['answer_f1']))
+    print(sum(1 for c in by.values() for v in c.values() if all(x==1.0 for x in v)),
+          'of', sum(len(v) for v in by.values()))
+
+# phase-1 caching, per condition (70)
+for c in ('A1','A2','B','B2'):
+    s = [r for r in csv.DictReader(open('results/phase1/raw.csv')) if r['condition']==c]
+    print(c, sum(int(r['proxy_cache_read_input_tokens']) for r in s),
+             sum(int(r['proxy_cache_creation_input_tokens']) for r in s))
+
+# 7.9x -> 12.6x: charge A1's cache reads at the uncached rate (70)
+#   cost_usd + cache_read * (1.00 - 0.10) / 1e6   on T1, then / B2's T1 cost
+
+# prefix vs advertised bytes, r = 0.9998 (68)
+#   least-squares fit of mean prefix_tokens against capture/{A1,A2,B,B2}.json
+#   tools_list_bytes -> prefix ~ 1381 + bytes/8.43
+
+# the tokenizer undercount, ~15% (72)
+#   for consecutive task-model calls a,b in each runs/phase2/*/*/rep*/proxy.jsonl with
+#   b.tool_result_tokens >= 500 and b.n_tool_results > 0:
+#     implied = total(b) - total(a) - a.output_tokens      # total = in + cr + cc
+#     ratio   = implied / b.tool_result_tokens
+#   median over 429 pairs = 1.181 (per condition 1.168-1.278). The implied side also
+#   carries per-result message framing, so this is an UPPER bound on tokenizer error.
+
+# the averaging critique (WRITEUP "what we are no longer claiming")
+#   per-cell means over reps, then: share of the M-R1-lean numerator by task
+#   (M3@50 46.6%, three N=50 cells 70.2%); median bestREST/M-G1 = 1.60x;
+#   best-REST beats M-G1 on 5 of 10; best-GraphQL wins 10/10 on tokens and cost,
+#   4/10 on tool calls. The lean-costs-more-than-fat result is ONE replicate
+#   (M-R1-lean/M3@20/rep2, 34 inference calls against its siblings' 6, $1.192 against
+#   $0.109) — excluded, lean is cheaper on the mean too, and cheaper by median either way.
+```
+
+**Instruction-block asymmetry (C5), against `recipes/`:** dedent the `instructions: |` block
+and measure it — A1/A2 **237 B**, B **336 B**, B2 **983 B**, and all four phase-2 M-* recipes
+**670 B** with one sha (`766b07b1ad3f`), byte-identical.
+
+**What was NOT re-derived, and is therefore not published:** anything needing a re-run. The
+Haiku cache-minimum finding suggests re-running on a model whose minimum sits below the tool
+surface — that would remove the largest cost artifact in phase 2 — but it is new money and new
+runs, not a fix. `runs/phase1`'s `capture/` artifacts for the June runs are gone
+(gitignored), so those specific numbers remain unreproducible from this repository.

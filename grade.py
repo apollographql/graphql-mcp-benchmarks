@@ -697,39 +697,82 @@ def pass_through_tokens(calls: list, answer: str) -> dict:
     **How the token figure is derived.** The proxy already records an exact
     `tool_result_tokens` per call (cl100k_base, at log time). This function
     computes the *fraction* of result bytes whose values never appear in the
-    answer, then applies that fraction to the exact token total. So the token
-    units stay consistent with every other column in the report and no tokenizer
-    is needed here — the approximation is confined to the ratio, which is far more
-    stable than absolute tokenization, since JSON keys and punctuation are spread
-    evenly through used and unused fields alike.
+    answer, then applies that fraction to that token total. The approximation is
+    confined to the ratio, which is far more stable than absolute tokenization,
+    since JSON keys and punctuation are spread evenly through used and unused
+    fields alike.
+
+    What this does NOT do is put the result in the same units as the rest of the
+    report, which it used to claim: `tool_result_tokens` is cl100k_base and every
+    other token column is Anthropic's own `usage`. cl100k_base measures ~15% low
+    against per-call context growth, so this figure and its ratio to the `usage`
+    columns are a same-signed underestimate. See the note at the top of
+    `proxy/anthropic_logging_proxy.py`.
+
+    **Discovery payload is reported twice, not decided once.** A schema or OpenAPI
+    result is almost entirely "carried and not used" by this definition — the agent
+    reads an SDL fragment to write a query and then quotes none of it — so at ~100%
+    pass-through it lands in the metric as pure waste. `forced_serial_depth` faces
+    the identical question and answers it the other way, excluding DISCOVERY_TOOLS
+    with a written rationale (see the constant): a chain through schema lookups is
+    not a data dependency. The two metrics disagreeing silently is the bug. So both
+    denominators are emitted and neither is hidden:
+
+    * `pass_through_fraction` — every tool result, discovery included. Discovery IS
+      payload the agent carried; a reader who thinks the on-demand conditions should
+      be charged for finding their own way around wants this one.
+    * `pass_through_fraction_ex_discovery` — the same numerator with DISCOVERY_TOOLS
+      results dropped, over the SAME total-byte denominator, so both apportion the
+      one exact token count the proxy measured and the pair is directly comparable.
+      A reader who wants the join tax alone wants this one.
+
+    The gap between them is not small and it does not favour the hypothesis: on
+    M-G1 it is the difference between 6,172 and 889 mean pass-through tokens.
     """
+    producers = _producer_names(calls)
+
+    def tally(res) -> tuple:
+        """(used, unused) bytes for one tool result."""
+        text = res.get("content") or ""
+        try:
+            parsed = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            # Unparseable body (an error string, a non-JSON payload): charge
+            # it all as pass-through unless the answer quotes it wholesale.
+            # Better to over-report the tax than to drop a payload the agent
+            # demonstrably carried through its context.
+            if text.strip() and text.strip() in answer:
+                return (len(text), 0)
+            return (0, len(text))
+        used = unused = 0
+        for key, value in _flat_fields(parsed):
+            size = len(key) + len(json.dumps(value)) + 4  # "key": value,
+            if _value_in_answer(value, answer):
+                used += size
+            else:
+                unused += size
+        return (used, unused)
+
     used_bytes = unused_bytes = 0
+    disc_bytes = disc_unused = 0
     for call in calls:
         for res in call.get("tool_result") or []:
-            text = res.get("content") or ""
-            try:
-                parsed = json.loads(text)
-            except (json.JSONDecodeError, ValueError):
-                # Unparseable body (an error string, a non-JSON payload): charge
-                # it all as pass-through unless the answer quotes it wholesale.
-                # Better to over-report the tax than to drop a payload the agent
-                # demonstrably carried through its context.
-                if text.strip() and text.strip() in answer:
-                    used_bytes += len(text)
-                else:
-                    unused_bytes += len(text)
-                continue
-            for key, value in _flat_fields(parsed):
-                size = len(key) + len(json.dumps(value)) + 4  # "key": value,
-                if _value_in_answer(value, answer):
-                    used_bytes += size
-                else:
-                    unused_bytes += size
+            u, n = tally(res)
+            used_bytes += u
+            unused_bytes += n
+            if producers.get(res.get("tool_use_id"), "") in DISCOVERY_TOOLS:
+                disc_bytes += u + n
+                disc_unused += n
     total = used_bytes + unused_bytes
     fraction = (unused_bytes / total) if total else None
+    frac_ex = ((unused_bytes - disc_unused) / total) if total else None
     return {"pass_through_fraction": round(fraction, 4) if fraction is not None else None,
+            "pass_through_fraction_ex_discovery":
+                round(frac_ex, 4) if frac_ex is not None else None,
             "tool_result_bytes": total,
-            "pass_through_bytes": unused_bytes}
+            "pass_through_bytes": unused_bytes,
+            "discovery_bytes": disc_bytes,
+            "pass_through_bytes_ex_discovery": unused_bytes - disc_unused}
 
 
 def _flat_fields(obj, prefix="", out=None) -> list:

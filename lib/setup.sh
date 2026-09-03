@@ -60,6 +60,14 @@ do_setup() {
   ensure_token || return 1
 
   # --- Goose CLI ---
+  # Every other version in this study is pinned; Goose was not, and its version was
+  # recorded in no meta.json. That is the one component the largest cost caveat
+  # blames ("this is the client's breakpoint placement"), so an unpinned, unrecorded
+  # version made the caveat unfalsifiable by anyone including us. The published
+  # matrix ran on GOOSE_VERSION below. `brew install` and the `stable` channel both
+  # move, so this warns loudly rather than failing: pinning an installed Goose is
+  # not something setup can do for you.
+  : "${GOOSE_VERSION:=1.37.0}"     # the version the published matrix ran on
   if ! command -v goose >/dev/null 2>&1; then
     echo "Installing Goose..."
     if command -v brew >/dev/null 2>&1; then
@@ -70,7 +78,16 @@ do_setup() {
     fi
   fi
   command -v goose >/dev/null 2>&1 || { echo "ERROR: Goose install failed; install it manually (https://goose-docs.ai/docs/getting-started/installation)"; return 1; }
-  echo "goose: $(command -v goose)"
+  local goose_have; goose_have="$(goose --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  echo "goose: $(command -v goose) (${goose_have:-unknown})"
+  if [ -n "$goose_have" ] && [ "$goose_have" != "$GOOSE_VERSION" ]; then
+    echo "WARNING: goose ${goose_have} != the published matrix's ${GOOSE_VERSION}."
+    echo "         Harness behaviour — turn handling, cache_control placement, tool"
+    echo "         serialization — is not held constant across Goose versions, and"
+    echo "         NOTES.md 51/69 turn on exactly that. Results are still recorded"
+    echo "         (run_benchmark.py writes goose_version into every meta.json), but"
+    echo "         they are not directly comparable to the published numbers."
+  fi
 
   # Minimal Goose config so headless runs pick up provider/model (env still overrides).
   local gcfg="$HOME/.config/goose/config.yaml"
@@ -88,6 +105,17 @@ do_setup() {
   mkdir -p "$PROJECT_ROOT/bin"
   if [ ! -x "$PROJECT_ROOT/bin/apollo-mcp-server" ]; then
     local ver="${APOLLO_BIN_VERSION:-v1.14.0}"
+    # aarch64-apple-darwin only. Reproducing this repo needs an Apple Silicon Mac
+    # (or a hand-placed bin/apollo-mcp-server for your platform) — stated here
+    # because the README's "one command" reads as portable and is not.
+    case "$(uname -s)/$(uname -m)" in
+      Darwin/arm64) ;;
+      *) echo "ERROR: setup only downloads the aarch64-apple-darwin build of"
+         echo "       apollo-mcp-server. On $(uname -s)/$(uname -m), fetch the matching"
+         echo "       release from github.com/apollographql/apollo-mcp-server and place"
+         echo "       it at bin/apollo-mcp-server, then re-run setup."
+         return 1 ;;
+    esac
     local tarball="apollo-mcp-server-${ver}-aarch64-apple-darwin.tar.gz"
     local url="https://github.com/apollographql/apollo-mcp-server/releases/download/${ver}/${tarball}"
     echo "Downloading Apollo MCP Server ${ver} ..."

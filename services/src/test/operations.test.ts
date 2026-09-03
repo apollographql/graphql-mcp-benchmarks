@@ -19,6 +19,7 @@ import { test } from 'node:test';
 import {
   buildSchema,
   parse,
+  print,
   validate,
   type OperationDefinitionNode,
 } from 'graphql';
@@ -36,6 +37,34 @@ const FROZEN_OPERATIONS = [
   'FlightSchedule',
   'FlightsByOrigin',
 ] as const;
+
+/**
+ * The frozen variable signatures — and the reason this exists.
+ *
+ * Freezing the operation NAMES was the whole guard until an audit pointed out
+ * what it does not cover. The single largest effect in the study is one argument
+ * type: `FlightSchedule($flightNumbers: [String!]!)` answers fifty flights in one
+ * request and is the best result in the matrix, while
+ * `FlightRoster($flightId: ID!)` forces the agent to loop and produces the worst.
+ * Both files pass a filename check. Widening `FlightRoster` to a list — the one
+ * edit that would erase the study's headline finding — passed this suite, and so
+ * would narrowing `FlightSchedule` to a scalar.
+ *
+ * Git shows neither file was ever edited, so the loophole was not exercised. That
+ * is luck, not a control. The variable list below is compared exactly, in order,
+ * against what each file declares.
+ */
+const FROZEN_SIGNATURES: Record<string, string[]> = {
+  AircraftDetail: ['$id: ID!'],
+  CrewCurrency: ['$crewId: ID!'],
+  CrewDetail: ['$id: ID!'],
+  FlightAirworthiness: ['$flightId: ID!'],
+  // The scalar id that costs 100 requests for 50 flights (PHASE2_PLAN §5.2).
+  FlightRoster: ['$flightId: ID!'],
+  // The list that costs 1 (PHASE2_PLAN §5.2). These two are the finding.
+  FlightSchedule: ['$flightNumbers: [String!]!'],
+  FlightsByOrigin: ['$origin: String!', '$date: String', '$limit: Int'],
+};
 
 const files = readdirSync(OPERATIONS_DIR)
   .filter((f) => f.endsWith('.graphql'))
@@ -67,6 +96,41 @@ test('each file holds exactly one named operation matching its filename', () => 
     );
     assert.equal(operations[0]!.operation, 'query', `${file}: must be a query`);
   }
+});
+
+test('the variable signatures are exactly the frozen ones', () => {
+  for (const file of files) {
+    const name = file.replace(/\.graphql$/, '');
+    const doc = parse(readFileSync(join(OPERATIONS_DIR, file), 'utf8'));
+    const op = doc.definitions.find(
+      (d): d is OperationDefinitionNode => d.kind === 'OperationDefinition',
+    )!;
+    const signature = (op.variableDefinitions ?? []).map(
+      (v) => `$${v.variable.name.value}: ${print(v.type)}`,
+    );
+    assert.deepEqual(
+      signature,
+      FROZEN_SIGNATURES[name],
+      `${name}: variable signature changed — this is the cardinality axis the whole ` +
+        `study measures. See the FROZEN_SIGNATURES header before updating it, and note ` +
+        `that results from before the change are not comparable.`,
+    );
+  }
+});
+
+test('the cardinality contrast the finding rests on is intact', () => {
+  // Stated as its own assertion rather than left implicit in the table above,
+  // because a reader updating FROZEN_SIGNATURES needs to trip over the reason.
+  assert.deepEqual(
+    FROZEN_SIGNATURES.FlightSchedule,
+    ['$flightNumbers: [String!]!'],
+    'FlightSchedule must take a LIST — it is the 1-request-for-50-flights arm',
+  );
+  assert.deepEqual(
+    FROZEN_SIGNATURES.FlightRoster,
+    ['$flightId: ID!'],
+    'FlightRoster must take a SCALAR id — it is the 100-requests-for-50-flights arm',
+  );
 });
 
 test('every operation validates against the composed supergraph', () => {

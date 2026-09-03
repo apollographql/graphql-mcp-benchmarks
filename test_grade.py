@@ -398,6 +398,39 @@ check("a field-precise response passes almost nothing through",
 check("no tool results means no fraction to report",
       grade.pass_through_tokens([], answer)["pass_through_fraction"], None)
 
+# Discovery payload counted as waste, while forced_serial_depth excludes it.
+# schema_search returns SDL the agent reads to write a query and quotes none of
+# back, so it scores ~100% pass-through and reads as pure carried waste. Whether
+# that is the join tax is exactly the question DISCOVERY_TOOLS already answered
+# once, the other way — so both denominators are reported and neither is silent.
+sdl = json.dumps({"results": [
+    {"coordinate": "Query.flightsByNumbers",
+     "signature": "flightsByNumbers(flightNumbers: [String!]!): [Flight!]!"},
+    {"coordinate": "Flight.assignments",
+     "signature": "assignments(roles: [Role!]): [Assignment!]!"}]})
+disc = [call(1, [("airline__schema_search", {"q": "flights"})], []),
+        call(2, [("airline__execute", {"query": "{...}"})], [sdl]),
+        call(3, [], [json.dumps({"flightNumber": "AA5751", "gate": "B38"})])]
+r = grade.pass_through_tokens(disc, answer)
+check("schema payload is charged as pass-through by default",
+      r["pass_through_bytes"] > r["pass_through_bytes_ex_discovery"], True)
+check("...and the discovery share is reported, not inferred",
+      r["discovery_bytes"] > 0, True)
+check("both fractions share one denominator, so they apportion one token total",
+      round(r["pass_through_bytes"] / r["tool_result_bytes"], 4),
+      r["pass_through_fraction"])
+check("...the ex-discovery fraction too",
+      round(r["pass_through_bytes_ex_discovery"] / r["tool_result_bytes"], 4),
+      r["pass_through_fraction_ex_discovery"])
+check("excluding discovery can only lower the figure, never raise it",
+      r["pass_through_fraction_ex_discovery"] <= r["pass_through_fraction"], True)
+# A run with no discovery tool at all must report the two identically, or the
+# second column would quietly restate the first for four of six conditions.
+r_nd = grade.pass_through_tokens([fat], answer)
+check("a run with no discovery call reports the same figure twice",
+      r_nd["pass_through_fraction_ex_discovery"], r_nd["pass_through_fraction"])
+check("...and no discovery bytes", r_nd["discovery_bytes"], 0)
+
 print("\nanswer_grounded — per-fact, using the sidecar")
 cell = EXPECTED["M2@1"]
 exp = cell["expected"]

@@ -222,8 +222,10 @@ def expected_cells() -> dict:
 GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_coverage",
                 "graded_items", "correct_items", "missing_keys", "unparsed_values",
                 "answer_grounded", "grounded_facts", "needs_review", "grade_notes",
-                "pass_through_tokens", "pass_through_fraction", "forced_serial_depth",
-                "discovery_depth"]
+                "pass_through_tokens", "pass_through_fraction",
+                "pass_through_tokens_ex_discovery",
+                "pass_through_fraction_ex_discovery",
+                "forced_serial_depth", "discovery_depth"]
 # Integrity fields, present on every row regardless of phase.
 INTEGRITY_FIELDS = ["tool_results_recorded", "payload_loss", "payload_complete",
                     "payload_note"]
@@ -260,6 +262,14 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
     fraction = through.get("pass_through_fraction")
     pass_through = (round(proxy.get("tool_result_tokens", 0) * fraction)
                     if fraction is not None else None)
+    # The same exact token total, apportioned by the same denominator with the
+    # discovery results dropped from the numerator. Reported beside the headline
+    # figure rather than substituted for it: `pass_through_tokens` charges an agent
+    # for the schema it read to find its way around, `forced_serial_depth` does not,
+    # and which of those a reader wants is an editorial call, not a parser's.
+    frac_ex = through.get("pass_through_fraction_ex_discovery")
+    pass_through_ex = (round(proxy.get("tool_result_tokens", 0) * frac_ex)
+                       if frac_ex is not None else None)
 
     notes = list(result["notes"])
     if grounding["grounded"] is False:
@@ -281,6 +291,8 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
         "grade_notes": " | ".join(notes),
         "pass_through_tokens": pass_through,
         "pass_through_fraction": fraction,
+        "pass_through_tokens_ex_discovery": pass_through_ex,
+        "pass_through_fraction_ex_discovery": frac_ex,
         "forced_serial_depth": depth.get("forced_serial_depth"),
         "discovery_depth": depth.get("discovery_depth"),
     }
@@ -389,6 +401,38 @@ def _price_for(model: str) -> dict:
             return p
     return _PRICING[-1][1]
 
+# Minimum cacheable prompt prefix, in tokens, by model prefix.
+# Source: Anthropic prompt-caching docs (as of 2026-09). A prompt shorter than the
+# minimum is simply not cached: no write, no read, no error, and nothing in `usage`
+# to say why. That silence is what made the zero-read finding (NOTES 51) look like a
+# client bug for two months.
+#
+# The minimum is model-dependent and NOT monotonic in model size, so it cannot be
+# guessed from the model name — Haiku 4.5 requires 4,096 while Opus 5 requires 512.
+# A model absent from this table returns None, and every caller treats None as
+# "unknown", never as "fine": the rule `payload_complete` and `answer_grounded`
+# already follow.
+_CACHE_MIN_TOKENS: list[tuple[str, int]] = [
+    ("claude-haiku-4-5",  4096),
+    ("claude-opus-4-5",   4096),
+    ("claude-opus-4-6",   4096),
+    ("claude-opus-4-7",   2048),
+    ("claude-opus-4-8",   1024),
+    ("claude-sonnet-4-5", 1024),
+    ("claude-sonnet-4-6", 1024),
+    ("claude-sonnet-5",   1024),
+    ("claude-opus-5",      512),
+    ("claude-fable-5",     512),
+]
+
+
+def cache_min_tokens(model: str):
+    """The model's minimum cacheable prefix, or None if we don't know it."""
+    for prefix, n in _CACHE_MIN_TOKENS:
+        if (model or "").startswith(prefix):
+            return n
+    return None
+
 
 def cost_usd(row: dict, model: str = "") -> float:
     p = _price_for(model or PRIMARY_MODEL)
@@ -403,9 +447,12 @@ def cost_usd(row: dict, model: str = "") -> float:
 def _stage_costs(row: dict, model: str = "") -> dict:
     """Break a run's total cost into three prompt-lifecycle stages (all USD).
 
-    Stage 1 — Schema baseline:   first non-zero cache_creation call.
-               The point where the context (schema + system prompt + task) first hits
-               Anthropic's caching threshold; represents the minimum fixed overhead.
+    Stage 1 — First cache write: first non-zero cache_creation call.
+               The point where the prompt first clears the model's minimum cacheable
+               prefix. On a surface large enough to clear it alone that is schema
+               injection; on every phase-2 condition it is not — see cache_min_tokens()
+               and _prefix_section(). The label was "Schema baseline" while the
+               threshold was believed to be ~1K for all models.
     Stage 2 — Context growth:    all subsequent cache_creation combined.
                Each tool result + model turn extending the cached context window.
     Stage 3 — Inference compute: input + output + cache_read tokens (all calls).
@@ -424,6 +471,46 @@ def _stage_costs(row: dict, model: str = "") -> dict:
 
 def _num(x):
     return x if isinstance(x, (int, float)) else 0
+
+
+def _prefix_tokens(per_call: list[dict]) -> dict:
+    """What the model actually received on the first call carrying the tool surface.
+
+    The published figure for GitHub's 54-tool surface was **2,525** tokens, and 2,525
+    was `cache_creation_input_tokens` on that call — the delta the cache had to write,
+    not the prompt. The same call read 15,911 tokens back from cache, so the prefix was
+    18,438. A cold replicate of the identical condition settles it: with cache_read=0
+    the write is 18,469 and the prefix 18,471, within 0.02% of the warm figure
+    (`runs/phase1/A1/T2/rep1` call 2 against `runs/phase1/A1/T1/rep1` call 2).
+
+    Three published claims rested on the 2,525 — that the client was not forwarding the
+    advertised surface, that a 54-tool server costs less prefix than a 9-tool one, and
+    that every condition sits between 1,851 and 3,830 tokens. One arithmetic error,
+    published once and cited three times, which is why this is a column and not a
+    sentence: `cache_creation` alone is only the prefix on a cold call, and nothing
+    said which calls were cold.
+
+    None when no call in the run recorded `n_tools`. Those runs predate the field and
+    cannot answer the question; a guess would be indistinguishable from a measurement.
+    """
+    if not any(c.get("n_tools") is not None for c in per_call):
+        return {"prefix_tokens": None,
+                "prefix_n_tools": None,
+                "prefix_note": "recorded by a proxy predating n_tools — "
+                               "prefix unmeasurable"}
+    first = next((c for c in per_call if (c.get("n_tools") or 0) > 0), None)
+    if first is None:
+        return {"prefix_tokens": None,
+                "prefix_n_tools": None,
+                "prefix_note": "no call in this run carried a tool surface"}
+    return {"prefix_tokens": (first["input_tokens"]
+                              + first["cache_read_input_tokens"]
+                              + first["cache_creation_input_tokens"]),
+            # How many tools the client actually put on the wire. Published claim:
+            # "the client does not forward the advertised surface." Every
+            # tool-bearing A1 request logs 54, which is the advertised count.
+            "prefix_n_tools": first["n_tools"],
+            "prefix_note": ""}
 
 
 def _http_errors(p: Path) -> int:
@@ -468,6 +555,10 @@ def parse_proxy_per_call(p: Path, task_model: str = "") -> list[dict]:
             "cache_creation_input_tokens": _num(r.get("cache_creation_input_tokens")),
             "cache_read_input_tokens": _num(r.get("cache_read_input_tokens")),
             "n_tool_use": _num(r.get("n_tool_use")),
+            # Raw, not _num'd: `n_tools` postdates the earliest runs, and 0 tools
+            # (the harness's own first call, before the MCP servers are attached)
+            # must not read the same as "this proxy never recorded the field".
+            "n_tools": r.get("n_tools"),
         })
     return sorted(calls, key=lambda c: c["ts"])
 
@@ -476,7 +567,9 @@ def parse_proxy(p: Path, task_model: str = "") -> dict:
     """Sum metrics from one run's proxy.jsonl. Task-model calls feed the headline
     metrics; auxiliary calls (a different model) are counted separately.
     tool_result_tokens counts tokens in GitHub API responses as received by the
-    model (tokenized with cl100k_base in the proxy at log time)."""
+    model (tokenized with cl100k_base in the proxy at log time — OpenAI's encoding,
+    ~15% low against Anthropic's own counts, and the only column here that is not
+    a `usage` figure)."""
     agg = {k: 0 for k, _ in METRICS}
     # `n_tool_results` is how many tool results the proxy actually recorded. It is
     # not a metric — it is the integrity check on every metric derived from tool
@@ -578,11 +671,17 @@ def collect():
             **{f"proxy_{k}": proxy[k] for k, _ in METRICS},
             "aux_calls": proxy["aux_calls"], "aux_tokens": proxy["aux_tokens"],
             "unparsed_calls": proxy["unparsed_calls"],
+            # The prefix the model actually received, not the cache-write delta.
+            **_prefix_tokens(per_call),
             # Stage-cost fields.
-            # first_call_cc: first call where cache_creation > 0 — this is when the
-            # schema + system prompt first hit the caching threshold (~1K tokens).
-            # Call index 0 always has cc=0 (Goose doesn't trigger caching until the
-            # context is large enough); the write happens on the first substantive call.
+            # first_call_cc: the first call where cache_creation > 0. That is when the
+            # CONVERSATION first crossed the model's minimum cacheable prefix — which is
+            # not when the schema loads, and on this matrix is never when the schema
+            # loads: every phase-2 prefix (1,491-4,053) is below Haiku 4.5's 4,096, so
+            # no phase-2 run ever writes its tool surface to cache at all. The comment
+            # here used to say "the caching threshold (~1K tokens)"; ~1K is Sonnet's
+            # minimum, and the wrong number is why the zero-read finding went two months
+            # without an explanation. See cache_min_tokens().
             "first_call_cc": next(
                 (c["cache_creation_input_tokens"] for c in per_call
                  if c["cache_creation_input_tokens"] > 0), 0
@@ -715,10 +814,17 @@ def _accuracy_spread(graded) -> str:
     the kind of prose that outlives the number it describes — the failure that put
     phase-1 illustrations into a phase-2 report. So the task with the widest
     protocol gap is located in the data and named with whatever the data says.
+
+    Keyed on `cell`, not `cell_cond(cell)`. This was the one grouping site #54's
+    fix missed, so it went on folding the fat and lean brackets back together and
+    printed "28 of 40" for a matrix that has 60 cells. The widest-gap sentence is
+    unaffected — it flattens every REST value either way — so the denominator was
+    the whole error, and the denominator is exactly what nothing asserted.
+    `test_parse_logs.py` asserts the denominator now.
     """
     by = {}
     for r in graded:
-        by.setdefault(r["task_id"], {}).setdefault(cell_cond(r["cell"]), []).append(
+        by.setdefault(r["task_id"], {}).setdefault(r["cell"], []).append(
             r["answer_f1"])
     best = None
     for task, conds in by.items():
@@ -1045,6 +1151,15 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
            "surface rather than of the join, and it exists only in the on-demand conditions. "
            "Folding it into `depth` would make the headline metric track tool packaging "
            "instead of who performs the join, so the two are reported side by side.\n",
+           "**ex-disc** applies the same reasoning to the token figure, and it is shown "
+           "wherever it changes the number. Schema and OpenAPI text is ~100% "
+           "pass-through by this definition — the agent reads an SDL fragment to write a "
+           "query and quotes none of it back — so `pass-through` charges the on-demand "
+           "conditions for finding their own way around, while `depth` explicitly does not. "
+           "That disagreement was silent until it was measured; it is not small, and it does "
+           "not favour the hypothesis. Both numbers are here because which one a reader "
+           "wants is an editorial call: **pass-through** is every token carried, **ex-disc** "
+           "is the join tax alone.\n",
            "| Condition | " + " | ".join(f"{t}" for t in tasks) + " |",
            "|" + "---|" * (len(tasks) + 1)]
     for c in conds:
@@ -1062,6 +1177,13 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
                 bits.append(f"{statistics.mean(pt):,.0f} tok")
             if fr:
                 bits.append(f"({statistics.mean(fr):.0%} unused)")
+            px = [r["pass_through_tokens_ex_discovery"] for r in sub
+                  if r.get("pass_through_tokens_ex_discovery") is not None]
+            # Only where it moves the number. Printing "ex-disc" identical to
+            # "pass-through" in 40 of 60 cells would bury the 4 where it matters.
+            if pt and px and abs(statistics.mean(px) - statistics.mean(pt)) > \
+                    0.01 * max(statistics.mean(pt), 1):
+                bits.append(f"ex-disc {statistics.mean(px):,.0f} tok")
             if dp:
                 bits.append(f"depth {statistics.mean(dp):.1f}")
             dd = [r["discovery_depth"] for r in sub if r.get("discovery_depth") is not None]
@@ -1069,10 +1191,21 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
                 bits.append(f"disc {statistics.mean(dd):.1f}")
             cells.append("<br>".join(bits) or "—")
         out.append("| " + " | ".join(cells) + " |")
-    out.append("\n*Token figures apportion the proxy's exact `tool_result_tokens` by the "
-               "fraction of result bytes whose values never reach the answer, so they share "
-               "units with every other token column here; the approximation is confined to "
-               "that ratio. See `grade.pass_through_tokens`.*\n")
+    out.append("\n*Token figures apportion the proxy's `tool_result_tokens` by the fraction "
+               "of result bytes whose values never reach the answer; `ex-disc` uses the same "
+               "denominator with DISCOVERY_TOOLS results dropped from the numerator, so the "
+               "two are directly comparable. The approximation is confined to that ratio.*\n")
+    out.append("*⚠️ **Unit caveat.** `tool_result_tokens` is the one token column here that "
+               "is not Anthropic's own `usage` figure: the proxy counts it with "
+               "`cl100k_base`, which is OpenAI's tokenizer, not Claude's. Cross-checked "
+               "against per-call context growth over 429 consecutive-call pairs it runs "
+               "**~15% low** (median implied/counted 1.18; 14–22% by condition, and the "
+               "implied side also carries per-result message framing, so 15% is an upper "
+               "bound on the tokenizer error). Every figure in this table is therefore a "
+               "same-signed underestimate: the ratios between conditions hold, the absolute "
+               "counts are conservative. A previous version of "
+               "this footnote claimed these \"share units with every other token column "
+               "here\"; they do not. See `grade.pass_through_tokens`.*\n")
 
     if lossy:
         out.append(f"\n### ⚠️ {len(lossy)} run(s) with lost tool payloads — excluded above\n")
@@ -1222,6 +1355,92 @@ def _surface_bytes_phrase() -> str:
             f"(capture/expected-tool-surfaces.json, which owns these numbers)")
 
 
+def _prefix_section(rows, conds, phase: int = 1) -> list[str]:
+    """The prompt prefix each condition actually pays, against the cache minimum.
+
+    This table exists because its absence let a cache-write delta be published as a
+    prefix (see `_prefix_tokens`) and let "prompt caching never hit" stand for two
+    months with no mechanism attached. Both are answered by two columns side by side:
+    what the prefix is, and what the model requires before it will cache anything.
+    """
+    measured = [r for r in rows if r.get("prefix_tokens") is not None]
+    if not measured:
+        return []
+    models = sorted({r.get("model", PRIMARY_MODEL) for r in measured})
+    mins = {m: cache_min_tokens(m) for m in models}
+    lines = [
+        "\n## Prompt prefix and the cache minimum\n",
+        "The prefix is what the model receives on the first call that carries the tool "
+        "surface: `input_tokens + cache_read_input_tokens + cache_creation_input_tokens`. "
+        "All three, because on a warm call `cache_creation` is only the delta — the same "
+        "call can read 15,911 tokens back and write 2,525, and 2,525 is not the prompt.\n",
+        "| Condition | Tools forwarded | Tool surface | Prefix tokens (min–max) "
+        "| Cache minimum | Schema cached? |",
+        "|---|---|---|---|---|---|",
+    ]
+    below_cells = []
+    for c in conds:
+        sub = [r for r in measured if r["cell"] == c]
+        if not sub:
+            continue
+        vals = [r["prefix_tokens"] for r in sub]
+        lo, hi = min(vals), max(vals)
+        cmins = {mins[r.get("model", PRIMARY_MODEL)] for r in sub}
+        cmin = cmins.pop() if len(cmins) == 1 else None
+        if cmin is None:
+            verdict, cmin_txt = "unknown — no minimum on record for this model", "unknown"
+        else:
+            cmin_txt = f"{cmin:,}"
+            if hi < cmin:
+                verdict = "**no** — every prefix is below the minimum"
+                below_cells.append(c)
+            elif lo >= cmin:
+                verdict = "yes"
+            else:
+                verdict = f"partly — {sum(1 for v in vals if v >= cmin)} of {len(vals)} runs"
+                below_cells.append(c)
+        # The advertised count is a claim; this is what the client put on the wire.
+        nt = sorted({r["prefix_n_tools"] for r in sub if r.get("prefix_n_tools")})
+        nt_txt = "–".join(str(n) for n in (nt[:1] + nt[-1:] if len(nt) > 1 else nt)) or "—"
+        rng = f"{lo:,}" if lo == hi else f"{lo:,}–{hi:,}"
+        lines.append(f"| **{c}** | {nt_txt} | {_surface_bytes_for(c)} | {rng} "
+                     f"| {cmin_txt} | {verdict} |")
+    below = [r for r in measured
+             if (mins[r.get("model", PRIMARY_MODEL)] or 0)
+             and r["prefix_tokens"] < mins[r.get("model", PRIMARY_MODEL)]]
+    if below:
+        who = ("every condition" if len(below) == len(measured)
+               else ", ".join(below_cells))
+        lines.append(
+            f"\n**{len(below)} of {len(measured)} runs carry a prefix below their model's "
+            f"cache minimum ({who}), so in those runs the tool surface is never written to "
+            f"cache at all.** Their first `cache_creation` charge fires when the "
+            f"*conversation* crosses the minimum, several tool rounds in — which is why "
+            f"Stage 1 below is labelled for that event and not for schema loading. Where a "
+            f"surface does clear the minimum on its own, a fatter one really does buy a "
+            f"bigger Stage 1; where it does not, it buys a bigger uncached `input_tokens` "
+            f"bill on every call until the conversation grows past the threshold. The two "
+            f"are not the same cost and the Stage 1 column does not distinguish them — "
+            f"this table is how you tell which one a row is.\n")
+    unmeasured = [r for r in rows if r.get("prefix_tokens") is None]
+    if unmeasured:
+        lines.append(
+            f"*{len(unmeasured)} run(s) predate the proxy's `n_tools` field and have no "
+            f"measurable prefix; they are absent from this table rather than estimated. "
+            f"See `prefix_note` in `raw.csv`.*\n")
+    return lines
+
+
+def _surface_bytes_for(cell: str) -> str:
+    """`tools/list` bytes for a cell, from the file that owns them (see §8.1)."""
+    try:
+        b = json.loads((ROOT / "capture" / "expected-tool-surfaces.json").read_text())
+        e = b[cell_cond(cell)]
+        return f"{e['n_tools']} tools / {e['tools_list_bytes']:,} B"
+    except Exception:
+        return "—"
+
+
 def _concepts_section(phase: int = 1) -> list[str]:
     """Plain-language explainers for the three stage labels used throughout this report.
 
@@ -1249,10 +1468,12 @@ def _concepts_section(phase: int = 1) -> list[str]:
             "and removes the over-fetch, which is how the two effects are told apart."
         )
         caveat_eg = (
-            "**One cross-condition caveat:** the on-demand conditions (M-R2, M-G1) carry a "
-            "much smaller tool schema, so their first cache write fires later in the "
-            "conversation — after a few discovery rounds have accumulated enough context — "
-            "which moves cost that the front-loaded conditions pay in Stage 1 into Stage 2."
+            "**One cross-condition caveat:** no phase-2 condition's tool surface clears "
+            "Haiku 4.5's 4,096-token cache minimum on its own — the prefixes run 1,491 to "
+            "4,053 — so in every cell the first cache write fires on conversation growth "
+            "rather than on schema load. The Stage 1 / Stage 2 boundary therefore falls at "
+            "a different *turn* in each condition, and a bigger Stage 1 here means the "
+            "conversation was bigger when it crossed the threshold, not that the schema was."
         )
     else:
         schema_eg = (
@@ -1264,21 +1485,30 @@ def _concepts_section(phase: int = 1) -> list[str]:
             "API objects (~82 KB for 5 PRs) vs. GraphQL's field-precise responses (~1 KB)."
         )
         caveat_eg = (
-            "**One cross-condition caveat:** because GraphQL conditions (B/B2) have a smaller "
-            "tool schema, their first cache write fires later in the conversation (after a few "
-            "tool rounds have accumulated enough context), so their Stage 1 includes early "
-            "conversation turns that REST pays in Stage 2."
+            "**One cross-condition caveat:** A1/A2's tool surface clears the cache minimum "
+            "on its own (an 18,438-token prefix against Haiku 4.5's 4,096), so their first "
+            "write really is schema injection. B/B2's does not, so their Stage 1 fires later "
+            "in the conversation and includes early turns that REST pays in Stage 2. The two "
+            "arms' Stage 1 figures are therefore not the same quantity."
         )
     return [
         "\n## How to read these numbers\n",
         "Every inference run goes through three phases. Understanding them explains why the "
         "token counts look the way they do.\n",
-        "**Schema injection (Stage 1)** — Before Claude can act, the harness sends it a full "
-        f"description of every available tool. {schema_eg} Anthropic's caching "
-        "system writes this description to a server-side cache once it exceeds ~1 000 tokens. "
-        "Stage 1 captures the `cache_creation` charge for that first write — the one-time cost "
-        "of committing the initial context to cache. A fatter tool schema means a higher "
-        "Stage 1 cost, paid before the agent has made a single API call.\n",
+        "**First cache write (Stage 1)** — Before Claude can act, the harness sends it a "
+        f"full description of every available tool. {schema_eg} Anthropic will cache that "
+        "context, but only once the prompt clears the model's **minimum cacheable prefix** "
+        "— which is model-dependent and not monotonic in model size (4,096 tokens on Haiku "
+        "4.5, 1,024 on Sonnet 5, 512 on Opus 5), so it cannot be inferred from the model "
+        "name. Stage 1 captures the `cache_creation` charge for the first write that "
+        "happens. **It is named for that event, not for schema loading**, and the two "
+        "coincide only when the tool surface alone clears the minimum — see the prefix "
+        "table above for whether it does here. When it does not, the first write fires "
+        "several tool rounds in, once the *conversation* has grown past the threshold, and "
+        "the tool surface is paid at the uncached `input_tokens` rate on every call until "
+        "then. This section previously read \"once it exceeds ~1 000 tokens\" and "
+        "attributed Stage 1 to schema size; ~1,000 is Sonnet's minimum, and the wrong "
+        "threshold is what left the zero-cache-read finding without a mechanism.\n",
         "**Context growth (Stage 2)** — Each tool call extends the conversation: the tool's "
         "response is appended and the *now-longer* context must be written to cache again "
         "so the next inference call can read it cheaply. Stage 2 sums those incremental "
@@ -1310,15 +1540,15 @@ def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
     the page.
     """
     boundary_eg = (
-        "A front-loaded tool surface (M-R1, M-G2) triggers the first cache write on call 1; "
-        "an on-demand one (M-R2, M-G1) does not hit the threshold until several discovery "
-        "rounds have accumulated, so its Stage 1 includes early conversation context that "
-        "the front-loaded conditions pay in Stage 2."
+        "No phase-2 tool surface clears Haiku 4.5's 4,096-token cache minimum (prefixes run "
+        "1,491–4,053), so in every cell the first write fires on conversation growth, not on "
+        "schema load — several discovery or fan-out rounds in, at a different turn per "
+        "condition. A larger Stage 1 here means a larger conversation at the crossing point."
         if phase == 2 else
-        "A large REST schema (A1/A2) triggers the first cache write on call 1; a small "
-        "GraphQL schema (B/B2) doesn't hit the threshold until several tool rounds have "
-        "accumulated, so B/B2's Stage 1 includes early conversation context that REST pays "
-        "in Stage 2."
+        "A1/A2's 18,438-token prefix clears the 4,096-token minimum on call 1, so their "
+        "Stage 1 is schema injection. B/B2's small surface does not, so their first write "
+        "waits for the conversation to grow and their Stage 1 absorbs early tool rounds that "
+        "REST pays in Stage 2."
     )
     lines = [
         "\n## Cost breakdown by prompt lifecycle stage\n",
@@ -1326,7 +1556,7 @@ def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
         "All values are **mean USD/run** across reps.\n",
         "\n![Cost by stage and tool-response size per task](summary_charts.png)\n",
         "| Condition | Task "
-        "| Stage 1 — Schema injection "
+        "| Stage 1 — First cache write "
         "| Stage 2 — Context growth "
         "| Stage 3 — Inference compute "
         "| Total |",
@@ -1411,7 +1641,7 @@ def _write_charts(rows, conds, tasks):
                 s1_vals.append(0); s2_vals.append(0); s3_vals.append(0)
 
         ax.bar(x, s1_vals, color=C_SCHEMA,
-               label="Stage 1 — Schema injection")
+               label="Stage 1 — First cache write")
         ax.bar(x, s2_vals, color=C_CONTEXT,
                label="Stage 2 — Context growth",
                bottom=s1_vals)
@@ -1583,7 +1813,11 @@ def write_summary(rows):
         lines += _accuracy_section(rows, conds, tasks)
         lines += _join_tax_section(rows, conds, tasks)
 
-    # --- Concepts explainer + Stage cost breakdown ---
+    # --- Prefix + cache minimum, then concepts explainer + Stage cost breakdown ---
+    # The prefix table comes first because the Stage 1 label depends on it: whether
+    # "schema injection" is even the right name for Stage 1 is a fact about the
+    # prefix against the model's cache minimum, not about the protocol.
+    lines += _prefix_section(rows, mcp, phase)
     lines += _concepts_section(phase)
     lines += _stage_cost_table(rows, conds, tasks, phase)
 
@@ -1738,12 +1972,34 @@ def write_summary(rows):
     if blind:
         wrote = sum(r["proxy_cache_creation_input_tokens"] for r in blind)
         print(f"WARNING: {len(blind)} of {len(multi)} multi-call run(s) read 0 cached tokens "
-              f"while writing {wrote:,} — the prompt prefix is not matching between calls. "
-              f"Cache writes cost 1.25x and reads 0.1x, so this inflates cost per call, and "
-              f"it inflates the many-call conditions most. `sys_sha`/`tools_sha`/`msg0_sha` "
-              f"in proxy.jsonl were checked and are stable, so look at `bp_at`: cache "
-              f"breakpoints that slide off the stable head ask about boundaries no earlier "
-              f"call wrote. NOTES.md 51.")
+              f"while writing {wrote:,}. Cache writes cost 1.25x and reads 0.1x, so this "
+              f"inflates cost per call, and it inflates the many-call conditions most. "
+              f"NOTES.md 51.")
+        # The diagnosis used to be "the prompt prefix is not matching between calls …
+        # look at `bp_at`". That was wrong, and it sent the investigation somewhere
+        # there was nothing to find for two months: `sys_sha`/`tools_sha`/`msg0_sha`
+        # are stable across these runs, and moving a breakpoint is not drift.
+        # The mechanism is the minimum cacheable prefix. Print it, per model, and let
+        # the numbers say whether it explains the run.
+        for m in sorted({r.get("model", PRIMARY_MODEL) for r in blind}):
+            cmin = cache_min_tokens(m)
+            sub = [r for r in blind if r.get("model", PRIMARY_MODEL) == m]
+            pfx = [r["prefix_tokens"] for r in sub if r.get("prefix_tokens") is not None]
+            if cmin is None:
+                print(f"  {m}: no minimum cacheable prefix on record — cannot say whether "
+                      f"these prompts were ever eligible for caching. Add the model to "
+                      f"_CACHE_MIN_TOKENS.")
+            elif pfx and max(pfx) < cmin:
+                print(f"  {m}: every prefix ({min(pfx):,}–{max(pfx):,}) is below the "
+                      f"{cmin:,}-token minimum cacheable prefix, so the tool surface is "
+                      f"never cached and the first write fires only when the CONVERSATION "
+                      f"crosses {cmin:,}. This is a property of the model, not of the "
+                      f"client or the protocol — a client-side fix does not exist. The "
+                      f"lever is a model with a lower minimum, or a larger prefix.")
+            elif pfx:
+                print(f"  {m}: prefixes run {min(pfx):,}–{max(pfx):,} against a {cmin:,}-"
+                      f"token minimum, so eligibility does not explain all of these. "
+                      f"Check `bp_at` and the *_sha columns for genuine prefix drift.")
     lossy = [r for r in rows if r.get("payload_complete") is False]
     if lossy:
         print(f"WARNING: {len(lossy)} run(s) recorded fewer tool results than tool calls. "

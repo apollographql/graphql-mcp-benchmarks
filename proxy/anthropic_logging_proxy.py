@@ -55,7 +55,21 @@ import time
 import httpx
 import uvicorn
 
-# cl100k_base is the BPE encoding Anthropic uses for Claude models.
+# cl100k_base is OPENAI's BPE encoding, not Anthropic's. This comment used to
+# assert the opposite, and that assertion is what let `tool_result_tokens` be
+# described downstream as sharing units with the `usage` columns beside it.
+# Anthropic publishes no local tokenizer, so the choice is between a foreign BPE
+# and a `count_tokens` API call per payload; the BPE is what this proxy uses and
+# the error has to be stated instead of assumed away.
+#
+# Measured: against per-call context growth across 429 consecutive-call pairs in
+# runs/phase2, cl100k_base runs ~15% LOW (median implied/counted 1.18, 14-22% by
+# condition; the implied side also carries per-result message framing, so 15% is
+# an upper bound on the tokenizer's own error). The sign is stable, so ratios
+# between conditions survive and absolute counts are conservative. Every
+# `tool_result_tokens` figure and everything derived from it — `pass_through_tokens`
+# above all — inherits that.
+#
 # Loaded once at startup; if tiktoken is somehow unavailable, _tok_count
 # returns 0 and tool_result_tokens will be 0 in all log lines.
 try:
@@ -141,6 +155,15 @@ def _breakpoint_positions(parsed: dict) -> list:
     message index. If the head positions vanish once the count saturates at 4
     (Anthropic's maximum), the client is evicting its own cacheable prefix to mark
     the tail, which explains a zero read rate completely.
+
+    RESOLVED, and not this way. The head markers do not vanish — `bp_at` holds
+    `["system", "tools", …]` throughout — and the cause was never boundary
+    placement. Every phase-2 prompt prefix (1,491–4,053 tokens) is below Haiku
+    4.5's 4,096-token minimum cacheable prefix, so there was nothing to hit: a
+    prompt under the minimum is not cached, silently, with no field in `usage` to
+    say so. The instrument stays because it is what ruled the hypothesis out; the
+    diagnosis above is kept as written so the record shows what was believed.
+    `parse_logs.cache_min_tokens()` owns the thresholds.
     """
     at = []
     def marked(obj) -> bool:
@@ -183,6 +206,10 @@ def _prefix_fingerprint(body: bytes) -> dict:
 
     `bp` counts cache_control markers: zero of them explains a zero read all by
     itself.
+
+    RESOLVED: all three hash steady and reads were still zero, and the cause was
+    upstream of all of it — the prompt never cleared the model's minimum cacheable
+    prefix. See `_breakpoint_positions` and `parse_logs.cache_min_tokens()`.
     """
     try:
         parsed = json.loads(body)

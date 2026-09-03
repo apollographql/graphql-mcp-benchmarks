@@ -24,12 +24,13 @@ import { test } from 'node:test';
 import {
   API_VERSION,
   ENTITIES,
+  EXTENSIONS,
   GENERATION_ORDER,
   REGISTRY,
   SERVICES,
   entitiesForService,
 } from '../entities/index.ts';
-import { restDataSchema } from '../codegen/openapi.ts';
+import { renderOpenApi, restDataSchema } from '../codegen/openapi.ts';
 import { projectResource, restPathsForEntity } from '../shared/projections.ts';
 import type { ProjectOptions } from '../shared/projections.ts';
 import type { EntityDef } from '../shared/types.ts';
@@ -235,5 +236,117 @@ test('the M2 join key is owned by Fleet and matched against Personnel', () => {
   assert.ok(
     !aircraft.fields.some((f) => f.name === 'airworthy'),
     'a top-level airworthy flag would collapse M4 into a scalar read',
+  );
+});
+
+interface RefFieldLike {
+  name: string;
+  args?: string;
+  restEquivalent: string;
+}
+
+test('every GraphQL traversal argument has a REST counterpart', () => {
+  /**
+   * `types.ts` MANDATES this — "a traversal argument GraphQL has and REST lacks
+   * would be an information asymmetry, not a protocol finding" — and until this
+   * test existed nothing checked it. The mandate is also the reason `roles` was
+   * added to both surfaces in one commit (PHASE2_PLAN §3): its absence let REST
+   * filter between calls while a single GraphQL traversal had to pay for the full
+   * roster, which favoured REST. An asymmetry in the other direction would be a
+   * strawman, and it would be invisible in every metric the study reports.
+   *
+   * Checked against the GENERATED OpenAPI rather than the internal filter table,
+   * so it tests the surface the agent actually reads.
+   */
+  const queryParams = new Map<string, Set<string>>();
+  for (const service of SERVICES) {
+    const spec = renderOpenApi(service) as {
+      paths: Record<string, { get?: { parameters?: { name: string; in: string }[] } }>;
+    };
+    for (const [path, item] of Object.entries(spec.paths)) {
+      const names = new Set(
+        (item.get?.parameters ?? []).filter((q) => q.in === 'query').map((q) => q.name),
+      );
+      queryParams.set(path, names);
+    }
+  }
+
+  let checked = 0;
+  // Both registries: `Flight.assignments` — the only traversal that takes an
+  // argument today, and the one §3 was written about — lives on an ExtensionDef,
+  // not an EntityDef. A version of this test that iterated ENTITIES alone found
+  // zero arguments and passed, which is why the count is asserted at the end.
+  const sources: { label: string; refFields?: RefFieldLike[] }[] = [
+    ...ENTITIES.map((e) => ({ label: e.name, refFields: e.refFields as RefFieldLike[] })),
+    ...EXTENSIONS.map((e) => ({ label: e.type, refFields: e.refFields as RefFieldLike[] })),
+  ];
+  for (const entity of sources) {
+    for (const ref of entity.refFields ?? []) {
+      if (!ref.args) continue;
+      // `roles: [CrewRole!]` / `roles: [CrewRole!], limit: Int` -> arg names.
+      const argNames = ref.args.split(',').map((a) => a.split(':')[0]!.trim()).filter(Boolean);
+      const path = ref.restEquivalent.replace(/^\w+\s+/, '').split('?')[0]!;
+      const available = queryParams.get(path);
+      assert.ok(
+        available,
+        `${entity.label}.${ref.name}: restEquivalent names "${path}", which the ` +
+          `generated OpenAPI does not serve as a collection`,
+      );
+      for (const arg of argNames) {
+        assert.ok(
+          available.has(arg),
+          `${entity.label}.${ref.name} takes "${arg}" but REST's ${path} does not ` +
+            `offer it as a query parameter — GraphQL can narrow where REST cannot, ` +
+            `which is an information asymmetry and not a protocol result`,
+        );
+        checked += 1;
+      }
+    }
+  }
+  assert.ok(checked > 0, 'no traversal arguments found — this test stopped testing anything');
+});
+
+test('the batch entry point exists on both surfaces for every collection', () => {
+  // The cardinality axis is the study's largest effect, so REST must have a
+  // batch-by-ids parameter wherever GraphQL has a batch root field. Without this,
+  // "REST needs N calls" could be an artifact of a missing REST filter rather
+  // than of the protocol. `assignments` batches on flightIds, not ids, because
+  // an assignment is never fetched by its own id in any task.
+  const expected: Record<string, string> = {
+    flights: 'ids',
+    aircraft: 'ids',
+    crew: 'ids',
+    assignments: 'flightIds',
+  };
+  // The first version of this derived the collection with
+  // `path.replace(`/${API_VERSION}/`, '')`. API_VERSION is "2024-11-01" — a date,
+  // not the path prefix, which is REST_BASE_PATH — so nothing ever matched, every
+  // path was skipped, and the test passed while checking nothing. Deleting the
+  // `ids` filter left it green. Hence `seen`: a guard that can pass vacuously has
+  // to assert what it actually inspected. Third time this repo has hit that.
+  const seen = new Set<string>();
+  for (const service of SERVICES) {
+    const spec = renderOpenApi(service) as {
+      paths: Record<string, { get?: { parameters?: { name: string; in: string }[] } }>;
+    };
+    for (const [path, item] of Object.entries(spec.paths)) {
+      const collection = path.split('/').pop()!;
+      const want = expected[collection];
+      if (!want) continue;
+      seen.add(collection);
+      const names = new Set(
+        (item.get?.parameters ?? []).filter((q) => q.in === 'query').map((q) => q.name),
+      );
+      assert.ok(
+        names.has(want),
+        `REST ${path} has no "${want}" filter — REST's call count on the N-record ` +
+          `tasks would then be a missing-filter artifact, not a protocol finding`,
+      );
+    }
+  }
+  assert.deepEqual(
+    [...seen].sort(),
+    Object.keys(expected).sort(),
+    'a collection this test names was never reached — it is not checking what it claims',
   );
 });

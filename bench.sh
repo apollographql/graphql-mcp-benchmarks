@@ -419,7 +419,14 @@ do_parse() {
   local phase; phase=$(selected_phase) || return 1
   echo "== parse (phase $phase) =="
   RESULTS_DIR="$PROJECT_ROOT/results/phase$phase" \
-    python3 "$PROJECT_ROOT/parse_logs.py" "$PROJECT_ROOT/runs/phase$phase"
+    python3 "$PROJECT_ROOT/parse_logs.py" "$PROJECT_ROOT/runs/phase$phase" || return 1
+  # A regenerated report can leave a hand-written document quoting the old number,
+  # which is what happened to FINDINGS.md for a week (NOTES.md 71). Advisory, not
+  # fatal: a parse of one phase cannot satisfy figures the other phase owns.
+  python3 "$PROJECT_ROOT/doclint.py" || {
+    echo "NOTE: doclint above is advisory here — a single-phase parse cannot see the"
+    echo "      other phase's figures. Run both parses, then \`python3 doclint.py\`."
+  }
 }
 
 do_clean() {
