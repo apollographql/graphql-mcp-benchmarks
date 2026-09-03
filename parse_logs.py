@@ -77,6 +77,54 @@ COND_LABEL = {
     "M-G1": "GraphQL (search + describe + execute)",
     "M-G2": "GraphQL (frozen persisted operations)",
 }
+def cell_id(row) -> str:
+    """The report's grouping key: condition plus payload profile.
+
+    Every table in this report used to group on `condition` alone, which
+    **averaged the fat and lean payload brackets together** for M-R1 and M-R2. On
+    M-R1/M1@50 the two brackets differ by 3.13x, so the printed figure was the mean
+    of a naive REST surface and its steelman — a number matching no configuration
+    anyone can run, in the row a reader would quote as "what REST costs".
+
+    §4 has always described the matrix as **six condition cells** (`M-R1-fat`,
+    `M-R1-lean`, `M-R2-fat`, `M-R2-lean`, `M-G1`, `M-G2`) and the runner has always
+    written them to separate directories. Only the report folded them. §11's
+    "profile is a column, never part of the condition id" is about `meta.json` and
+    `CONDITIONS`, where the 2x2 must stay a 2x2 — it was never a licence to average
+    the bracket away.
+
+    Phase 1 rows carry no profile, so their cell id is the condition and nothing
+    about phase 1 changes.
+    """
+    prof = row.get("profile")
+    return f"{row['condition']}-{prof}" if prof else row["condition"]
+
+
+def cell_cond(cell: str) -> str:
+    """The condition a cell belongs to: `M-R1-fat` -> `M-R1`.
+
+    Matched against the known condition names longest-first rather than split on
+    "-", because the condition names contain hyphens themselves and splitting
+    yields `M`. Filters like `[c for c in conds if c in MCP_CONDS]` silently
+    dropped every cell until this existed — the exact failure `resolve_conditions`
+    was written to make loud.
+    """
+    for cond in sorted(COND_LABEL, key=len, reverse=True):
+        if cell == cond or cell.startswith(cond + "-"):
+            return cond
+    return cell
+
+
+def cell_label(cell: str) -> str:
+    """`M-R1-fat` -> `REST (one tool per endpoint), fat payloads`."""
+    for cond in sorted(COND_LABEL, key=len, reverse=True):
+        if cell == cond:
+            return COND_LABEL[cond]
+        if cell.startswith(cond + "-"):
+            return f"{COND_LABEL[cond]}, {cell[len(cond) + 1:]} payloads"
+    return cell
+
+
 COND_SHORT = {
     "A1": "A1\nREST (default)",
     "A2": "A2\nREST (minimal)",
@@ -236,7 +284,15 @@ def resolve_conditions(rows) -> tuple[int, list]:
             f"  RESULTS_DIR=results/phase2 python3 parse_logs.py runs/phase2\n"
         )
     phase = phases[0]
-    return phase, [c for c in PHASE_CONDS[phase] if c in seen]
+    # Cells, not conditions: a condition run at two payload profiles is two report
+    # rows. The cell -> condition map comes from the rows rather than from parsing
+    # the cell id, because the ids contain hyphens of their own (`M-R1-fat`) and
+    # string surgery on them is how you get `M` as a condition name.
+    origin = {r["cell"]: (r["condition"], r.get("profile") or "") for r in rows}
+    prof_order = {"fat": 0, "lean": 1, "": 2}
+    cells = sorted(origin, key=lambda k: (PHASE_CONDS[phase].index(origin[k][0]),
+                                          prof_order.get(origin[k][1], 3)))
+    return phase, cells
 
 
 # Anthropic pricing (USD per 1M tokens) by model prefix.
@@ -290,6 +346,22 @@ def _stage_costs(row: dict, model: str = "") -> dict:
 
 def _num(x):
     return x if isinstance(x, (int, float)) else 0
+
+
+def _http_errors(p: Path) -> int:
+    """Non-200 responses to task-model calls in one run's proxy log."""
+    if not p.exists():
+        return 0
+    n = 0
+    for line in p.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        st = r.get("status")
+        if r.get("is_messages") and st and st != 200:
+            n += 1
+    return n
 
 
 def parse_proxy_per_call(p: Path, task_model: str = "") -> list[dict]:
@@ -439,6 +511,13 @@ def collect():
                  if c["cache_creation_input_tokens"] > 0), 0
             ),
         }
+        row["cell"] = cell_id(row)
+        # HTTP status is not a token count, so no other metric would ever notice it.
+        # One matrix run took SEVEN consecutive 400s mid-task and Goose responded by
+        # silently restarting the conversation and redoing the work: the run's cost
+        # covers both attempts and its f1 was the worst of its three reps. Nothing in
+        # `goose_exit`, `stop_cause` or the token columns says so.
+        row["http_errors"] = _http_errors(run_dir / "proxy.jsonl")
         row["completed"] = row["stop_cause"] is None
         row["cost_usd"] = cost_usd(row, run_model)
         # Every tool call the model issued gets a result back, so a completed run
@@ -500,12 +579,12 @@ def fmt(mean, sd):
 
 
 def _mean_by(rows, cond, task, key):
-    sub = [r for r in rows if r["condition"] == cond and r["task_id"] == task]
+    sub = [r for r in rows if r["cell"] == cond and r["task_id"] == task]
     return statistics.mean(r[key] for r in sub) if sub else None
 
 
 def _mean_stage(rows, cond, task, stage_key) -> float | None:
-    sub = [r for r in rows if r["condition"] == cond and r["task_id"] == task]
+    sub = [r for r in rows if r["cell"] == cond and r["task_id"] == task]
     if not sub:
         return None
     model = sub[0]["model"]
@@ -535,7 +614,200 @@ def _ratio(hi: float, lo: float, suffix: str = "more") -> str:
     r = hi / lo
     if r < MATERIAL_RATIO:
         return "no material difference"
-    return f"{r:.1f}× {suffix}"
+    # An empty suffix means the caller has its own comparative wording around the
+    # number ("within 1.1x of", "payloads differ by 3.4x"). Appending the default
+    # "more" there produced "within 1.1x more of GraphQL".
+    return f"{r:.1f}×{' ' + suffix if suffix else ''}"
+
+
+def _accuracy_spread(graded) -> str:
+    """The one accuracy comparison worth naming, found rather than asserted.
+
+    This sentence used to hardcode "both GraphQL conditions reach 1.00 on M2@1
+    where both REST conditions sit at 0.83-0.89". True when written, and exactly
+    the kind of prose that outlives the number it describes — the failure that put
+    phase-1 illustrations into a phase-2 report. So the task with the widest
+    protocol gap is located in the data and named with whatever the data says.
+    """
+    by = {}
+    for r in graded:
+        by.setdefault(r["task_id"], {}).setdefault(cell_cond(r["cell"]), []).append(
+            r["answer_f1"])
+    best = None
+    for task, conds in by.items():
+        gql = [v for c, vs in conds.items() if c.startswith("M-G") for v in vs]
+        rest = [v for c, vs in conds.items() if c.startswith("M-R") for v in vs]
+        if not gql or not rest:
+            continue
+        gap = statistics.mean(gql) - statistics.mean(rest)
+        if best is None or gap > best[1]:
+            best = (task, gap, statistics.mean(gql), statistics.mean(rest))
+    perfect_cells = sum(1 for conds in by.values() for vs in conds.values()
+                        if all(v == 1.0 for v in vs))
+    total_cells = sum(len(conds) for conds in by.values())
+    if best is None:
+        return f"{perfect_cells} of {total_cells} condition/task cells are perfect."
+    task, _gap, g, rst = best
+    return (f"The widest protocol gap is **{task}: GraphQL {g:.2f} against REST {rst:.2f}** "
+            f"— and {perfect_cells} of {total_cells} condition/task cells are perfect "
+            f"outright, so most of the matrix shows no accuracy difference at all.")
+
+
+def _key_findings_phase2(rows, cells, tasks) -> list[str]:
+    """Phase 2's lede, computed — never asserted.
+
+    Deliberately absent until the matrix existed (§11). Every number below is
+    derived from `rows` at render time for the reason §11 gives twice: prose that
+    states a mechanism the data on the page does not show is the bug that put
+    "REST conditions (A1/A2)" and "~82 KB for 5 PRs" into a phase-2 report. If a
+    cell is missing, its bullet is skipped rather than guessed.
+
+    The framing is what the matrix actually separated, which is not the axis the
+    2x2 was designed around. Protocol turned out to be the wrong question:
+    GraphQL is both the cheapest and the most expensive condition here. What
+    predicts cost is two independent properties of the tool surface, and M1 and
+    M3 isolate them almost perfectly.
+    """
+    out = []
+    def ok(*cs) -> bool:
+        """Every cell a bullet needs is present, or the bullet is skipped."""
+        return all(c in cells for c in cs)
+
+    def pt(cell, task):
+        return _mean_by(rows, cell, task, "pass_through_tokens")
+
+    def unused(cell, task):
+        f = _mean_by(rows, cell, task, "pass_through_fraction")
+        return f * 100 if f is not None else None
+
+    def calls(cell, task):
+        return _mean_by(rows, cell, task, "proxy_n_tool_calls")
+
+    # 1. The frame: two taxes, and why M1 and M3 separate them.
+    if ok("M-R1-fat", "M-G2") and "M1@50" in tasks and "M3@50" in tasks:
+        c_r1, c_g2 = calls("M-R1-fat", "M1@50"), calls("M-G2", "M1@50")
+        if c_r1 and c_g2 and max(c_r1, c_g2) <= 2:
+            g1_pt, g2_pt = pt("M-G1", "M3@50"), pt("M-G2", "M3@50")
+            g1_c, g2_c = calls("M-G1", "M3@50"), calls("M-G2", "M3@50")
+            out.append(
+                f"**The protocol is not the variable — the tool surface is, in two separate "
+                f"ways, and two tasks isolate them.** On **M1@50 every condition makes about "
+                f"one data call** ({c_r1:.0f} for M-R1-fat, {c_g2:.0f} for M-G2), so call "
+                f"count is controlled and the whole spread there is **field selectivity**. "
+                f"The two GraphQL conditions then invert that on M3@50: their payloads differ "
+                f"by only {_ratio(g2_pt, g1_pt, '')} ({g1_pt:,.0f} against {g2_pt:,.0f} "
+                f"tokens) while their tool calls differ by "
+                f"{_ratio(g2_c, g1_c, '')} ({g1_c:.0f} against {g2_c:.0f}) — so that spread "
+                f"is **cardinality match**, whether the operation you have accepts the "
+                f"cardinality the question has. Two independent taxes; a condition can lose "
+                f"on either."
+            )
+
+    # 2. The selectivity tax, and the fact that ?fields= erases it.
+    if ok("M-R1-fat", "M-R1-lean", "M-G2") and "M1@50" in tasks:
+        fat, lean, g2 = pt("M-R1-fat", "M1@50"), pt("M-R1-lean", "M1@50"), pt("M-G2", "M1@50")
+        if fat and lean and g2:
+            out.append(
+                f"**Selectivity tax (M1@50, one call each): {fat:,.0f} pass-through tokens "
+                f"for fat REST against {g2:,.0f} for frozen GraphQL operations "
+                f"({_ratio(fat, g2, "")}), {unused('M-R1-fat', 'M1@50'):.0f}% of it never "
+                f"reaching the answer against {unused('M-G2', 'M1@50'):.0f}%.** This is the "
+                f"headline join-tax number and it is entirely about which fields come back, "
+                f"not about who joins. **`?fields=` erases it**: the same REST surface in "
+                f"the lean bracket carries {lean:,.0f} tokens, within "
+                f"{_ratio(lean, g2, '')} of GraphQL. On selectivity alone, REST with field "
+                f"selection is competitive — the gap is a default, not a protocol limit."
+            )
+
+    # 3. The cardinality tax — the finding that breaks the protocol framing.
+    if ok("M-G1", "M-G2", "M-R1-fat") and "M3@50" in tasks:
+        g1c, g2c, r1c = (calls("M-G1", "M3@50"), calls("M-G2", "M3@50"),
+                         calls("M-R1-fat", "M3@50"))
+        g1_usd, g2_usd, r1_usd = (_mean_by(rows, "M-G1", "M3@50", "cost_usd"),
+                                  _mean_by(rows, "M-G2", "M3@50", "cost_usd"),
+                                  _mean_by(rows, "M-R1-fat", "M3@50", "cost_usd"))
+        if all(v is not None for v in (g1c, g2c, r1c, g1_usd, g2_usd, r1_usd)):
+            out.append(
+                f"**Cardinality tax (M3@50): GraphQL is both the cheapest and the most "
+                f"expensive condition in the matrix.** M-G1 answered the whole 50-flight "
+                f"join in **one `graphql_execute`** ({g1c:.0f} tool calls in total, the "
+                f"rest schema discovery) for ${g1_usd:.3f}; M-G2 needed **{g2c:.0f}** calls, "
+                f"one pair per flight, for ${g2_usd:.3f} "
+                f"({_ratio(g2_usd, g1_usd, 'the cost')}); REST sat between them "
+                f"at {r1c:.0f} calls and ${r1_usd:.3f}. M-G2 has federation underneath and "
+                f"still loops, because none of its seven frozen operations accepts more "
+                f"than one flight — `FlightRoster(flightId)` is sized to a roster screen. "
+                f"**Entity-scoped operations reimpose the 1+N pattern federation exists to "
+                f"remove.** DataLoader cannot help: each call is an honest single-flight "
+                f"query from its own agent turn, so the fan-out has moved above the layer "
+                f"where resolver batching reaches."
+            )
+
+    # 4. Same surface, opposite result — the cardinality point, controlled.
+    if ok("M-G2") and "M1@50" in tasks and "M3@50" in tasks:
+        a, b = calls("M-G2", "M1@50"), calls("M-G2", "M3@50")
+        if a and b and b > a:
+            out.append(
+                f"**The clean control: M-G2 is the best condition on M1@50 and the worst on "
+                f"M3@50, with no change to the surface.** {a:.0f} call there, {b:.0f} here. "
+                f"`FlightSchedule(flightNumbers: [String!]!)` takes a list; "
+                f"`FlightRoster(flightId: ID!)` takes one id. Same protocol, same server, "
+                f"same seven tools — the only difference is whether the operation that fits "
+                f"the question happens to accept the question's cardinality. That is the "
+                f"actionable finding: **\"adopt GraphQL\" is not the advice — expose an "
+                f"operation shaped like the question, or expose the query language.**"
+            )
+
+    # 5. A capability the client never uses is not a defence.
+    if ok("M-R1-fat", "M-R1-lean") and "M4@50" in tasks:
+        fat, lean = pt("M-R1-fat", "M4@50"), pt("M-R1-lean", "M4@50")
+        if fat and lean and abs(fat - lean) / max(fat, lean) < 0.02:
+            out.append(
+                f"**REST's steelman is real and unreliable in the same breath.** `-lean` cut "
+                f"M1@20 pass-through by "
+                f"{_ratio(pt('M-R1-fat', 'M1@20'), pt('M-R1-lean', 'M1@20'), '')} "
+                f"— and on M4@50 it changed **nothing**: {fat:,.0f} tokens fat against "
+                f"{lean:,.0f} lean, because the agent never sent `?fields=`. The optimisation "
+                f"was available, documented in the tool schema, and unused. A protocol "
+                f"capability the client does not exercise is not a defence of the protocol."
+            )
+
+    # 6. Where the difference is NOT.
+    graded = [r for r in rows if r.get("answer_f1") is not None and not r.get("stop_cause")]
+    if graded:
+        perfect = sum(1 for r in graded if r["answer_f1"] == 1.0)
+        verified = sum(1 for r in graded if r.get("answer_grounded") is True)
+        out.append(
+            f"**Accuracy is not where the difference lives.** {perfect} of {len(graded)} "
+            f"graded runs scored a perfect f1 and all {verified} were fact-verified against the "
+            f"tool results that entered context, with "
+            f"**{sum(1 for r in graded if r.get('answer_grounded') is False)} fabricated**. "
+            + _accuracy_spread(graded)
+            + " The agents get the answer either way. What differs is what it costs to get "
+              "it, which is why this report leads with payload and calls rather than "
+              "correctness."
+        )
+
+    # 7. The disclosure that has to travel with the cost column.
+    multi = [r for r in rows if (r.get("proxy_n_inference_calls") or 0) >= 4]
+    blind = [r for r in multi if (r.get("proxy_cache_read_input_tokens") or 0) == 0
+             and (r.get("proxy_cache_creation_input_tokens") or 0) > 0]
+    if blind:
+        wrote = sum(r["proxy_cache_creation_input_tokens"] for r in blind)
+        read_any = [r for r in rows if (r.get("proxy_cache_read_input_tokens") or 0) > 0]
+        out.append(
+            f"**Read the dollar column with this caveat.** Prompt caching never hit once in "
+            f"this matrix: **{len(read_any)} of {len(rows)} runs read a single cached "
+            f"token**, while {len(blind)} of {len(multi)} multi-call runs wrote "
+            f"{wrote:,} of them. (The {len(multi) - len(blind)} multi-call runs not counted "
+            f"there wrote nothing either — too small to cache — so this is not a subset "
+            f"that hit.) Writes cost 1.25x and reads 0.1x, so the inflation "
+            f"scales with **call count** — which penalises exactly the many-call conditions, "
+            f"in the direction the hypothesis predicts. **The call counts and token ratios "
+            f"above are cache-independent and hold; the dollar magnitudes are inflated and "
+            f"their direction is all that should be quoted.** `NOTES.md` 51."
+        )
+    return out
 
 
 def _key_findings(rows, conds, tasks) -> list[str]:
@@ -689,9 +961,9 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
            "| Condition | " + " | ".join(f"{t}" for t in tasks) + " |",
            "|" + "---|" * (len(tasks) + 1)]
     for c in conds:
-        cells = [f"**{c}** — {COND_LABEL[c]}"]
+        cells = [f"**{c}** — {cell_label(c)}"]
         for t in tasks:
-            sub = [r for r in have if r["condition"] == c and r["task_id"] == t]
+            sub = [r for r in have if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 cells.append("—")
                 continue
@@ -725,7 +997,7 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
         out.append("| Condition | Task | Rep | tool calls | results recorded | note |")
         out.append("|---|---|---|---|---|---|")
         for r in sorted(lossy, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
-            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+            out.append(f"| {r['cell']} | {r['task_id']} | {r['rep']} | "
                        f"{r['proxy_n_tool_calls']} | {r['tool_results_recorded']} | "
                        f"{r['payload_note']} |")
     if unknown:
@@ -776,9 +1048,9 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
     out.append("| Condition | " + " | ".join(f"{t} f1" for t in tasks) + " |")
     out.append("|" + "---|" * (len(tasks) + 1))
     for c in conds:
-        cells = [f"**{c}** — {COND_LABEL[c]}"]
+        cells = [f"**{c}** — {cell_label(c)}"]
         for t in tasks:
-            sub = [r for r in scorable if r["condition"] == c and r["task_id"] == t]
+            sub = [r for r in scorable if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 cells.append("—")
                 continue
@@ -802,7 +1074,7 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
                    "would-be f1 |")
         out.append("|---|---|---|---|---|---|---|")
         for r in sorted(capped, key=lambda r: (r["condition"], task_n(r["task_id"]), r["rep"])):
-            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+            out.append(f"| {r['cell']} | {r['task_id']} | {r['rep']} | "
                        f"**{r['stop_cause']}** | {r.get('proxy_n_inference_calls', '?')} | "
                        f"{r.get('proxy_n_tool_calls', '?')} | {r['answer_f1']:.2f} |")
 
@@ -814,7 +1086,7 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
         out.append("| Condition | Task | Rep | would-be f1 | facts stated | why |")
         out.append("|---|---|---|---|---|---|")
         for r in sorted(fabricated, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
-            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+            out.append(f"| {r['cell']} | {r['task_id']} | {r['rep']} | "
                        f"{r['answer_f1']:.2f} | {r.get('grounded_facts', 0)} | "
                        f"{r['grade_notes'].split(' | ')[0]} |")
 
@@ -826,7 +1098,7 @@ def _accuracy_section(rows, conds, tasks) -> list[str]:
         out.append("| Condition | Task | Rep | f1 | note |")
         out.append("|---|---|---|---|---|")
         for r in sorted(review, key=lambda r: (r["condition"], r["task_id"], r["rep"])):
-            out.append(f"| {r['condition']} | {r['task_id']} | {r['rep']} | "
+            out.append(f"| {r['cell']} | {r['task_id']} | {r['rep']} | "
                        f"{r['answer_f1']:.2f} | {r['grade_notes'][:160]} |")
 
     verified = [r for r in scorable if r.get("answer_grounded") is True]
@@ -973,10 +1245,10 @@ def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
         "| Total |",
         "|---|---|---|---|---|---|",
     ]
-    mcp = [c for c in conds if c in MCP_CONDS]
+    mcp = [c for c in conds if cell_cond(c) in MCP_CONDS]
     for c in mcp:
         for t in sort_tasks(tasks):
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 continue
             model = sub[0]["model"]
@@ -986,7 +1258,7 @@ def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
             s3    = statistics.mean(s["inference"] for s in stages)
             total = statistics.mean(r["cost_usd"]  for r in sub)
             lines.append(
-                f"| **{c}** — {COND_LABEL[c]} | {t} "
+                f"| **{c}** — {cell_label(c)} | {t} "
                 f"| ${s1:.4f} | ${s2:.4f} | ${s3:.4f} | **${total:.4f}** |"
             )
     lines.append(
@@ -1009,7 +1281,7 @@ def _write_charts(rows, conds, tasks):
               "Run `pip install matplotlib` or `uv pip install matplotlib` to enable.")
         return
 
-    mcp = [c for c in conds if c in MCP_CONDS]
+    mcp = [c for c in conds if cell_cond(c) in MCP_CONDS]
     model = rows[0]["model"] if rows else PRIMARY_MODEL
     tasks_sorted = sort_tasks(tasks)
 
@@ -1026,13 +1298,13 @@ def _write_charts(rows, conds, tasks):
         axes = [axes]
 
     x = list(range(len(mcp)))
-    x_labels = [COND_SHORT.get(c, c) for c in mcp]
+    x_labels = [COND_SHORT.get(c, c.replace("-", "\n")) for c in mcp]
 
     # Compute a single global cost ceiling so both cost charts share the same y-axis.
     global_cost_max = 0.0
     for task in tasks_sorted:
         for c in mcp:
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == task]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == task]
             if sub:
                 stgs = [_stage_costs(r, model) for r in sub]
                 total = statistics.mean(s["schema"] + s["context"] + s["inference"] for s in stgs)
@@ -1043,7 +1315,7 @@ def _write_charts(rows, conds, tasks):
         ax = axes[i]
         s1_vals, s2_vals, s3_vals = [], [], []
         for c in mcp:
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == task]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == task]
             if sub:
                 stgs = [_stage_costs(r, model) for r in sub]
                 s1_vals.append(statistics.mean(s["schema"]    for s in stgs))
@@ -1090,12 +1362,12 @@ def _write_charts(rows, conds, tasks):
         offsets = [xi - group_w / 2 + bar_w * (ti + 0.5) for xi in x]
         vals = []
         for c in mcp:
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == task]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == task]
             vals.append(
                 statistics.mean(r["proxy_tool_result_tokens"] for r in sub) if sub else 0
             )
         all_token_series.append((offsets, vals, task, ti))
-        max_token_val = max(max_token_val, max(v for v in vals if v > 0), 1)
+        max_token_val = max(max_token_val, max([v for v in vals if v > 0] or [1]), 1)
 
     for offsets, vals, task, ti in all_token_series:
         ax.bar(offsets, vals, width=bar_w * 0.9,
@@ -1141,7 +1413,8 @@ def write_summary(rows):
     lines = [title]
 
     # --- Key Findings lede ---
-    findings = _key_findings(rows, conds, tasks)
+    findings = (_key_findings_phase2(rows, conds, tasks) if phase == 2
+                else _key_findings(rows, conds, tasks))
     if findings:
         lines.append("## Key Findings\n")
         for b in findings:
@@ -1159,17 +1432,17 @@ def write_summary(rows):
                "| Condition | " + " | ".join(lbl for _, lbl in METRICS) + " |",
                "|" + "---|" * (len(METRICS) + 1)]
         for c in condset:
-            sub = [r for r in rows if r["task_id"] == task_id and r["condition"] == c]
+            sub = [r for r in rows if r["task_id"] == task_id and r["cell"] == c]
             if not sub:
                 continue
-            cells = [f"**{c}** — {COND_LABEL[c]}"]
+            cells = [f"**{c}** — {cell_label(c)}"]
             for k, _ in METRICS:
                 cells.append(fmt(*agg_stats(r[f"proxy_{k}"] for r in sub)))
             out.append("| " + " | ".join(cells) + " |")
         return out
 
     # --- MCP conditions ---
-    mcp = [c for c in conds if c in MCP_CONDS]
+    mcp = [c for c in conds if cell_cond(c) in MCP_CONDS]
     lines.append(f"\n## MCP conditions ({' / '.join(mcp)})\n")
     for t in tasks:
         lines += task_table(t, mcp, f"Task {t}")
@@ -1186,7 +1459,7 @@ def write_summary(rows):
             d = per_rep.setdefault(r["rep"], {k: 0 for k, _ in METRICS})
             for k, _ in METRICS:
                 d[k] += r[f"proxy_{k}"]
-        cells = [f"**{c}** — {COND_LABEL[c]}"]
+        cells = [f"**{c}** — {cell_label(c)}"]
         for k, _ in METRICS:
             cells.append(fmt(*agg_stats(d[k] for d in per_rep.values())))
         lines.append("| " + " | ".join(cells) + " |")
@@ -1221,14 +1494,14 @@ def write_summary(rows):
     grand_total = 0.0
     for c in mcp:
         for t in tasks:
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 continue
             run_costs = [r["cost_usd"] for r in sub]
             mean_cost = statistics.mean(run_costs)
             total_cost = sum(run_costs)
             grand_total += total_cost
-            lines.append(f"| **{c}** — {COND_LABEL[c]} | {t} | {len(sub)} | "
+            lines.append(f"| **{c}** — {cell_label(c)} | {t} | {len(sub)} | "
                          f"${mean_cost:.4f} | ${total_cost:.4f} |")
     lines.append(f"\n**Grand total across all conditions/tasks/reps: ${grand_total:.4f}**\n")
 
@@ -1242,12 +1515,12 @@ def write_summary(rows):
     lines.append("|---|---|---|---|")
     for c in mcp:
         for t in tasks:
-            sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+            sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 continue
             w_m, w_sd = agg_stats(r["duration_s"] for r in sub if r["duration_s"] is not None)
             a_m, a_sd = agg_stats(r["agent_active_s"] for r in sub)
-            lines.append(f"| **{c}** — {COND_LABEL[c]} | {t} | "
+            lines.append(f"| **{c}** — {cell_label(c)} | {t} | "
                          f"{fmt(w_m, w_sd)}s | {fmt(a_m, a_sd)}s |")
 
     # --- audit / per-run disclosure ---
@@ -1306,7 +1579,7 @@ def write_summary(rows):
         w.writerow(head)
         for c in conds:
             for t in tasks:
-                sub = [r for r in rows if r["condition"] == c and r["task_id"] == t]
+                sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
                 if not sub:
                     continue
                 row = [c, sub[0].get("profile") or "", t, task_n(t) if task_n(t) is not None else "",
@@ -1322,11 +1595,21 @@ def write_summary(rows):
     if incomplete:
         by_cause = {}
         for r in incomplete:
-            by_cause.setdefault(r["stop_cause"], []).append(f"{r['condition']}/{r['task_id']}")
+            by_cause.setdefault(r["stop_cause"], []).append(f"{r['cell']}/{r['task_id']}")
         for cause, cells in sorted(by_cause.items()):
             print(f"WARNING: {len(cells)} run(s) stopped by {cause} — excluded from the "
                   f"accuracy means, since a stopped run was never asked for its answer. "
                   f"Affected: {', '.join(sorted(set(cells)))}")
+
+    errored = [r for r in rows if r.get("http_errors")]
+    if errored:
+        total = sum(r["http_errors"] for r in errored)
+        where = ", ".join(f"{r['cell']}/{r['task_id']}/rep{r['rep']} ({r['http_errors']})"
+                          for r in errored)
+        print(f"WARNING: {total} non-200 API response(s) across {len(errored)} run(s). "
+              f"Goose retries by restarting the conversation, so an affected run pays for "
+              f"the work twice and may answer from a truncated second attempt — its cost is "
+              f"real but not comparable, and its accuracy is suspect. Affected: {where}")
 
     # A cache that never hits is a cost artifact, not a protocol result. Anthropic
     # charges a cache WRITE at 1.25x and a read at 0.1x, so a client whose prefix
@@ -1343,14 +1626,16 @@ def write_summary(rows):
         print(f"WARNING: {len(blind)} of {len(multi)} multi-call run(s) read 0 cached tokens "
               f"while writing {wrote:,} — the prompt prefix is not matching between calls. "
               f"Cache writes cost 1.25x and reads 0.1x, so this inflates cost per call, and "
-              f"it inflates the many-call conditions most. Check `sys_sha`/`tools_sha`/"
-              f"`msg0_sha` in proxy.jsonl to see which part of the prefix moves.")
+              f"it inflates the many-call conditions most. `sys_sha`/`tools_sha`/`msg0_sha` "
+              f"in proxy.jsonl were checked and are stable, so look at `bp_at`: cache "
+              f"breakpoints that slide off the stable head ask about boundaries no earlier "
+              f"call wrote. NOTES.md 51.")
     lossy = [r for r in rows if r.get("payload_complete") is False]
     if lossy:
         print(f"WARNING: {len(lossy)} run(s) recorded fewer tool results than tool calls. "
               f"Tool-payload and pass-through figures are a LOWER BOUND for those runs and "
               f"are excluded from the join-tax means. Affected: "
-              f"{', '.join(sorted({r['condition'] + '/' + r['task_id'] for r in lossy}))}")
+              f"{', '.join(sorted({r['cell'] + '/' + r['task_id'] for r in lossy}))}")
 
     # Charts (optional — skips gracefully if matplotlib absent)
     _write_charts(rows, conds, tasks)

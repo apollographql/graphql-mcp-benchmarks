@@ -116,6 +116,13 @@ tasks:
   - id: M4
     phase: 2
     ns: [20, 50, 103]
+    # N=103 has ground truth and stays runnable by exact id (`TASKS=M4@103`), but
+    # is out of the default matrix on cost. REST needs ~104 calls there, which
+    # takes a turn cap high enough that the cell dominates the bill, and the smoke
+    # run showed the cap — not the context window — is what binds. Two points on
+    # the REST arm (20, 50) show the scaling; the third only prices it.
+    # See PHASE2_PLAN.md STATUS and NOTES.md 50.
+    off_matrix: [103]
     title: Which of N departures have an aircraft with an open grounding advisory
     prompt: |
       Consider the first {{n}} flights the API returns for departures from

@@ -127,6 +127,42 @@ async def _get_client() -> httpx.AsyncClient:
     return _client
 
 
+def _breakpoint_positions(parsed: dict) -> list:
+    """WHERE the cache_control markers sit, not just how many.
+
+    The count alone was not enough. Live runs show `sys_sha`, `tools_sha` and
+    `msg0_sha` holding steady from call 3 onward while reads stay at zero and each
+    call rewrites the whole prefix — so the cached content is stable and the cause
+    has to be the boundaries. A read can only hit at a boundary some earlier
+    request also wrote, so four markers that slide forward with the tail ask about
+    four positions that have never existed before, every single call.
+
+    `"system"` / `"tools"` mean a marker on the stable head; an integer is a
+    message index. If the head positions vanish once the count saturates at 4
+    (Anthropic's maximum), the client is evicting its own cacheable prefix to mark
+    the tail, which explains a zero read rate completely.
+    """
+    at = []
+    def marked(obj) -> bool:
+        return isinstance(obj, dict) and "cache_control" in obj
+
+    for field in ("system", "tools"):
+        val = parsed.get(field)
+        if marked(val):
+            at.append(field)
+        elif isinstance(val, list) and any(marked(b) for b in val):
+            at.append(field)
+
+    for i, msg in enumerate(parsed.get("messages") or []):
+        if marked(msg):
+            at.append(i)
+            continue
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if isinstance(content, list) and any(marked(b) for b in content):
+            at.append(i)
+    return at
+
+
 def _prefix_fingerprint(body: bytes) -> dict:
     """Why prompt caching is or is not hitting — the cheapest possible answer.
 
@@ -173,6 +209,7 @@ def _prefix_fingerprint(body: bytes) -> dict:
         "tools_sha": sha(strip_cc(tools)),
         "n_tools": len(tools),
         "cache_breakpoints": bp,
+        "bp_at": _breakpoint_positions(parsed),
     }
     # The first message too: if the system prompt is stable but message[0] is not,
     # the client is rewriting the transcript head — which it already does on

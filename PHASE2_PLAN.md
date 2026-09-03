@@ -12,63 +12,70 @@ surface size) into knobs we control.
 
 ## STATUS — read this first
 
-**Steps 1–7 items 1–4 are complete, and the first smoke runs are in and clean** (2026-09-02).
-The backend, both generated surfaces, the federated router, `docker compose`, all four MCP tool
-surfaces, the four tasks with computed ground truth, the runner, the four recipes, the grader,
-and the report all exist and are verified. Verified numbers: §5.1 (all eleven cells) and §8.1
-(the four tool surfaces, pinned in `capture/expected-tool-surfaces.json`).
+**Steps 1–7 are complete.** The backend, both generated surfaces, the federated router,
+`docker compose`, all four MCP tool surfaces, the four tasks with computed ground truth, the
+runner, the four recipes, the grader, and the report all exist and are verified. Verified
+numbers: §5.1 (all eleven cells) and §8.1 (the four tool surfaces, pinned in
+`capture/expected-tool-surfaces.json`).
 
-**The M4@103 run is done and it answered a different question than the one asked.** The
-**turn cap fired first**: `.env` sets `MAX_TURNS=25` (not the repo default of 50, which this
-block wrongly claimed), and REST at N=103 needs ~104 calls. It stopped at 26 inference calls
-/ 56 tool calls with 14,485 tokens of payload — nowhere near a context limit. Goose printed
-"I've reached the maximum number of actions" and **exited 0**. Details in `NOTES.md` 50.
+**The matrix is in: 181 runs, all four conditions, both payload brackets** (2026-09-02).
+`MAX_TURNS=60` held — no run hit the cap. **180 of 180 finished runs are fact-verified with 0
+fabricated.** The one capped run in the tree is the earlier off-matrix M4@103 at the old cap of
+25, listed separately and excluded from every mean.
 
-**NEXT: two blocking decisions, both about cost, before any matrix run.**
+**Three more measurement bugs surfaced in the results, all now fixed** — see `NOTES.md` 54-56.
+The first is the one that mattered: **every table averaged the fat and lean payload brackets
+together**, so `M-R1` was the mean of a naive REST surface and its own steelman. On M1@50 those
+differ by 3.13x and the report printed neither. Every table now keys on `cell` (condition +
+profile), six rows for phase 2. The second: **every M3 cell scored recall 0.5 on answers that
+were exactly correct**, because the grader read a pilot's "✓ Current" instead of the flight's
+`Result: NO` — it mis-read the very shape M3's prompt asks for. Fixed and verified against all
+54 real M3 answers (mean f1 0.773 → 0.950), not against fixtures. The third: **one run took 7
+API 400s and Goose silently restarted the task**, paying for the work twice with nothing in
+`goose_exit` or `stop_cause` to say so; non-200s are now counted and warned.
 
-**(1) The turn cap.** M4@50 and M4@103 on the REST arm cannot complete at 25 turns. A capped
-cell is not a cheap cell — it is a missing one that renders as a low f1. Raising the cap to
-~120 makes those cells real, and REST at N=103 then costs far more than the $0.51 the capped
-run cost, because cost grows with the square of turn count while the cache never hits (below).
-The alternatives are to raise the cap, to drop N=103 from the REST arm and report it as
-untested, or to cap deliberately and report *turns-to-completion* as the finding rather than
-accuracy. The report no longer permits the accidental fourth option: capped runs are excluded
-from the accuracy means and listed separately.
+**The findings are written.** `_key_findings_phase2()` renders the lede in
+`results/phase2/summary.md`, computing every number from the rows at render time rather than
+restating one — §11 twice records prose outliving the number it described, and the first draft
+of this section reproduced it (an asserted "payloads within a factor of three" that was true
+only of the GraphQL pair, and a hardcoded M2@1 accuracy comparison now located in the data by
+`_accuracy_spread`).
 
-**(2) Prompt caching has never hit, in any run, on either arm** — `cache_read_input_tokens`
-is 0 for all 8 runs while writes total 513,423 tokens. This is not a short-run artifact:
-M-G1/M1@5 wrote a growing prefix on seven consecutive calls and read back nothing each time.
-It inflates cost per call, so it inflates the many-call REST arm most — the direction the
-thesis predicts. Any cost ratio measured under it is partly a measurement of Goose. The proxy
-forwards bodies byte-for-byte, so the moving part is in what the client sends ahead of the
-cache breakpoint; `_prefix_fingerprint` now logs `sys_sha` / `tools_sha` / `msg0_sha` on every
-request, and the next run of any size names it. `NOTES.md` 51.
+**The frame the matrix actually supports is not the 2x2 it was designed around.** Protocol
+turned out to be the wrong question — GraphQL is both the cheapest and the most expensive
+condition here. Two independent properties of the tool surface predict cost, and M1 and M3
+isolate them almost perfectly:
 
-The cheapest way to answer (2) is a rerun of a cell that already exists, which also confirms
-the two report fixes on live data:
+- **The selectivity tax.** On M1@50 *every* condition makes one data call, so call count is
+  controlled and the whole spread is which fields come back: 36,598 pass-through tokens for
+  fat REST (92% never used) against M-G2's 2,352 (50%) — 15.6x. **`?fields=` erases it**: the
+  same REST surface in the lean bracket carries 2,652, within 1.1x of GraphQL. On selectivity
+  alone REST is competitive, and the gap is a default rather than a protocol limit.
+- **The cardinality tax.** On M3@50 the two GraphQL conditions differ in payload by only 3.4x
+  and in tool calls by 14.3x: M-G1 did the whole 50-flight join in **one `graphql_execute`**
+  ($0.079); M-G2 needed **100 calls**, one pair per flight ($2.803); REST sat between at 4
+  calls ($0.550). M-G2 has federation underneath and still loops, because none of its seven
+  frozen operations accepts more than one flight. **Entity-scoped operations reimpose the 1+N
+  pattern federation exists to remove**, and DataLoader cannot reach it — each call is an
+  honest single-flight query from its own agent turn (`NOTES.md` 57).
+- **The clean control for that.** M-G2 is the *best* condition on M1@50 and the *worst* on
+  M3@50 with no change to the surface: `FlightSchedule(flightNumbers: [String!]!)` takes a
+  list, `FlightRoster(flightId: ID!)` takes one id. Same protocol, same server, same seven
+  tools. So the advice is not "adopt GraphQL" — it is **expose an operation shaped like the
+  question, or expose the query language.**
+- **A capability the client never uses is not a defence.** `-lean` cut M1@20 pass-through 13.2x
+  and changed M4@50 by 66 tokens out of 46,665, because the agent never sent `?fields=` there.
+- **Accuracy is not where the difference lives.** 137 of 180 graded runs are perfect, 28 of 40
+  condition/task cells perfect outright, 0 fabricated. Widest protocol gap: M2@1, GraphQL 1.00
+  against REST 0.85. The agents get the answer either way; what differs is the cost.
+- **Depth separates cleanly.** REST runs at data depth 2.0-2.7 on M2/M3/M4; GraphQL at 1.0
+  everywhere except M-G2 on M4. `discovery_depth` is reported beside it and never folded in.
 
-```bash
-docker compose up -d --wait && cd services && pnpm health && cd ..
-CONDITIONS=M-G1 TASKS=M1@5 REPS=1 MODEL=claude-haiku-4-5-20251001 ./bench.sh run
-CONDITIONS=M-G1 ./bench.sh parse
-python3 - <<'PY'
-import json
-keys = ("call", "sys_sha", "tools_sha", "msg0_sha", "cache_breakpoints",
-        "cache_read_input_tokens", "cache_creation_input_tokens")
-for line in open("runs/phase2/M-G1/M1@5/rep1/proxy.jsonl"):
-    r = json.loads(line)
-    if r.get("is_messages"):
-        print({k: r.get(k) for k in keys})
-PY
-```
-
-~$0.04, 8 calls. It overwrites `M-G1/M1@5/rep1`; rep2 and rep3 are untouched, and the new
-rep1 is strictly richer than the one it replaces, so nothing is lost. The hashes settle it:
-a `sys_sha` that changes every call means the client injects a clock or session id ahead of
-everything cacheable, and the fix is a Goose setting or a published caveat, not a harness
-change. A stable `sys_sha` and `tools_sha` with a moving `msg0_sha` means Goose rewrites the
-transcript head, which is surprise 42's mechanism showing up in a second metric. **The 127k-token tool-result question
-(`NOTES.md` expectation 8) remains open** and is unreachable until (1) is decided.
+Two disclosures the writeup must carry, both harness properties rather than results:
+**prompt caching never hit once in 181 runs** (§ below, `NOTES.md` 51), which inflates cost per
+call and therefore inflates the many-call REST arm most — so the plan is to publish cost twice,
+as measured and as a cache-respecting client would pay; and **phase 1's `tool-payload tok`
+column understates REST by roughly 10x** and is not recoverable (`NOTES.md` 42).
 
 ### What the smoke runs established, and what they cost
 
@@ -137,9 +144,11 @@ the low end of its own sweep (step 7); plus the four measurement bugs above. §5
 with the guard that now catches it. **Expect more**; the pattern is a question that reads one
 way to the grader and another to the agent, with nothing erroring to say so.
 
-Matrix size and cost are in §4 under "Matrix size": **198 runs** (6 condition cells × 11 task
-instances × 3 reps), ~$10–20 on haiku, with the context window rather than cost as the binding
-constraint — the largest measured tool result is 446 KB, ~127k tokens.
+Matrix size and cost are in §4 under "Matrix size": **180 runs** (6 condition cells × 10 task
+instances × 3 reps), ~$10–20 on haiku. The binding constraint turned out to be neither cost
+nor the context window but **the turn cap** — see STATUS and `NOTES.md` 50. That is why the
+eleventh cell, M4@103, is `off_matrix`: at ~104 REST calls it needs a cap high enough to
+dominate the bill, and it prices the scaling curve rather than showing it.
 
 `tasks/expected.json` is authoritative for which cells exist. Regenerate it with
 `pnpm expected` after any fixture change; `pnpm test` fails if the committed copy has drifted.
@@ -586,13 +595,25 @@ Commit the M-G2 operation set in a dated file so the ordering is auditable.
 ### Matrix size
 
 Six condition cells (`M-R1-fat`, `M-R1-lean`, `M-R2-fat`, `M-R2-lean`, `M-G1`, `M-G2`) ×
-**eleven task instances** × 3 reps = **198 runs**, against phase 1's 24.
+**ten task instances** × 3 reps = **180 runs**, against phase 1's 24.
 
-The eleven are M1 at N ∈ {1,5,20,50}, M2 at N=1, M3 at N ∈ {5,20,50}, M4 at N ∈ {20,50,103}
-— the keys of `tasks/expected.json`, which is authoritative. **M3 does not run at N=1**: at
+`tasks/expected.json` defines eleven cells and is authoritative for ground truth, but
+**M4@103 is `off_matrix`** — see below. The ten that run are M1 at N ∈ {1,5,20,50}, M2 at
+N=1, M3 at N ∈ {5,20,50}, M4 at N ∈ {20,50}. **M3 does not run at N=1**: at
 one flight it is M2 asked a different way about the same flight, and the duplicate-cell guard
 in §7 rejects it. M2 *is* the N=1 point of M3's slope. That is 18 runs saved on a cell that
 would have measured nothing new.
+
+**M4@103 is `off_matrix`, not deleted.** The distinction matters. Its ground truth is computed
+and checked like every other cell, its fixtures are covered by the manifest, and
+`TASKS=M4@103` still runs it — but the default plan skips it, and `TASKS=M4` will not pull it
+back in, because `TASKS=M4` is what someone types when they want the M4 sweep and quietly
+re-adding the expensive cell would spend exactly the money the exclusion saves. Deleting the
+cell instead would throw away computed ground truth and make it look as though N=103 was never
+designed, when in fact it was measured, priced, and set aside: at ~104 REST calls it needs a
+turn cap high enough that the cell dominates the bill, and N ∈ {20,50} already gives the REST
+arm two points of scaling. The third point prices the curve rather than showing it. `NOTES.md`
+50 has the run that established this.
 
 **Cost is not the constraint.** Phase 1 ran 24 runs for $1.27 total on `claude-haiku-4-5`
 ($0.053/run); phase 2 is roughly $10–20, dominated by the fat REST cells at high N. The
@@ -759,9 +780,11 @@ REST figures come from the same projection functions the live REST server calls,
 byte-for-byte on every call. Request counts and dependency depth follow from the ownership
 rules in §3.
 
-**Every cell the matrix runs, and only those** — the eleven task ids in
-`tasks/expected.json`, driven from the one sweep definition in
-`src/tools/ground-truth.ts` so the table cannot describe cells that do not exist.
+**Every cell with ground truth** — the eleven task ids in `tasks/expected.json`, driven from
+the one sweep definition in `src/tools/ground-truth.ts` so the table cannot describe cells
+that do not exist. All eleven are here, including `off_matrix` M4@103: it has real ground
+truth and stays runnable by exact id, and dropping its row would hide the very cell whose cost
+drove it off the matrix.
 
 | Task | GraphQL | REST reqs | `-fat` | `-lean` | serial depth | backend fan-out |
 |---|---|---|---|---|---|---|
@@ -1334,7 +1357,7 @@ not. When it moves, the cost moves, the ratio moves, and the report still render
       names its own fields and running them twice would buy 66 identical runs. The profile
       goes in the run **directory** (`runs/M-R1-fat/…`) so the two passes cannot overwrite
       each other, and stays a separate `meta.json` field so §11 can keep it a column. A dry
-      run plans 132 + 66 = **198**, matching §4.
+      run plans 120 + 60 = **180**, matching §4.
 
       `services_up()` delegates to `pnpm health` rather than reimplementing seven probes in
       Python — that script already proves the router can reach its subgraphs with a real
@@ -1429,7 +1452,13 @@ not. When it moves, the cost moves, the ratio moves, and the report still render
       blocking decisions came out of it — the cap, and never-hitting prompt caching — both in
       STATUS, both requiring a cost call before the matrix. `NOTES.md` 50 and 51.
 
-   7. **The matrix.** Two passes, `PAYLOAD_PROFILE=fat` then `=lean`, 198 runs total.
+   7. **The matrix.** Two passes, `PAYLOAD_PROFILE=fat` then `=lean`, 180 runs total.
+
+      **Done** (2026-09-02), 181 runs in the tree counting the off-matrix M4@103. No run hit
+      the raised cap of 60; 180 of 180 finished runs fact-verified, 0 fabricated. The results
+      exposed three more measurement bugs — profile folding, M3 verdict parsing, and silent
+      API 400s — all fixed, all in `NOTES.md` 54-56. What remains is interpretation, not
+      measurement: see STATUS.
 
 ---
 

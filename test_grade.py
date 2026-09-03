@@ -170,6 +170,46 @@ check("an explicit 'not current' reads as no",
 check("a line with no verdict reads as unparsed",
       grade._yes_no("FL-0003: A359, two pilots assigned"), None)
 
+# The verdict, not the evidence for it. Every shape below was taken from a real
+# answer in the 180-run matrix — the first one cost every M3 cell in the report
+# recall 0.5 on answers that were exactly correct, because `_YES` matches
+# "current", `_yes_no` takes the FIRST marker, and M3's prompt ASKS for per-pilot
+# currency detail. Inventing these shapes is what let the bug survive the first
+# 63 assertions; these are transcribed, not imagined.
+narrated = (
+    "**FL-0004** (Aircraft: B739)\n"
+    "- Captain Morgan Gallego: B739 rating expires 2026-12-08 \u2713 Current\n"
+    "- First Officer Devon Duarte: No B739 rating \u2717 Not rated\n"
+    "- **Result: NO**\n"
+)
+check("a labelled Result outvotes a pilot's 'Current' earlier in the block",
+      grade._key_verdict(narrated, "FL-0004", narrated), False)
+check("...and the old first-marker heuristic is what got this wrong",
+      grade._yes_no(narrated), True)
+
+for shape, want in (
+    ("FL-0004: no", False),          # M-G2
+    ("FL-0004, no", False),          # M-R1-fat
+    ("FL-0004 no", False),           # M-R2-lean, punctuation-free
+    ("| FL-0004 | no |", False),     # M-G1, markdown table
+    ("**FL-0004** — yes", True),     # bolded with an em dash
+):
+    check(f"verdict read from {shape!r}",
+          grade._key_verdict(shape, "FL-0004", shape), want)
+
+# A model that narrates and then repeats a summary states the verdict twice, and
+# the summary is what the prompt asked for ("one line per flight"). Last wins.
+two = narrated + "\n---\n\nFL-0004: no\n"
+check("a trailing summary line wins over the narrative above it",
+      grade._key_verdict(two, "FL-0004", narrated), False)
+
+# The guard that must keep working: whitespace as a separator makes "no gate"
+# reachable, so _NO_GATE is stripped before the keyed match.
+check("'FL-0004 no gate assigned' is not a verdict",
+      grade._verdicts_for("FL-0004 no gate assigned", "FL-0004", None), [])
+check("an answer with no stated verdict falls back to the old reading",
+      grade._key_verdict("FL-0004 is fine", "FL-0004", "FL-0004: yes"), True)
+
 # ── M4: set ──────────────────────────────────────────────────────────────────
 print("\nM4 — set membership")
 cell = EXPECTED["M4@50"]

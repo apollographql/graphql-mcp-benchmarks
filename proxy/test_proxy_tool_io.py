@@ -271,6 +271,25 @@ check("tool count travels with the hash", base["n_tools"], 1)
 check("a malformed body yields nothing rather than a fake hash",
       prox._prefix_fingerprint(b"nope"), {})
 
+# Positions are the half the count could not give. A marker on the stable head
+# (system/tools) can serve a read on a later call; one on the sliding tail cannot,
+# so which of the two Goose picks is the whole question.
+_pos = prox._breakpoint_positions({
+    "system": [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral"}}],
+    "tools": [{"name": "t"}],
+    "messages": [
+        {"role": "user", "content": [{"type": "text", "text": "a"}]},
+        {"role": "assistant", "content": [
+            {"type": "text", "text": "b", "cache_control": {"type": "ephemeral"}}]},
+    ],
+})
+check("a marker on the head is named, not indexed", _pos[0], "system")
+check("an unmarked tools array is not reported", "tools" in _pos, False)
+check("a marker inside a message block is found by message index", _pos[1], 1)
+check("an unmarked message is not reported", 0 in _pos, False)
+check("no markers anywhere yields an empty list",
+      prox._breakpoint_positions({"messages": [{"role": "user", "content": "x"}]}), [])
+
 print()
 if _fails:
     print(f"{len(_fails)} failure(s):")

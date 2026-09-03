@@ -158,6 +158,68 @@ def segments(answer: str, keys) -> dict:
     return out
 
 
+# An explicit statement of the verdict, as opposed to evidence for it. M3's prompt
+# asks the agent to reason per pilot ("whether EVERY assigned pilot holds a rating
+# still current"), so a correct answer contains lines like
+#   - Captain Morgan Gallego: B739 rating expires 2026-12-08 ✓ Current
+#   - First Officer Devon Duarte: No B739 rating ✗ Not rated
+#   - **Result: NO**
+# `_YES` matches "current" and `_yes_no` takes the FIRST marker, so the captain's
+# currency outvoted the flight's verdict and every M3 cell in the matrix scored
+# recall 0.5 on a perfectly correct answer. These two patterns read the verdict
+# instead: a labelled result, or the key followed by a bare yes/no. Evidence lines
+# cannot match either, because both require the verdict token to follow a label.
+_LABELLED_VERDICT = re.compile(
+    r"\b(?:result|verdict|answer|conclusion)\b\s*[:\-–—]?\s*\**\s*(yes|no)\b", re.I)
+
+
+def _keyed_verdict_re(key: str) -> re.Pattern:
+    """`FL-0003: no`, `**FL-0003** — yes`, `| FL-0003 | no |`, `FL-0003 no`.
+
+    Whitespace counts as a separator because real answers in the matrix used all
+    four shapes, one of them punctuation-free (`FL-0003 no`, M-R2-lean/M3@50). The
+    verdict token must END the run of word characters — `\b(yes|no)\b` alone would
+    read "FL-0003 no gate assigned" as a verdict, which is the collision `_NO_GATE`
+    exists for, so that is stripped before matching.
+    """
+    return re.compile(
+        r"^\W*" + re.escape(key) + r"[\s|*_:,\-–—]+\**\s*(yes|no)\b",
+        re.I | re.M)
+
+
+def _verdicts_for(answer: str, key: str, region: str | None) -> list:
+    """Every explicit verdict stated for `key`, in the order they appear.
+
+    Two sources, both scanned over the WHOLE answer for the keyed form: a model
+    that narrates per flight and then repeats a summary list at the end states the
+    verdict twice, and the summary is the one the prompt actually asked for ("one
+    line per flight"). `segments` only ever returns the FIRST mention of a key, so
+    a summary list is invisible to it.
+    """
+    cleaned = _NO_GATE.sub(" ", answer)
+    out = [(m.start(), m.group(1).lower() == "yes")
+           for m in _keyed_verdict_re(key).finditer(cleaned)]
+    if region:
+        base = answer.find(region)
+        out += [(max(base, 0) + m.start(), m.group(1).lower() == "yes")
+                for m in _LABELLED_VERDICT.finditer(region)]
+    return [v for _, v in sorted(out)]
+
+
+def _key_verdict(answer: str, key: str, region: str | None):
+    """The verdict for one key: the LAST explicit statement, else the old heuristic.
+
+    Last rather than first, because a model that reasons and then concludes states
+    its conclusion at the end. Falling back to `_yes_no` keeps every answer shape
+    that already graded correctly — an answer with no labelled verdict anywhere is
+    read exactly as before.
+    """
+    stated = _verdicts_for(answer, key, region)
+    if stated:
+        return stated[-1]
+    return _yes_no(region) if region is not None else None
+
+
 def _norm_ts(text: str):
     m = TIMESTAMP.search(text)
     return f"{m.group(1)}T{m.group(2)}" if m else None
@@ -287,7 +349,7 @@ def _grade_per_key_boolean(cell: dict, answer: str) -> dict:
             if want == positive:
                 fn += 1
             continue
-        got = _yes_no(seg)
+        got = _key_verdict(answer, key, seg)
         if got is None:
             unparsed.append(key)
             if want == positive:

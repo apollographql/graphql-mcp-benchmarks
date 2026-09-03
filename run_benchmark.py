@@ -78,6 +78,12 @@ def env(name, default):
 
 
 SMOKE = env("SMOKE", "0") == "1"  # fast/cheap harness validation: 1 rep, Haiku, no T3
+# Print the plan and exit before spending anything. The matrix prints its run count
+# and then starts immediately — there is no confirmation prompt — so without this
+# there is no way to check "does it really plan 120 runs?" that does not begin by
+# paying for run 1. A bare `./bench.sh run` once planned 156 runs across both
+# phases and was stopped only by a stack that happened to be down.
+DRY_RUN = env("DRY_RUN", "0") == "1"
 REPO = env("REPO", "graphql/graphql-js")
 WINDOW_START = env("WINDOW_START", "2026-03-01")
 WINDOW_END = env("WINDOW_END", "2026-05-31")
@@ -290,6 +296,13 @@ def load_tasks() -> list:
                 "phase": 2,
                 "n": n,
                 "placeholders": expected[cell].get("placeholders") or {},
+                # Cells with ground truth that the default matrix does not run.
+                # `off_matrix` keeps the fixtures, the grader and the sweep check
+                # intact while leaving the cell out of the plan, which is what a
+                # cell excluded on COST rather than on correctness needs: deleting
+                # it would throw away computed ground truth and make it look like
+                # the task was never designed.
+                "off_matrix": n in {int(x) for x in (t.get("off_matrix") or [])},
             })
 
     # The reverse direction: a cell nobody runs. Catches an expected.json task
@@ -305,10 +318,18 @@ def load_tasks() -> list:
 
 
 def select_tasks(tasks: list) -> list:
-    """Apply the TASKS filter. `M3` selects every M3 cell; `M3@20` selects one."""
+    """Apply the TASKS filter. `M3` selects every M3 cell; `M3@20` selects one.
+
+    An `off_matrix` cell is reachable only by its exact id. Selecting it through
+    the base id would defeat the point: `TASKS=M4` is what someone types when they
+    want the M4 sweep, and quietly adding back the cell that was excluded for cost
+    would spend the money the exclusion was meant to save.
+    """
     if not ONLY_TASKS:
-        return tasks
-    return [t for t in tasks if t["id"] in ONLY_TASKS or t.get("base_id") in ONLY_TASKS]
+        return [t for t in tasks if not t.get("off_matrix")]
+    return [t for t in tasks
+            if t["id"] in ONLY_TASKS
+            or (t.get("base_id") in ONLY_TASKS and not t.get("off_matrix"))]
 
 
 def render_recipe(template_text: str, task_prompt: str, tokens: dict) -> str:
@@ -658,7 +679,8 @@ def main():
             sys.exit(f"nothing left to run at PAYLOAD_PROFILE={PAYLOAD_PROFILE}")
         phase2 = [c for c in conds if cond_phase(c) == 2]
         _assert_symmetric_instructions(phase2)
-        services_up(phase2)
+        if not DRY_RUN:
+            services_up(phase2)
 
     plan = build_plan(conds, tasks)
 
@@ -677,6 +699,13 @@ def main():
     if any(cond_phase(c) == 1 for c in conds):
         print(f"  repo={REPO} window={WINDOW_START}..{WINDOW_END}")
     print()
+
+    if DRY_RUN:
+        print("DRY_RUN=1 — plan only, nothing spent. The phase-2 stack gate was skipped,\n"
+              "so this says nothing about whether the services are up or serving the right\n"
+              "profile; `pnpm health --profile <fat|lean>` answers that. Re-run without\n"
+              "DRY_RUN to execute.")
+        return
 
     base_port = int(PORT)
     all_results: list = []

@@ -1217,3 +1217,185 @@ tool-design effect.
 
     `parse_logs.py` now warns on it every parse: 4+ calls, zero reads, nonzero writes. It
     currently prints **5 of 5 multi-call runs read 0 cached tokens while writing 513,423**.
+
+    **The fingerprints came back and killed all three hypotheses.** M-G1/M1@5 rerun, 11 calls:
+    from call 3 onward `sys_sha`, `tools_sha` and `msg0_sha` are **byte-identical every call**
+    and `cache_breakpoints` holds at 4, while reads stay 0 and each call rewrites the whole
+    growing prefix (4,584 / 4,752 / 4,923 / 5,085 / 5,235 / 5,385 / 5,535). The system prompt
+    carries no clock, the tools array is not reordered, the transcript head is not rewritten.
+    The cached *content* is stable, so the cause is the *boundaries*.
+
+    That is a genuine narrowing rather than a dead end, and it points somewhere specific.
+    Anthropic allows 4 breakpoints and Goose uses all 4 — it added one per turn (2, 3, 4) and
+    then saturated. A read can only hit at a boundary some earlier request also wrote. If the
+    four markers slide forward with the conversation tail, then once the count saturates
+    Goose must evict its oldest marker to place a new one, and the oldest is the one on the
+    stable head — leaving four boundaries that have never existed before, on every call. That
+    would explain a zero read rate exactly, including why calls 1-4 wrote nothing at all (the
+    prefix ahead of a tail marker sits under the per-model minimum cacheable length).
+
+    Hypothesis, not conclusion. `_breakpoint_positions` now logs `bp_at` — `"system"` /
+    `"tools"` for a marker on the stable head, an integer for a message index — so the next
+    run of any size says whether the head markers vanish when the count hits 4. Its tests
+    check that a head marker is named and a tail marker is indexed, for the usual reason: a
+    position finder that returned `[]` would report "no markers" while meaning "I did not
+    look".
+
+    **Worth separating the two questions this raises.** Whether Goose can be made to cache is
+    a client question and may have no answer we control. Whether the *published* cost ratio
+    should depend on it is ours, and the answer is no: the proxy logs enough to report cost
+    twice — as measured, and as a cache-respecting client would pay (first prefix at write
+    price, subsequent prefixes at read price, deltas at full price). Both columns are honest,
+    the second is the one that generalizes past Goose, and computing it needs no new runs.
+
+52. **The fix for the turn cap was to remove a cell, and the interesting part is that removing
+    it correctly is not the same as deleting it.** N=103 was excluded on **cost**, not on
+    correctness: its ground truth is computed, checked against the fixture manifest, and
+    right. Deleting the cell would have discarded that and left the repo looking as though
+    N=103 had never been designed — when in fact it was designed, measured, priced, and set
+    aside. So `off_matrix: [103]` keeps the cell in `tasks.yaml`, in `expected.json`, in the
+    §7.1 ground-truth table and in every guard, while leaving it out of the default plan.
+
+    One detail in `select_tasks` matters more than it looks: an `off_matrix` cell is reachable
+    by exact id (`TASKS=M4@103`) but **not** through its base id. `TASKS=M4` is what someone
+    types when they want the M4 sweep, and having that quietly re-add the expensive cell would
+    spend precisely the money the exclusion exists to save. An exclusion that any convenient
+    spelling bypasses is not an exclusion.
+
+    The cap number came from the data rather than from picking a comfortable round figure, and
+    that mattered: M4@20 needed 4 inference calls for 20 tool calls, but M4@103 managed only
+    56 tool calls in 26 calls, because **Haiku's parallel fan-out degrades as context grows**
+    — the last twelve turns of that run issued exactly one tool call each. At that degraded
+    ~2.15 calls/turn, M4@50's ~51 tool calls need ~24 turns, so the old cap of 25 was about to
+    clip M4@50 too, by a single turn, and would have produced one more low-f1 REST cell that
+    looked like a finding. That degradation is itself worth reporting: it is a real cost of the
+    agent-side join that has nothing to do with token counts.
+
+53. **There was no way to see the run plan without starting to pay for it.** `run_benchmark.py`
+    prints `Matrix: reps=3 → 120 runs` and the per-condition breakdown, and then goes straight
+    into run 1 — no confirmation prompt anywhere. So the standing instruction to keep manual
+    control over every inference cost was, in practice, unenforceable for the one command that
+    spends the most: the only way to check whether `off_matrix` had really removed a cell was
+    to launch 120 runs and read the header as they started.
+
+    `DRY_RUN=1` now prints the plan and returns. It skips the phase-2 stack gate — a plan
+    check should not require a running backend — and says so, because a dry run that printed
+    nothing about the gate would invite reading its silence as "the stack is fine".
+
+    Verified both passes: fat plans **120**, lean plans **60**, ten tasks per condition,
+    M4@103 absent from both, and lean correctly announces `Skipping M-G1,M-G2`. The dry run
+    also surfaced something invisible until the plan was printed: **`SMOKE=1` is set in
+    `.env`**, so every phase-2 run is labelled `[SMOKE MODE]`. With `REPS=3` also set
+    explicitly its only real effect is defaulting `MODEL` to Haiku, which is what phase 2
+    wants anyway — but the label is wrong on a production matrix and nobody would have looked.
+
+54. **The whole report averaged the fat and lean payload brackets together, and that bracket
+    IS the headline claim.** Every table grouped on `condition`, so `M-R1` was the mean of six
+    runs — three fat, three lean. On M1@50 the two differ by **3.13x** ($0.079 vs $0.025), and
+    the printed figure was $0.052: a number matching no configuration anyone can run, sitting
+    in the row a reader would quote as "what REST costs". Twelve grouping sites, one bug.
+
+    §4 has described the matrix as **six condition cells** (`M-R1-fat`, `M-R1-lean`, …) since
+    it was written, and `run_benchmark.py` has always written them to separate directories.
+    Only the report folded them — and §11's "profile is a column, never part of the condition
+    id" reads like a licence for exactly that, when what it means is that the 2x2 in
+    `meta.json` and `CONDITIONS` must stay a 2x2. The design was right and unimplemented.
+
+    Note the direction, because it breaks the run of five: fat costs more than lean, so
+    averaging them **understated** the fat REST arm and flattered the thesis's opponent. The
+    first bug this phase to point away from the hypothesis — and it was found by reading the
+    accuracy table for something else entirely, not by any guard.
+
+    What the fold hid, now visible: M-R1 on M3@50 read `0.76 ± 0.39`, which is really **fat
+    0.97 ± 0.03 against lean 0.54 ± 0.49** — two different results, one of them unstable. And
+    M-R1/M1@20 pass-through goes 14,637 tokens fat to **1,107 lean**, a 13x improvement that
+    the average had turned into a shrug.
+
+    The fix keys every table on `cell` = condition + profile, with `cell_cond()` to recover
+    the condition. That last part was needed immediately: `mcp = [c for c in conds if c in
+    MCP_CONDS]` silently dropped every cell until it existed — the precise failure
+    `resolve_conditions` was written to make loud, reappearing one level down.
+
+55. **Every M3 cell in the matrix scored recall 0.5 on answers that were exactly correct.**
+    M3@5 read 0.67 ± 0.00 in four of six cells, across both protocols and all three reps —
+    which cannot be a condition effect, and that uniformity is what gave it away. The models
+    were right: `FL-0001 yes, FL-0002 no, FL-0003 yes, FL-0004 no, FL-0005 yes` matches
+    `expected.json` exactly.
+
+    The grader read a **pilot's** currency instead of the **flight's** verdict. `_YES` matches
+    `current`, `_yes_no` takes the first marker in a segment, and M3's prompt asks the agent
+    to reason per pilot — so for
+
+        **FL-0004** (Aircraft: B739)
+        - Captain Morgan Gallego: B739 rating expires 2026-12-08 ✓ Current
+        - First Officer Devon Duarte: No B739 rating ✗ Not rated
+        - **Result: NO**
+
+    the captain's "Current" at offset 88 outvoted "No" at 126, and `**Result: NO**` at 165 was
+    never reached. **The grader mis-read precisely the shape its own prompt requested.**
+
+    `_key_verdict` now prefers an explicit statement — a labelled `Result:`/`Verdict:`, or the
+    key followed by a bare yes/no — and takes the **last** one, because a model that narrates
+    and then summarises states its conclusion at the end, and `segments` only ever returns a
+    key's *first* mention. With no explicit verdict anywhere it falls back to the old reading,
+    so every answer shape that already graded correctly still does.
+
+    **Verified against all 54 real M3 answers, not against fixtures I wrote:** 23 improved, 1
+    changed for the better in the other direction, mean f1 **0.773 → 0.950**. The one that
+    dropped (M-G1/M3@50/rep3, 0.755 → 0.741) is a correction — the old `True` came from
+    `segments` anchoring FL-0001 to a **GraphQL query-argument echo** (`FL-0001", "FL-0002",
+    …`), while the model's actual verdict sat in a markdown table row `| FL-0001 | no |`. The
+    truth is `True`, so the model was wrong and the new grader says so. F1 fell because the
+    grader got more accurate.
+
+    The new tests transcribe the five answer shapes the matrix actually produced — `FL: no`,
+    `FL, no`, `FL no`, `| FL | no |`, and the narrated `Result: NO`. Writing them from
+    imagination is how this survived the first 63 assertions; the punctuation-free shape in
+    particular is one I would never have guessed.
+
+56. **One run took seven consecutive HTTP 400s and Goose responded by silently restarting the
+    task.** M-R2-lean/M3@50/rep1: calls 12-18 all returned 400, call 19 began a fresh
+    conversation, and calls 20-25 redid the work. `goose_exit` is 0, `stop_cause` is clear,
+    `timed_out` is false — and the run's cost covers **both attempts** while its f1 (0.69) is
+    the worst of its three reps. HTTP status is not a token count, so no metric in the report
+    had any reason to look at it.
+
+    One run in 181, which is why it is worth a permanent check rather than a shrug: at this
+    rate a future matrix has a handful, each one inflating a cost cell and depressing an
+    accuracy cell with nothing to mark it. `parse_logs.py` now counts non-200 responses per
+    run and warns.
+
+    It also explains the second lossy run: the sidecar dedupes tool results on `tool_use_id`,
+    and a restarted conversation re-sends results it has already sent, so 15 calls recorded 14
+    results. The conservation law held at the proxy level (15 uses, 15 results) — the mismatch
+    is between two counters that disagree only when a conversation is replayed.
+
+57. **"Isn't the GraphQL win just an unbatched backend?" — asked, and measurable, and no.**
+    The obvious objection to M-G1 resolving a 50-flight join in one query is that the router is
+    quietly making 150 entity reads and the benchmark is not counting them. Two answers, and
+    the second is the one that settles it.
+
+    First, per-request DataLoaders are already on every `__resolveReference`
+    (`server/graphql/context.ts`), so the batching exists. That was done for honesty rather
+    than for speed — it changes no token count, it only lets the writeup say "same backend
+    work, less agent context" instead of conceding the point.
+
+    Second, the harness can check whether the join is being paid for in latency instead, and it
+    is not. Non-inference wall time on M3@50: **M-G1 19.7s for one query, M-G2 24.5s for a
+    hundred, M-R1-fat 31.1s for four REST list calls.** The single federated join is the
+    *cheapest* of the three outside inference. M-G2's hundred calls add ~5s of server time over
+    M-G1 while adding **45s of agent-active time** — which is the finding compressed to one
+    line: agent-side fan-out costs inference, not backend.
+
+    The caveat the writeup owes a reader: this is an in-memory backend with no network between
+    router and subgraphs, so absolute latencies mean nothing at all. The relative claim is what
+    the objection was about, and the relative claim holds.
+
+    Worth noting *why* DataLoader cannot rescue M-G2, since it looks like the same N+1 problem:
+    it batches within one execution, and M-G2 issues 50 separate operations from 50 separate
+    agent turns, each with its own request context and its own fresh loaders. There is nothing
+    to batch — every query honestly asks about one flight. The canonical server-side fix for
+    N+1 is installed and correct, and the N+1 has moved **up a layer** into the agent's control
+    flow, where no resolver-level technique reaches it. That is the argument for caring about
+    operation granularity in a tool surface.
+
