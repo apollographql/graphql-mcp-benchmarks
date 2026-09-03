@@ -42,6 +42,9 @@ RESULTS = Path(os.environ.get("RESULTS_DIR") or (ROOT / "results"))
 # session-title generation, which uses Haiku) are auxiliary and excluded from
 # headline metrics (disclosed in the audit).
 PRIMARY_MODEL = os.environ.get("MODEL") or "claude-sonnet-4-6"
+# Select one task model out of a tree that holds several. Without it a mixed tree is
+# refused rather than silently averaged — see resolve_conditions.
+PARSE_MODEL = os.environ.get("PARSE_MODEL", "").strip()
 
 # The metrics, in report order. cache_* kept distinct from input_tokens by design.
 METRICS = [
@@ -302,6 +305,29 @@ def resolve_conditions(rows) -> tuple[int, list]:
             f"  RESULTS_DIR=results/phase1 python3 parse_logs.py runs/phase1\n"
             f"  RESULTS_DIR=results/phase2 python3 parse_logs.py runs/phase2\n"
         )
+    # Two models in one report is the same failure as two phases: nothing groups on
+    # `model`, so runs of the same cell and task from different models average into
+    # one row, the chart title takes whichever sorted first, and the stage table
+    # prices them all off one price list. The comparison people will actually want
+    # — haiku against sonnet, to test whether the field-selection behaviour in §1
+    # is model-dependent — is exactly what would trigger it.
+    models = sorted({r.get("model") for r in rows if r.get("model")})
+    if len(models) > 1:
+        if not PARSE_MODEL:
+            sys.exit(
+                f"{RUNS} mixes task models ({', '.join(models)}).\n"
+                f"Nothing in this report groups on model, so they would be averaged into "
+                f"shared rows and priced off one price list.\n"
+                f"Parse one at a time:\n\n"
+                + "".join(f"  PARSE_MODEL={m} RESULTS_DIR=results/<name> "
+                          f"python3 parse_logs.py {RUNS}\n" for m in models)
+            )
+        keep = [r for r in rows if (r.get("model") or "").startswith(PARSE_MODEL)]
+        if not keep:
+            sys.exit(f"PARSE_MODEL={PARSE_MODEL!r} matches none of: {', '.join(models)}")
+        rows[:] = keep
+        print(f"PARSE_MODEL={PARSE_MODEL} — reporting {len(keep)} of the runs in {RUNS}")
+
     phase = phases[0]
     # Cells, not conditions: a condition run at two payload profiles is two report
     # rows. The cell -> condition map comes from the rows rather than from parsing
@@ -609,8 +635,12 @@ def _mean_stage(rows, cond, task, stage_key) -> float | None:
     sub = [r for r in rows if r["cell"] == cond and r["task_id"] == task]
     if not sub:
         return None
-    model = sub[0]["model"]
-    return statistics.mean(_stage_costs(r, model)[stage_key] for r in sub)
+    # Each row priced with ITS OWN model, not sub[0]'s. Taking the group's first
+    # model and applying it to every row silently misprices a mixed-model tree by
+    # the ratio between the two price lists — 3x between haiku and sonnet — and
+    # `model` is not part of any grouping key, so the mix does not show up as
+    # separate rows either.
+    return statistics.mean(_stage_costs(r, r["model"])[stage_key] for r in sub)
 
 
 # A ratio below this is not reported as a difference. Two conditions landing within
@@ -1273,8 +1303,7 @@ def _stage_cost_table(rows, conds, tasks, phase: int = 1) -> list[str]:
             sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
             if not sub:
                 continue
-            model = sub[0]["model"]
-            stages = [_stage_costs(r, model) for r in sub]
+            stages = [_stage_costs(r, r["model"]) for r in sub]   # per-row pricing
             s1    = statistics.mean(s["schema"]    for s in stages)
             s2    = statistics.mean(s["context"]   for s in stages)
             s3    = statistics.mean(s["inference"] for s in stages)

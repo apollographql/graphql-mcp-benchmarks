@@ -51,6 +51,14 @@ On `M4@50` the two brackets differ by **66 tokens out of 46,665**. The mechanism
 available, documented in the tool schema, and simply unused. A protocol capability the
 client does not exercise is not a defence of the protocol.
 
+> **This half of tax one is a claim about one model.** Every run in both phases used
+> `claude-haiku-4-5`. Whether a response returns unwanted fields is structural — fat REST
+> serves all 46 fields regardless of who asks — but *whether the agent narrows them* is
+> behaviour, and a collaborator already found discovery behaviour to be model-dependent on
+> `claude-sonnet-4-6` (pre-registered expectation 7, still open). The selectivity **ceiling**
+> holds for any model; the observation that agents opt in inconsistently is, for now,
+> an observation about this one.
+
 ---
 
 ## 2 — Cardinality match

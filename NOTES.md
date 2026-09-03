@@ -1548,3 +1548,39 @@ tool-design effect.
     next unrecoverable metric should be one line, not four. Phase 2's copy of the same metric
     is correct and unaffected.
 
+60. **The model dimension was the same trap as the phase mix and the fat/lean fold, found
+    before it cost anything.** Both phases ran entirely on `claude-haiku-4-5`, and
+    expectation 7 flagged the open question: a collaborator could not reproduce phase 1's
+    zero-discovery finding for B2 on `claude-sonnet-4-6`. It said the question was "worth
+    resolving before the results are written up, not after" — and `FINDINGS.md` shipped
+    without it.
+
+    Before recommending that comparison run, I checked what the parser would do with a
+    mixed-model tree. **Nothing groups on `model`.** Two runs of the same cell and task on
+    different models would average into one row; the chart title takes
+    `rows[0]["model"]`; and worst, `_mean_stage` and the stage-cost table did
+    `model = sub[0]["model"]` and then priced *every* row in the group off that one price
+    list — a silent **3x mispricing** between haiku and sonnet, in the cost decomposition
+    that the report leads with.
+
+    Third instance of one bug class: a dimension that exists in `meta.json`, is honoured by
+    the runner, and is invisible to the report's grouping. Phases were guarded, profiles
+    became part of the cell key, and models are now refused with a message naming the
+    `PARSE_MODEL=` escape hatch. Per-row pricing is fixed unconditionally, since
+    `sub[0]["model"]` was wrong even in the single-model case that made it look right.
+
+    Verified the way this repo has learned to verify guards — by forging the failure shape
+    rather than trusting the code. A relabelled sonnet copy of `M-G1` in a tree with haiku
+    runs: the parse refuses and prints both `PARSE_MODEL` commands, `PARSE_MODEL` selects
+    30 of 60 runs and proceeds, and a `PARSE_MODEL` matching nothing exits rather than
+    reporting an empty matrix as a success.
+
+    **What is still open is the science, not the plumbing.** The structural findings are
+    model-independent by construction: `FlightRoster($flightId: ID!)` cannot accept fifty
+    flights, so any model must loop, and fat REST returns all 46 fields regardless of who
+    is asking. The findings **at risk** are the agent-behaviour half of tax one — "`?fields=`
+    erases it" and "the agent opts in inconsistently" — because those depend on the model
+    choosing to send `?fields=`, which is exactly the kind of behaviour the collaborator
+    found to be model-dependent. `FINDINGS.md` states them as claims about agents; they are
+    currently claims about one agent.
+

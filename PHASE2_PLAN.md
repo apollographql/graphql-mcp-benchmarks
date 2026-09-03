@@ -110,11 +110,48 @@ Two harness defects between them cost that comparison.
    checked back against `results/phase2/raw.csv` rather than transcribed from a message; the
    ratios it quotes (15.6x, 13.2x, 35.5x, 14.3x, 3.4x, the 66-token M4 delta) all recompute.
    It carries the scored pre-registration and the caching caveat, and `README.md` points at it.
-2. **One $0.04 rerun to read `bp_at`**, optional. The content hypotheses are dead and
+2. **The model qualifier — the last open item from the pre-registration itself.**
+   Expectation 7 said resolving it was "worth doing before the results are written up, not
+   after", and `FINDINGS.md` shipped without it. Both phases ran entirely on
+   `claude-haiku-4-5`.
+
+   The structural findings do not depend on the model and do not need this: `FlightRoster($flightId: ID!)`
+   cannot accept fifty flights, so **any** model loops, and fat REST serves all 46 fields
+   regardless of who asks. What is at risk is the agent-behaviour half of tax one —
+   "`?fields=` erases it" and "the agent opts in inconsistently" — since a collaborator
+   already found discovery behaviour to be model-dependent on `claude-sonnet-4-6`.
+   `FINDINGS.md` now carries a `>` note saying so, which is a disclosure, not a resolution.
+
+   ~12 runs, about **$3**, on the two tasks where haiku's behaviour diverged most — M1@20
+   (used `?fields=`, 13.2x) and M4@50 (did not, 1.0x):
+
+   ```bash
+   # fat pass — M-G1 included because discovery behaviour is the collaborator's finding
+   CONDITIONS=M-R1,M-G1 TASKS=M1@20,M4@50 REPS=2 MODEL=claude-sonnet-4-6 \
+       PAYLOAD_PROFILE=fat ./bench.sh run
+   PAYLOAD_PROFILE=lean docker compose up -d --force-recreate --wait \
+       scheduling-rest fleet-rest personnel-rest
+   CONDITIONS=M-R1 TASKS=M1@20,M4@50 REPS=2 MODEL=claude-sonnet-4-6 \
+       PAYLOAD_PROFILE=lean ./bench.sh run
+   ```
+
+   These land in `runs/phase2` beside the haiku runs, so **every later parse of that tree
+   needs `PARSE_MODEL=`** — the parser refuses a mixed-model tree rather than averaging
+   across price lists (`NOTES.md` 60):
+
+   ```bash
+   PARSE_MODEL=claude-haiku-4-5 CONDITIONS=M-R1,M-R2,M-G1,M-G2 ./bench.sh parse
+   PARSE_MODEL=claude-sonnet-4-6 RESULTS_DIR=results/phase2-sonnet \
+       python3 parse_logs.py runs/phase2
+   ```
+
+   The single number to read: does `-fat` vs `-lean` on M4@50 still come out at 1.0x?
+
+3. **One $0.04 rerun to read `bp_at`**, optional. The content hypotheses are dead and
    breakpoint placement is what is left. Worth it only if the answer is *actionable* — a Goose
    setting that makes caching work would make the dollar column quotable, at the price of
    re-running the matrix ($43) to collect it. Not worth it as trivia.
-3. **M4@103**, a single named run, whenever the 127k-token question is worth a dollar.
+4. **M4@103**, a single named run, whenever the 127k-token question is worth a dollar.
 
 ### What the smoke runs established, and what they cost
 
