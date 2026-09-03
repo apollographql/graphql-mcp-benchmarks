@@ -1,71 +1,47 @@
 # GraphQL is more token-efficient for AI agents
 
-**Two experiments, 204 runs. A GraphQL-backed MCP server beat a REST-backed one on every
-task in both — 3.4× fewer wasted tokens than the best REST configuration we could build,
-5.3× fewer than a typical one, and 2.8× cheaper. On a real API the gap was wider still.**
+**Across 180 runs on a backend we controlled, a GraphQL-backed MCP server beat a REST-backed
+one on every task — 3.4× fewer wasted tokens than the best REST configuration we could build,
+5.3× fewer than a typical one, and 2.8× cheaper. On GitHub's live API, the N+1 case cost REST
+64× the payload.**
 
 The caveats are where the useful information is, and there are six. One is large enough to
-reverse the result if you get it wrong. But the headline holds in both experiments, so let's
-start with the simpler one.
+reverse the result if you get it wrong. Start with the simplest version of the question.
 
 ---
 
-## First, the simple version: two MCP servers on GitHub
+## First, the simple version: N+1 against GitHub
 
 Before building anything synthetic we did the obvious thing — pointed two MCP servers at
-GitHub's API and asked the same questions through each. GitHub's official MCP server for REST,
-and two GraphQL setups: Apollo's MCP server, and a thin wrapper exposing schema search,
-describe, and execute.
+GitHub's API and asked the same question through each. GitHub's official MCP server for REST,
+and a GraphQL setup exposing schema search, describe, and execute.
 
-Two tasks. **A trivial one:** the title, author, and merge date of one known pull request.
-**And an N+1 one:** the title, author, and changed files for five specific PRs — which REST
-answers with two calls per PR, and GraphQL answers with a single aliased query.
+The question: for five specific pull requests, give the title, author, and changed files. REST
+answers it with two calls per PR — fetch the PR, fetch its files. GraphQL answers it with one
+aliased query naming all five.
 
-The N+1 result is the one you'd predict. REST made **ten tool calls**; GraphQL made **one**.
-Cost per run: **$0.182 against $0.009**, a factor of twenty.
+That is exactly what happened. **REST made ten tool calls; GraphQL made one.**
 
-The trivial task is the more interesting one. Both surfaces answer it in **exactly one tool
-call** — no N+1 to exploit, no join, nothing to batch. REST still cost **four times more**
-($0.020 against $0.005), and because there is exactly one tool call, we can decompose that
-cleanly:
+| | tool calls | tokens of tool results | cost per run | wall time |
+|---|--:|--:|--:|--:|
+| GitHub MCP (REST) | 10 | **26,970** | $0.071 | 22.3s |
+| GraphQL | 1 | **419** | $0.009 | 10.6s |
 
-| | schema + system prefix | the one tool result | total billed |
-|---|--:|--:|--:|
-| GitHub MCP, all toolsets | 4,431 | **4,459** | 15,251 |
-| GitHub MCP, minimal | 3,527 | 4,459 | 13,441 |
-| Apollo MCP (GraphQL) | 1,800 | **47** | 3,543 |
-| Schema-search wrapper (GraphQL) | 1,851 | **47** | 3,641 |
+**64× the payload for the same five pull requests, at 7.9× the cost.** The REST responses
+arrive as five parallel results, then five more, and every one of them stays in the context for
+the rest of the conversation — which is why 81% of the REST condition's cost is
+cache-creation charges on a conversation that grew to 46,169 tokens. The GraphQL condition
+writes **zero**: its whole exchange is small enough never to reach the caching threshold.
 
-*Tokens. "Total billed" exceeds the sum because the prefix is charged more than once — see
-caveat 5.*
+This is the N+1 problem, and nothing about it is subtle. An agent that must fetch a list and
+then loop over it pays for the loop in model turns, not in database queries.
 
-**The tool result is where the difference lives: 4,459 tokens against 47, a factor of 95.**
-That is one pull request. The REST endpoint returns its full representation — roughly a
-hundred fields — when the question asked for three, and the agent carries all of it for the
-rest of the conversation. The GraphQL query returns three fields because that is what it
-selected.
-
-The tool schema matters too, but less than we expected and less than the usual framing
-suggests: 4,431 tokens against 1,851, a factor of 2.4. Comparable in *absolute* size to the
-payload difference, but nothing like the same ratio.
-
-**A caveat on that schema figure, because it surprised us.** The GitHub MCP server with all
-toolsets enabled advertises **54 tools and 144,710 bytes** of `tools/list` — roughly 40,000
-tokens. The model's actual prefix is 4,431. So the client is not forwarding the whole
-advertised surface to the model, and the eye-catching number is what the *server offers*, not
-what the *run pays*. We noticed only because the two disagree by 9×; our synthetic phase-2
-surfaces show no such gap, so this is a property of that client and that server, not a general
-rule. **Treat "our MCP server exposes N tools" as an upper bound on what it costs you, and
-measure the prefix if you want the real figure.**
-
-What does hold, and is pure arithmetic from the logs: on the N+1 task the REST condition writes
-**139,404 tokens of cache — 96% of its total cost** — while both GraphQL conditions write
-**zero**, their prefixes being too small to reach the caching threshold at all. One condition's
-fixed overhead dominates its bill; the other's is a rounding error.
-
-One more limitation of working against a live API: those tool surfaces came from GitHub's
-servers and schema as they were in June. Unlike the synthetic ones, they cannot be pinned or
-re-measured later — re-running the capture today would compare against a different upstream.
+**What phase 1 cannot tell you** is *why*. Two things differ between those rows at once —
+protocol (REST versus GraphQL) and packaging (fifty-four endpoint tools versus three generic
+ones) — and a single 7.9× cannot be apportioned between them. It also cannot tell you what
+happens with REST done well, because GitHub's REST API has no field-selection parameter to turn
+on. And it cannot tell you what happens as the question grows, because we do not control the
+data.
 
 ## Why that wasn't enough
 
@@ -76,9 +52,9 @@ do with GraphQL. And you cannot vary anything. You cannot ask what happens when 
 fatter, or when a question spans more records, or when the REST API *does* support field
 selection — because you do not control any of it.
 
-Two variables in particular were welded together. **Protocol** (REST versus GraphQL) and **tool
-packaging** (fifty-four endpoint tools versus three generic ones). Phase 1 cannot tell you
-which one produced the 20×.
+So phase 1 establishes that the N+1 penalty is real and large on a production API, and stops
+there. Everything else — which variable caused it, whether good REST closes it, how it scales —
+needs a backend we control.
 
 ## So we built a backend we controlled
 
@@ -188,10 +164,11 @@ every variable — including running REST in its strongest configuration, which 
 offer.
 
 It is worth checking whether the synthetic REST surface was unrealistically cheap to have
-installed, since that would flatter it. It wasn't: measured at the model, phase 2's REST prefix
-is **3,830 tokens** against GitHub's **4,431** — within 16%. Every condition in both
-experiments sits between 1,851 and 4,431 tokens of schema-plus-system, so the tool surface is a
-modest and broadly similar cost everywhere, and it is not where either result comes from.
+installed, since that would flatter it. Measured at the model, phase 2's REST prefix is **3,830
+tokens** against **2,525** for GitHub's REST server — so if anything the synthetic surface is
+the more expensive of the two. Every condition in either experiment sits between 1,851 and
+3,830 tokens of schema-plus-system. The tool surface is a modest, broadly similar cost
+everywhere, and it is not where any of these results come from.
 
 Now the caveats.
 
@@ -280,12 +257,12 @@ breakpoint placement, not our proxy. Cache writes bill at 1.25× and reads at 0.
 inflates cost per call — and therefore penalises whichever condition makes the most calls,
 which here is a *GraphQL* one.
 
-This matters most for **phase 1's 20×**, which is 96% cache-creation on the REST side. That
-figure is not really about tool schemas — it is a 4,431-token prefix plus at least 6,401 tokens
-of accumulated REST responses, rewritten from scratch on every call because nothing ever hit
-the cache. With a client that cached properly it would be written once and read back at a tenth
-the price, and the gap would narrow substantially. **The token and request counts are hard
-measurements; the 20× built on top of them is not.**
+This matters most for **phase 1's 7.9×**, of which 81% is cache-creation on the REST side —
+a conversation that grew to 46,169 tokens, rewritten from scratch on every call because nothing
+ever hit. With a client that cached properly it would be written once and read back at a tenth
+the price, and the cost gap would narrow substantially. **The token and request counts are hard
+measurements — 26,970 against 419 does not depend on caching at all. The 7.9× built on top of
+them does.**
 
 **The token counts, request counts and tool-surface sizes are unaffected and hold. Quote the
 direction of the cost figures, not their magnitude.** We considered publishing a modelled "as-if-cached" column and
@@ -325,13 +302,15 @@ expensive, because it made a hundred requests. Payload efficiency is bounded by 
 exist. Round-trip efficiency is bounded by how many records the question covers, and that is
 the number that grows.
 
-And a warning from the GitHub experiment about the metric everyone reaches for first.
-**"Our MCP server exposes N tools" tells you less than you think.** That REST server advertises
-54 tools and 144,710 bytes of schema — around 40,000 tokens — and the model's actual prefix was
-**4,431**. The client was not forwarding the advertised surface. Tool count is an upper bound
-on what you pay; measure the prefix on a live call if you want the real number. And measure it
-in the right place: on the trivial task, REST's tool schema cost 2.4× GraphQL's, while its
-single tool *result* cost 95×.
+And a measurement warning, because we got this wrong twice. **"Our MCP server exposes N
+tools" is not a cost.** GitHub's server advertises 54 tools and 144,710 bytes of schema —
+around 40,000 tokens — and the prefix the model actually received was **2,525**. The client
+does not forward the advertised surface. We first blamed a stale capture for that gap, re-ran
+everything in one session to check, and the gap held: it is real client behaviour, not drift.
+
+So if you want to know what a tool surface costs you, **measure the prefix on a live call**,
+in the same sitting as the run you are describing. The advertised number is an upper bound and
+in this case a wildly loose one.
 
 ---
 

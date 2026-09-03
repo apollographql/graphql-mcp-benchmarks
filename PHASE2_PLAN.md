@@ -109,6 +109,19 @@ cost ratio of which 96% is A1's cache-creation, and caching never hit in either 
 the payload column that would have been comparable is the one bug 42 made unrecoverable.
 Two harness defects between them cost that comparison.
 
+**Phase 1 was re-run 2026-09-03** ($0.53, all 24 runs, captures taken the same morning) and
+the re-run changed it materially — `NOTES.md` 65. What held: the N+1 structure, 10 REST tool
+calls against 1, now correctly measured at **64× the payload** (26,970 tokens against 419) and
+7.9× the cost. What did not: the trivial-task result, which fell from 4× to 1.9× because
+GitHub's MCP server now returns filtered responses. **That task has been cut from the writeup**
+— a finding that evaporates on re-measurement was never a finding about protocols — and phase 1
+now carries the N+1 result alone.
+
+Confirmed by the re-run, with run and capture an hour apart so drift cannot explain it:
+GitHub's server advertises 54 tools / 144,710 B and the model's prefix is **2,525 tokens**. The
+client does not forward the advertised surface. Tool count is an upper bound on cost, not a
+measurement of it.
+
 **NEXT, in the order I would take it:**
 
 1. ~~**The writeup.**~~ **Done** — `FINDINGS.md` (terse) and `WRITEUP.md` (narrative),

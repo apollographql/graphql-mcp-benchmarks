@@ -70,24 +70,44 @@ METRICS = [
 # reading column 18 of the CSV, and an order-of-magnitude error in a column
 # labelled "tool-payload tok" is exactly what a reader of this study would quote.
 # A blank cell asks a question; a wrong number answers one.
-UNRECOVERABLE = {1: {"tool_result_tokens"}}
+# Metrics whose validity depends on the RUN, not on the phase.
+#
+# `tool_result_tokens` was undercounted by any request carrying more than one tool
+# result, until the proxy started keying on `tool_use_id`. Two revisions of that
+# rule were wrong before this one: first blanket-suppressing all of phase 1 (which
+# threw away provably exact single-call cells), then keying on phase and call count
+# (which suppressed correct figures the moment phase 1 was re-run with the fixed
+# proxy). The defect was never a property of the phase — it was a property of the
+# code that wrote the log. So ask the log.
+RUN_SCOPED = {"tool_result_tokens"}
+
+
+def payload_exact(proxy_log: Path, n_tool_calls: int) -> bool:
+    """Whether this run's `tool_result_tokens` is a measurement or a lower bound.
+
+    Exact if the log was written by a proxy that keys results on `tool_use_id` —
+    detectable because that revision also records `n_tool_results` — or, for older
+    logs, if the run made at most one tool call, since fan-out needs two.
+    """
+    if not proxy_log.exists():
+        return False
+    for line in proxy_log.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if r.get("is_messages"):
+            return "n_tool_results" in r or n_tool_calls <= 1
+    return n_tool_calls <= 1
 
 
 def metric_ok(key: str, phase: int, rows=None) -> bool:
-    """Whether a metric can be reported for this phase — and for these rows.
-
-    Blanket suppression by phase was too aggressive. The undercount only misreports
-    a request carrying MORE THAN ONE tool result, so a run that made at most one
-    tool call in total has no fan-out and its figure is exact. Six of phase 1's
-    eight condition/task cells are single-call, including both conditions on the
-    task built to measure payload precision — which is the number the blanket rule
-    was throwing away. Withdrawing sound data is its own kind of wrong answer.
-    """
-    if key not in UNRECOVERABLE.get(phase, ()):
+    """Whether a metric can be reported for these rows."""
+    if key not in RUN_SCOPED:
         return True
-    if key == "tool_result_tokens" and rows is not None:
-        return all((r.get("proxy_n_tool_calls") or 0) <= 1 for r in rows)
-    return False
+    if rows is None:
+        return False
+    return all(r.get("payload_exact") for r in rows)
 # Every condition this script knows how to report, in report order, by phase.
 # A condition that appears in `runs/` but not here is a hard error: the previous
 # behaviour was to filter rows against a hardcoded list, which meant an unknown
@@ -573,6 +593,8 @@ def collect():
             ),
         }
         row["cell"] = cell_id(row)
+        row["payload_exact"] = payload_exact(run_dir / "proxy.jsonl",
+                                             row.get("proxy_n_tool_calls") or 0)
         # HTTP status is not a token count, so no other metric would ever notice it.
         # One matrix run took SEVEN consecutive 400s mid-task and Goose responded by
         # silently restarting the conversation and redoing the work: the run's cost
@@ -1490,9 +1512,9 @@ def write_summary(rows):
                  "never folded into `input_tokens`.\n")
     lines.append("> Cross-check the headline numbers against the audit section and the raw "
                  "logs in `runs/` before publishing.\n")
-    suppressed = sorted(UNRECOVERABLE.get(phase, ()))
-    if suppressed:
-        labels = ", ".join(f"`{lbl}`" for k, lbl in METRICS if k in suppressed)
+    inexact = [r for r in rows if not r.get("payload_exact")]
+    if inexact:
+        labels = ", ".join(f"`{lbl}`" for k, lbl in METRICS if k in RUN_SCOPED)
         lines.append(
             f"> **{labels} reads `n/a` in this report, and is blank in `summary.csv`.** The "
             f"proxy counted tool-result tokens once per request instead of once per "

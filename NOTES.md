@@ -1659,13 +1659,23 @@ tool-design effect.
     said the trivial GitHub task's 4× cost gap sat entirely in tool descriptions, citing the
     captured 144,710 bytes for A1's 54-tool surface. Decomposing the run says otherwise.
 
-    **The advertised surface never reaches the model.** A1's `tools/list` is 144,710 B —
-    roughly 40,000 tokens — and its observed prefix is **4,431 tokens**. A 9x shortfall, so
-    the client is not forwarding what the server advertises. Every other condition in either
-    phase lines up (advertised tools + ~1,500 tokens of system prompt), which is exactly why
-    this went unnoticed: `M-R1` advertises 9,601 B and shows a 3,830-token prefix, `M-G1`
-    2,159 B and 2,517. Only the 54-tool REST server diverges. **"Our MCP server exposes N
-    tools" is an upper bound on cost, not a measurement of it.**
+    **The advertised surface does not match the prefix — but I explained it wrongly.** A1's
+    `tools/list` is 144,710 B, roughly 40,000 tokens, and its observed prefix is **4,431
+    tokens**. I concluded the client was not forwarding the advertised surface. Every other
+    condition lines up (advertised tools + ~1,500 tokens of system prompt): `M-R1` advertises
+    9,601 B and shows 3,830, `M-G1` 2,159 B and 2,517.
+
+    **The real cause is dates, and it is embarrassing.** The phase-1 *runs* are from
+    2026-06-26 and 2026-07-03. The phase-1 *captures* are from 2026-09-02. A June run paid for
+    ~15 KB of tool schema; the September capture measured 141 KB. **GitHub's MCP server grew
+    about 9x in between**, and I compared two measurements ten weeks apart of a service §11
+    explicitly warns is not reproducible. Same failure class as everything else in this file:
+    two numbers that were never contemporaneous, presented as one comparison.
+
+    A second flaw surfaced by the same check: **phase 1 is not internally contemporaneous
+    either.** A1, A2 and B2 ran on 26 June; B ran on 3 July. One condition of four was
+    measured a week later against a live API. That is a real internal-validity problem for any
+    B-versus-others comparison, and it was never recorded until now.
 
     **The payload, not the schema, is where the trivial task's difference lives.** One tool
     call each, so it decomposes cleanly: REST's single result is **4,459 tokens** against
@@ -1674,11 +1684,17 @@ tool-design effect.
     payload-precision effect T2 was designed to measure, and the writeup had been asserting
     the opposite mechanism.
 
-    **And it consequently kills the "phase 2 understates real-world REST" claim.** Measured at
-    the model rather than at the server, phase 2's REST prefix is 3,830 tokens against
-    GitHub's 4,431 — within 16%, not 15x apart. Every condition in both experiments sits
-    between 1,851 and 4,431 tokens of prefix. The tool surface is a modest, broadly similar
-    cost everywhere and is not where either result comes from.
+    **And it kills the "phase 2 understates real-world REST" claim, in both directions.**
+    Against what GitHub charged in June, phase 2's REST prefix (3,830 tokens) is within 16% of
+    A1's 4,431 — not 15x apart. But against what GitHub advertises *today*, the comparison is
+    unknown, because we have not re-run phase 1 since June. Either way the claim as published
+    was unsupported.
+
+    **What this costs: phase 1 needs re-running before any of its numbers are published.** All
+    24 runs cost $1.27 originally. A re-run would make the runs contemporaneous with the
+    captures, remove the one-week internal split, and settle the 9x question definitively. It
+    would also probably strengthen the GraphQL result rather than weaken it, since the REST
+    tool surface has grown.
 
 64. **The blanket phase-1 suppression was withdrawing data that was provably exact.** Surprise
     59 suppressed `tool_result_tokens` for all of phase 1 because the fan-out undercount made
@@ -1698,4 +1714,58 @@ tool-design effect.
     safe against reporting a bad number and unsafe against reporting nothing, and I reached
     for it because the conservative direction felt free. It was not — it cost the one number
     that answered the question the task existed for.
+
+65. **Phase 1 re-run 2026-09-03, and the re-run overturned the parts of it I had just finished
+    writing up.** The trigger was one question — "are our phase-1 numbers accurate? we re-ran
+    them recently?" — which they had not been. The runs were from 26 June (A1, A2, B2) and
+    3 July (B): ten weeks stale, against a live API, and not even internally contemporaneous.
+    All 24 re-ran for **$0.53**, captures taken the same morning.
+
+    **The tool-filtering finding is real, and my retraction of it was the error.** With run and
+    capture an hour apart, the gap holds: GitHub's server advertises 54 tools and 144,710 B —
+    about 40,000 tokens — and the prefix the model receives is **2,525**. So surprise 63 got it
+    right the first time and I talked myself out of it when the dates looked like a simpler
+    explanation. Two wrong calls in sequence on the same question, in opposite directions,
+    and only the re-run could separate them.
+
+    **The fan-out bug is now visible in a before/after on the same task.** A1/T1 issues five
+    parallel tool calls, twice. The old proxy recorded **6,401** tokens of tool results; the
+    fixed one records **26,970** — a 4.2x undercount, measured rather than argued, on the exact
+    shape (`n_tool_use 5, n_tool_results 5`) that broke it.
+
+    **What replicated, and what did not:**
+
+    | | June | Sept | why |
+    |---|--:|--:|---|
+    | T1 REST tool calls | 10 | 10 | structure is structural |
+    | T1 GraphQL calls | 1 | 1 | |
+    | T1 REST payload | 6,401 | **26,970** | old proxy undercounted the fan-out |
+    | T1 cost ratio | 20x | **7.9x** | |
+    | T2 REST payload | 4,459 | **334** | GitHub now returns filtered responses |
+    | T2 cost ratio | 4x | **1.9x** | |
+
+    **The trivial task no longer supports a protocol claim and has been cut from the writeup.**
+    At 1.9x cost and 334 tokens against 47, REST and GraphQL are near parity on a one-call
+    lookup — GitHub's MCP server improved materially in ten weeks. The 4x gap I had built a
+    section around was a fact about June's server. Phase 1 now carries only the N+1 result,
+    which is the part that held: 10 calls against 1, **64x the payload** (26,970 against 419),
+    7.9x the cost. That is a decision about scope, recorded so nobody re-adds the section:
+    a finding that evaporates on re-measurement was never a finding about protocols.
+
+66. **The suppression rule was wrong three times, and the third failure was caused by fixing
+    the data.** `tool_result_tokens` was suppressed for phase 1 (surprise 59), then for
+    phase-1 runs with more than one tool call (surprise 64) — and then the phase-1 re-run
+    produced *correct* fan-out figures with the fixed proxy, which the rule promptly hid.
+
+    Every revision was keyed on the wrong thing. **The defect never belonged to the phase; it
+    belonged to the code that wrote the log.** So the rule now asks the log: a record carrying
+    `n_tool_results` came from the revision that keys on `tool_use_id`, so its figure is exact
+    however much fan-out there was; an older log is exact only if the run made at most one tool
+    call. `payload_exact` is computed per run in `collect()` and the report suppresses a group
+    only if some run in it is inexact.
+
+    The lesson is about where a guard's condition should live. A guard keyed on a proxy for the
+    real cause — phase, in place of proxy version — works until the proxy and the cause come
+    apart, and then it fails silently in whichever direction nobody is watching. Twice it
+    withheld sound data; once it would have published a lower bound as a measurement.
 

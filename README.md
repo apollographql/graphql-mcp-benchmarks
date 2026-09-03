@@ -220,10 +220,10 @@ NOTES.md                  every surprise, in order, with what it cost
 ## Phase 2 findings
 
 **Headline: GraphQL-over-MCP is more token-efficient — a GraphQL condition won every task in
-both experiments**, by 3.4× on wasted tokens against the best REST configuration we could
-build and 5.3× against a typical one. On GitHub's live API the gap was wider: 20× on the N+1
-task, and still 4× on a trivial lookup where *both* surfaces made exactly one tool call —
-because that one REST response was **4,459 tokens against GraphQL's 47**.
+the controlled matrix**, by 3.4× on wasted tokens against the best REST configuration we could
+build and 5.3× against a typical one. On GitHub's live API, the N+1 task cost REST
+**10 tool calls and 26,970 tokens of payload against GraphQL's 1 call and 419** — 64× the
+payload at 7.9× the cost.
 The six caveats are where the useful detail is, and one of them — entity-shaped persisted
 operations — is large enough to put GraphQL *behind* plain REST. Full argument in
 [`WRITEUP.md`](WRITEUP.md).

@@ -139,12 +139,10 @@ exits("an unknown condition is refused, not silently dropped",
 # Phase 1's tool_result_tokens understates REST ~10x and cannot be recomputed. It
 # sat in the committed report in three tables with no disclosure.
 print("\nsuppressed metrics")
-check("phase 1's tool-payload column is suppressed",
+check("a run-scoped metric with no rows to judge is withheld",
       P.metric_ok("tool_result_tokens", 1), False)
-check("...but phase 2's copy of the same metric is fine",
-      P.metric_ok("tool_result_tokens", 2), True)
-check("nothing else in phase 1 is suppressed", P.metric_ok("input_tokens", 1), True)
-check("the suppressed key names a real metric",
+check("an unscoped metric is never withheld", P.metric_ok("input_tokens", 1), True)
+check("the run-scoped key names a real metric",
       "tool_result_tokens" in {k for k, _ in P.METRICS}, True)
 
 # ...but blanket suppression by phase threw away sound data. The undercount only
@@ -152,18 +150,39 @@ check("the suppressed key names a real metric",
 # most one tool call has no fan-out and its figure is exact. Six of phase 1's eight
 # cells are single-call, including both conditions on the task built to measure
 # payload precision — the number the blanket rule was discarding.
-_one = [row(phase=1, condition="A1", profile=None, task="T2", proxy_n_tool_calls=1)]
-_many = [row(phase=1, condition="A1", profile=None, task="T1", proxy_n_tool_calls=10)]
-check("a single-tool-call phase-1 run reports its exact payload",
-      P.metric_ok("tool_result_tokens", 1, _one), True)
-check("a fan-out phase-1 run stays suppressed",
-      P.metric_ok("tool_result_tokens", 1, _many), False)
-check("one fan-out run in the group suppresses the group",
-      P.metric_ok("tool_result_tokens", 1, _one + _many), False)
+# Two earlier revisions of this rule were wrong: blanket phase-1 suppression threw
+# away provably exact single-call cells, and keying on phase+call-count suppressed
+# correct figures as soon as phase 1 was re-run with the fixed proxy. The defect
+# belongs to the code that wrote the log, so the rule reads the log.
+import json as _json, tempfile, os
+def _log(*recs):
+    fd, path = tempfile.mkstemp(suffix=".jsonl"); os.close(fd)
+    p = Path(path); p.write_text("".join(_json.dumps(r) + "\n" for r in recs))
+    return p
+
+_fixed = _log({"is_messages": True, "n_tool_use": 5, "n_tool_results": 5})
+_old = _log({"is_messages": True, "n_tool_use": 5})
+check("a log from the fixed proxy is exact even with fan-out",
+      P.payload_exact(_fixed, 10), True)
+check("a log from the old proxy with fan-out is a lower bound",
+      P.payload_exact(_old, 10), False)
+check("...but the old proxy is exact when there was only one tool call",
+      P.payload_exact(_old, 1), True)
+check("a missing log is never claimed as exact", P.payload_exact(Path("/nope.jsonl"), 1), False)
+for _p in (_fixed, _old):
+    _p.unlink()
+
+check("an exact run reports its payload",
+      P.metric_ok("tool_result_tokens", 1, [row(payload_exact=True)]), True)
+check("an inexact run is suppressed",
+      P.metric_ok("tool_result_tokens", 1, [row(payload_exact=False)]), False)
+check("one inexact run suppresses the whole group",
+      P.metric_ok("tool_result_tokens", 1,
+                  [row(payload_exact=True), row(payload_exact=False)]), False)
 check("with no rows to judge, it stays suppressed",
       P.metric_ok("tool_result_tokens", 1, None), False)
-check("phase 2 is unaffected by the row check",
-      P.metric_ok("tool_result_tokens", 2, _many), True)
+check("a metric outside the run-scoped set is always reportable",
+      P.metric_ok("input_tokens", 1, [row(payload_exact=False)]), True)
 
 
 # ── capped runs are not accuracy (NOTES 50) ──────────────────────────────────
