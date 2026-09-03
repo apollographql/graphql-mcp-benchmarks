@@ -1584,3 +1584,28 @@ tool-design effect.
     found to be model-dependent. `FINDINGS.md` states them as claims about agents; they are
     currently claims about one agent.
 
+61. **The module that renders every published number was the only major one with no tests.**
+    `parse_logs.py` is 1,731 lines — the largest in the repo — and had **zero** assertions,
+    while `grade.py` (851 lines) had 75 and the proxy (696) had 55. That inversion explains
+    the shape of this whole list: surprises 50, 54, 56, 58, 59 and 60 all lived in
+    `parse_logs.py`. The tested modules stayed correct; the untested one kept shipping wrong
+    figures into committed reports.
+
+    `test_parse_logs.py` now covers it, 44 assertions, and **every case is a bug that
+    actually shipped**, transcribed from this file rather than imagined — the fat/lean fold,
+    the model dimension and its 3x mispricing, phase mixing, the phase-1 metric suppression,
+    capped runs counted as accuracy, `_ratio`'s "1.1x more of GraphQL", the lexical task
+    sort, and the zero-cache-read predicate.
+
+    **Then mutation-tested, because 44 passing assertions prove nothing on their own** — the
+    single most repeated failure in this project is a test that passes for the wrong reason
+    (three separate fixtures did exactly that). Reverting `cell_id` to ignore the profile
+    turns 3 red; making `metric_ok` always allow turns 1 red; putting capped runs back in the
+    accuracy mean turns 3 red. Each mutation reproduces the original bug and each is caught.
+    A guard nobody has watched fail is not a guard.
+
+    One detail worth keeping: `exits()` distinguishes a clean `SystemExit` from a crash and
+    from a normal return. All three read as "not working" to a human skimming output, but
+    only the first is the intended behaviour, and a guard that raises `KeyError` instead of
+    exiting would otherwise pass a naive `assert raises`.
+

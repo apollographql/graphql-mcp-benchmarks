@@ -95,6 +95,11 @@ travels with it: a blank cell asks a question, a wrong number answers one. Drive
 one-line registry (`UNRECOVERABLE`) rather than a phase check at each of the four print sites.
 `NOTES.md` 42 and 59.
 
+**The report generator is now tested** (`test_parse_logs.py`, 44 assertions, `NOTES.md` 61).
+It was the largest module in the repo with none, which is why six of the nine measurement
+bugs lived there. Every case is a bug that actually shipped, and each guard was
+mutation-tested — reverting the fix turns the corresponding assertions red.
+
 **The pre-registered expectations are scored** (`NOTES.md`, "SCORED"): 3 confirmed,
 1 half-falsified, 1 unscoreable, 1 untested, 1 retired, 1 held. Two are worth carrying
 into the writeup. Expectation **5** predicted M-G2's 1+N blowup on M4 — the study's

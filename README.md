@@ -207,7 +207,7 @@ capture/check_surfaces.py            fails the build on any tool-surface drift
 run_benchmark.py          orchestrator (one phase per invocation)
 parse_logs.py             log parser → results/phase<N>/
 grade.py                  phase-2 grading + the tool-I/O metrics
-test_grade.py  proxy/test_proxy_tool_io.py   test suites for both (stdlib, no framework)
+test_grade.py  test_parse_logs.py  proxy/test_proxy_tool_io.py   test suites (stdlib, no framework)
 services/                 the phase-2 backend: three services, REST + GraphQL from one field spec
 docker-compose.yml        the phase-2 stack — 3 subgraphs, 3 REST services, Apollo Router
 runs/  results/  capture/ outputs, split by phase
