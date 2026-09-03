@@ -502,9 +502,12 @@ def collect():
         per_call = parse_proxy_per_call(run_dir / "proxy.jsonl", task_model=run_model)
         row = {
             "condition": meta["condition"], "task_id": meta["task_id"], "rep": meta["rep"],
-            # Phase-2 report axes (§11). `profile` is a column, never part of the
-            # condition id: the fat/lean bracket IS the headline claim, and folding
-            # it into the id doubles every table and leaves pairing to the reader.
+            # Phase-2 report axes (§11). `condition` stays the 2x2 axis — protocol x
+            # tool packaging — and `profile` stays its own field, so the experimental
+            # design is never four-plus-two conditions. But the REPORT groups on
+            # `cell` (both together, see cell_id): "profile is a column, never part
+            # of the condition id" was read as licence to average the two brackets
+            # into one row, and on M1@50 they differ by 3.13x (NOTES.md 54).
             "phase": meta.get("phase", 1),
             "n": meta.get("n", task_n(meta["task_id"])),
             "profile": meta.get("profile"),

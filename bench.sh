@@ -424,8 +424,15 @@ do_parse() {
 
 do_clean() {
   rm -rf "$PROJECT_ROOT/runs" "$PROJECT_ROOT/results"
-  rm -f "$PROJECT_ROOT/capture"/*.json "$PROJECT_ROOT/capture/SUMMARY.md"
-  echo "cleaned runs/, results/, capture/*.json"
+  # capture/*.json is generated EXCEPT for the pinned baseline, which is committed
+  # (see the !-exception in .gitignore) and is the only thing that can detect tool
+  # surface drift. Deleting it left check_surfaces.py with nothing to compare
+  # against, and it fails closed telling you to restore rather than regenerate —
+  # so `clean` used to break drift detection until someone ran git checkout.
+  find "$PROJECT_ROOT/capture" -maxdepth 1 -name '*.json' \
+    ! -name 'expected-tool-surfaces.json' -delete
+  rm -f "$PROJECT_ROOT/capture/SUMMARY.md"
+  echo "cleaned runs/, results/, capture/*.json (kept the pinned baseline)"
 }
 
 case "${1:-all}" in

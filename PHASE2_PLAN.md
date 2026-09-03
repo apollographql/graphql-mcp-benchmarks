@@ -95,10 +95,21 @@ travels with it: a blank cell asks a question, a wrong number answers one. Drive
 one-line registry (`UNRECOVERABLE`) rather than a phase check at each of the four print sites.
 `NOTES.md` 42 and 59.
 
+**The pre-registered expectations are scored** (`NOTES.md`, "SCORED"): 3 confirmed,
+1 half-falsified, 1 unscoreable, 1 untested, 1 retired, 1 held. Two are worth carrying
+into the writeup. Expectation **5** predicted M-G2's 1+N blowup on M4 — the study's
+headline finding — *before the tasks were authored*, and the mechanism generalized to M3
+(7 calls against 100). Expectation **1** is **unscoreable**, because phase 1's 20× is a
+cost ratio of which 96% is A1's cache-creation, and caching never hit in either phase;
+the payload column that would have been comparable is the one bug 42 made unrecoverable.
+Two harness defects between them cost that comparison.
+
 **NEXT, in the order I would take it:**
 
-1. **The writeup.** The measurement work is done and the lede is written; what does not exist
-   is the prose deliverable for a reader who will not open `summary.md`.
+1. ~~**The writeup.**~~ **Done** — `FINDINGS.md` (2026-09-03). Every numeric claim in it was
+   checked back against `results/phase2/raw.csv` rather than transcribed from a message; the
+   ratios it quotes (15.6x, 13.2x, 35.5x, 14.3x, 3.4x, the 66-token M4 delta) all recompute.
+   It carries the scored pre-registration and the caching caveat, and `README.md` points at it.
 2. **One $0.04 rerun to read `bp_at`**, optional. The content hypotheses are dead and
    breakpoint placement is what is left. Worth it only if the answer is *actionable* — a Goose
    setting that makes caching work would make the dollar column quotable, at the price of

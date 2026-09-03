@@ -204,9 +204,25 @@ Both are served from the same data; the difference is field selection.
   majority of production REST APIs, which have no field-selection mechanism.
 - **`-lean`** — honors `?fields=`. A REST service that has already solved over-fetching.
 
-Every `M-R*` condition runs in both, and results are reported as a range. On M1 the
-spread is 23.9–29.5× versus 3.4–4.9× against GraphQL — picking one profile would be picking the
-headline. See `pnpm measure`.
+Every `M-R*` condition runs in both. On M1 the static spread is 23.9–29.5× versus
+3.4–4.9× against GraphQL — picking one profile would be picking the headline. See
+`pnpm measure`.
+
+**Reported as separate rows, not as a range.** `results/phase2/summary.md` keys every
+table on `condition + profile` (`M-R1-fat`, `M-R1-lean`, …). It used to group on
+condition alone, which averaged the two brackets into a single figure matching no
+runnable configuration — on M1@50 they differ by 3.13× (NOTES.md 54).
+
+**Two things the matrix showed that this projection cannot.** The numbers above are
+bytes as *served*; the reported figures are pass-through tokens after the agent's actual
+field usage, so they are related but not the same quantity — at M1@50 the measured ratio
+is 15.6× where the static projection is ~29×.
+
+And the lean bracket only helps **when the agent uses it**. On M1@20 it cut pass-through
+13.2×; on M4@50 it changed nothing at all — 46,665 tokens fat against 46,599 lean —
+because the agent never sent `?fields=` on that task. The steelman is a real capability
+and an unreliable defence: it requires the model to opt into an optimisation it has no
+incentive to discover.
 
 ## Determinism
 

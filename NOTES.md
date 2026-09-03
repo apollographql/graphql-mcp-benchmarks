@@ -199,6 +199,10 @@ phase-1 notes above.
 Recorded up front so that if the results come in this way, it reads as a prediction
 rather than a post-hoc explanation.
 
+**The matrix has run. Every expectation below is scored in the next section — do not
+read one of these as an open question.** Nothing here has been edited to match the
+results; the corrections and sharpenings dated before 2026-09-03 all predate the runs.
+
 1. **Phase-2 GraphQL numbers will look WORSE than phase 1's.** In phase 1, B/B2 skipped
    schema discovery entirely because the model already knew GitHub's schema from
    training (see the phase-1 finding on recipe framing). Against a synthetic graph it
@@ -280,6 +284,94 @@ rather than a post-hoc explanation.
    `-fat` at 446,234 B (~127k tokens)**, which this expectation did not name — M4's sweep
    was extended after it was written. The deliberate high-N `-fat` smoke run should use
    M4@103, not M3@50.
+
+## ✅ SCORED — the pre-registered expectations against the 180-run matrix (2026-09-03)
+
+A pre-registration nobody scores is worth nothing, so each expectation above gets a
+verdict here. Numbers are pass-through tokens against the best GraphQL condition on the
+same task unless stated otherwise.
+
+**1. "Phase-2 GraphQL numbers will look worse than phase 1's 20×." — UNSCOREABLE as
+written, and the reason matters.** Phase 1's 20× is a *cost* ratio (A1 $0.182 vs B2
+$0.009 on T1), and **96% of A1's cost is cache-creation tokens** — its 144,710-byte,
+54-tool schema rewritten on every one of four calls. Prompt caching never hit in either
+phase (surprise 51), which inflates cache-creation charges for whichever condition has
+the largest prefix, and that is A1 by two orders of magnitude over B2. So phase 1's 20×
+is not a protocol result at that magnitude, and comparing phase 2 against it would
+compare two numbers distorted by the same defect to different degrees. The payload
+column that *would* have been comparable is the one bug 42 made unrecoverable. **Two
+harness defects, between them, cost us this expectation.**
+
+**2. "M1 close to a tie on `-lean`, large GraphQL win on `-fat`." — CONFIRMED on both
+halves, with the divergence the expectation itself asked us to report.** At M1@50:
+`-fat` 15.6×, `-lean` **1.1×**. The tie is decisive. But `-fat` came in at 15.6× against
+a static projection of 29.5×, and the expectation said explicitly that a sharp
+divergence means agent behaviour rather than payload and must be reported as such. Two
+causes, both real: pass-through tokens are not served bytes (the metric discounts fields
+whose values *do* reach the answer), and at low N the agent stops narrowing fields at
+all — see 3.
+
+**3. "On `-lean`, M1 dissolves while M2/M3/M4 hold at 6–8×." — HALF FALSIFIED, and the
+guard clause earned its keep.** M1 dissolved (1.1×) ✓. But on `-lean`: M3@50 **8.2×** ✓
+in band, M4@50 **5.7×** just under, M2@1 **3.6×** well under. The 6–8× band does not
+hold across M2/M3/M4; only M3 sits in it.
+
+The guard — "if M1 also holds at 6×+ on `-lean`, something is wrong with the lean
+profile" — did not fire at N=50. **It fires at N=1**: M1@1 reads `-fat` 15.7× and
+`-lean` 15.7×, *identical*. The lean profile is not broken. The agent simply did not
+send `?fields=` there, exactly as it did not on M4@50 (46,665 fat against 46,599 lean).
+One explanation covers both: **the steelman only helps when the agent opts into it, and
+the agent opts in inconsistently** — reliably at high N on M1, not at all at N=1 or on
+M4. A well-designed guard caught something true that was not what it was looking for.
+
+**4. `backend_requests`** — remains retired, not scored (see above).
+
+**5. "M-G2 may need MORE tool calls than M-G1 on some tasks; M4 is the worse case."
+— CONFIRMED, and it predicted the study's headline finding before the tasks existed.**
+Tool calls, M-G1 against M-G2: M4@20 **7 vs 21**, M4@50 **9 vs 51** — the named task,
+the predicted 1+N shape, from the predicted cause (`FlightsByOrigin` returns
+`aircraftId` but no fleet data). M3 turned out worse still and was *not* named: M3@20 5
+vs 40, M3@50 **7 vs 100**. So the mechanism generalized beyond the task it was predicted
+for.
+
+This is the strongest result in the pre-registration and it reframed the whole study.
+What it establishes is that GraphQL is both the cheapest and the most expensive condition
+in the matrix, and that the split is **operation granularity, not protocol** — M-G2 needs
+1 call on M1@50 and 100 on M3@50 with no change to its surface. Being written down before
+the tasks were authored is what makes it a prediction rather than a story.
+
+**6. "M-R1 ≈ 4× M-R2's prefix, M-G2 ≈ 2× M-G1's." — CONFIRMED on the arithmetic**
+(9,601/2,439 = 3.94×; 4,040/2,159 = 1.87×, both pinned in
+`capture/expected-tool-surfaces.json`). **The repayment question it posed is answered,
+and not in the direction it framed.** It expected front-loading to be repaid by fewer
+discovery round-trips, better for GraphQL because seven operations cover the domain. On
+M1 that holds emphatically — M-G2 needs 1 tool call where M-G1 needs 3–6, all discovery.
+On M3/M4 it inverts: the frozen set does not compose over cardinality, so M-G2 pays 100
+calls where M-G1's discovery cost buys it the ability to write one query. **Front-loading
+is repaid when the frozen operation fits the question and catastrophically not when it
+does not**, which is a sharper answer than "better for GraphQL".
+
+**7. Model `claude-haiku-4-5`** — held for all 180 runs. The open question it flagged is
+still open: nobody has re-run phase 1 on `claude-sonnet-4-6` to test whether the
+zero-discovery finding is model-dependent, so expectation 1 would still need a model
+qualifier if it were ever scoreable.
+
+**8. "M3/M4 at N=50 `-fat` will run close to the context window; REST hits a ceiling
+first, around N≈80." — UNTESTED, and now deliberately out of scope.** The one run built
+to test it (M4@103 `-fat`) never reached a context limit: **the turn cap fired first** at
+26 calls and 14,485 payload tokens (surprise 50). Its two-outcome design — clean API error
+versus silent truncation — was the right question and remains unanswered. M4@103 is now
+`off_matrix` on cost and runnable by exact id whenever the answer is worth a dollar. The
+honest statement in any writeup is that **phase 2 never reached a context limit**, not
+that REST does not have one.
+
+---
+
+**Scoreboard: 3 confirmed (2, 5, 6), 1 half-falsified (3), 1 unscoreable (1), 1 untested
+(8), 1 retired (4), 1 held (7).** The two that mattered most — 5 and the guard clause in
+3 — were both written before the data existed, and both changed what the study concluded.
+Worth noting against the nine measurement bugs on the other side of the ledger: the
+pre-registration was more reliable than the instrumentation.
 
 ## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
 
