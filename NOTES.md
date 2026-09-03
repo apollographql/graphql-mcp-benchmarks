@@ -1215,8 +1215,30 @@ tool-design effect.
     did not look" — the same trap as the three test fixtures that passed for the wrong reason
     earlier this session.
 
-    `parse_logs.py` now warns on it every parse: 4+ calls, zero reads, nonzero writes. It
-    currently prints **5 of 5 multi-call runs read 0 cached tokens while writing 513,423**.
+    `parse_logs.py` now warns on it every parse: 4+ calls, zero reads, nonzero writes. Across
+    the full matrix it prints **0 of 181 runs read a single cached token** against 32,216,643
+    written.
+
+    **And it is not new.** Re-parsing `runs/phase1` prints the same warning: **6 of 6
+    multi-call runs, 817,596 tokens written, zero read.** The defect predates phase 2 by
+    months, which means it is in every cost number this project has ever published — phase 1's
+    committed report included. That does not invalidate either comparison, because the
+    inflation applies to both arms.
+
+    **Decided against modelling it** (2026-09-03). The tempting move is a second cost column
+    showing what a cache-respecting client would pay. Rejected: it is a conjecture dressed as
+    a measurement, and it would age against three moving targets at once — Anthropic's
+    pricing, the cache's matching semantics, and Goose's breakpoint placement. It would also
+    need an assumption that changes the answer by a lot on exactly the 100-call cells the
+    finding rests on, with nothing to check the assumption against. Everything this repo does
+    is built on measuring rather than asserting, and a modelled column is an assertion with
+    decimal places.
+
+    What replaces it costs nothing and cannot rot: **lead on the cache-independent numbers.**
+    Tool calls and pass-through tokens are unaffected by the defect and carry the whole
+    finding — 1 call against 100, 2,352 tokens against 36,598. Dollars stay in the report as
+    measured, with the disclosure that they are inflated by a client defect and that their
+    direction is the only quotable part. That is already what the key-findings lede says.
 
     **The fingerprints came back and killed all three hypotheses.** M-G1/M1@5 rerun, 11 calls:
     from call 3 onward `sys_sha`, `tools_sha` and `msg0_sha` are **byte-identical every call**
@@ -1243,10 +1265,10 @@ tool-design effect.
 
     **Worth separating the two questions this raises.** Whether Goose can be made to cache is
     a client question and may have no answer we control. Whether the *published* cost ratio
-    should depend on it is ours, and the answer is no: the proxy logs enough to report cost
-    twice — as measured, and as a cache-respecting client would pay (first prefix at write
-    price, subsequent prefixes at read price, deltas at full price). Both columns are honest,
-    the second is the one that generalizes past Goose, and computing it needs no new runs.
+    should depend on it is ours, and the answer is no — but not by modelling a second cost
+    column (see the 2026-09-03 note above, which rejects that). By leading on the numbers the
+    defect cannot touch: tool calls and pass-through tokens, which carry the finding on their
+    own and need no counterfactual to be true.
 
 52. **The fix for the turn cap was to remove a cell, and the interesting part is that removing
     it correctly is not the same as deleting it.** N=103 was excluded on **cost**, not on
@@ -1398,4 +1420,39 @@ tool-design effect.
     N+1 is installed and correct, and the N+1 has moved **up a layer** into the agent's control
     flow, where no resolver-level technique reaches it. That is the argument for caring about
     operation granularity in a tool surface.
+
+58. **The cell refactor rendered a totals table of `0.0 ± 0.0` for every condition, and it
+    shipped.** Fixing the fat/lean fold (surprise 54) meant changing twelve grouping sites
+    from `condition` to `cell`. Eleven were `==` comparisons and got rewritten together. The
+    twelfth was `if r["condition"] != c: continue` — a negated filter, so it did not match the
+    pattern, and with `c` holding `M-R1-fat` while rows held `M-R1` it skipped every row. The
+    table then summed nothing and printed a full grid of zeros.
+
+    Zeros are the worst possible failure here: an empty join renders as a measurement. Nothing
+    errored, the table had the right shape and the right number of rows, and I read the report
+    afterwards and did not notice, because a zero in a token column looks like a small number
+    rather than like an absence.
+
+    Two lessons, one general. The general one is that a mechanical rewrite across N call sites
+    should be verified by *counting* the sites, not by re-running and reading the output — the
+    output looked fine. The specific one: `mcp` is derived from the rows, so a cell in it has
+    rows by construction, and the totals loop now exits rather than printing a row it could
+    not populate. An impossible state deserves a crash, not a plausible number.
+
+59. **Phase 1's `tool-payload tok` column is now suppressed rather than footnoted.** It
+    understates REST by roughly 10x (surprise 42) and cannot be recomputed, and it had been
+    sitting in the committed `results/phase1/summary.md` in three tables with **no disclosure
+    at all** while phase-2 work went on around it.
+
+    Suppressed, not annotated, and the reason is `summary.csv`: the same number lands in
+    columns 18 and 19 where no prose can travel with it. A markdown caveat does not stop
+    someone reading the CSV, and an order-of-magnitude error in a column labelled
+    "tool-payload tok" is exactly the figure a reader of this study would pull. **A blank cell
+    asks a question; a wrong number answers one.** So the markdown reads `n/a`, the CSV cells
+    are empty, and a `> ` note above the tables explains why and points at NOTES 42.
+
+    The mechanism is a small registry — `UNRECOVERABLE = {1: {"tool_result_tokens"}}` — rather
+    than an `if phase == 1` at each print site, because there are four print sites and the
+    next unrecoverable metric should be one line, not four. Phase 2's copy of the same metric
+    is correct and unaffected.
 

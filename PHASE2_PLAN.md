@@ -71,11 +71,39 @@ isolate them almost perfectly:
 - **Depth separates cleanly.** REST runs at data depth 2.0-2.7 on M2/M3/M4; GraphQL at 1.0
   everywhere except M-G2 on M4. `discovery_depth` is reported beside it and never folded in.
 
-Two disclosures the writeup must carry, both harness properties rather than results:
-**prompt caching never hit once in 181 runs** (§ below, `NOTES.md` 51), which inflates cost per
-call and therefore inflates the many-call REST arm most — so the plan is to publish cost twice,
-as measured and as a cache-respecting client would pay; and **phase 1's `tool-payload tok`
-column understates REST by roughly 10x** and is not recoverable (`NOTES.md` 42).
+Two disclosures the writeup must carry, both harness properties rather than results.
+
+**Prompt caching never hit once — in either phase.** 0 of 181 phase-2 runs read a cached token
+against 32.2M written, and re-parsing `runs/phase1` prints the same thing: 6 of 6 multi-call
+runs, 817,596 written, zero read. So the defect predates phase 2 and sits in every cost number
+this project has published, phase 1's committed report included. It does not invalidate either
+comparison — the inflation applies to both arms.
+
+**A modelled "as-if-cached" column was considered and rejected** (2026-09-03): it is a
+conjecture with decimal places, it would age against Anthropic's pricing, the cache's matching
+semantics and Goose's breakpoint placement simultaneously, and the assumption it requires
+changes the answer most on exactly the 100-call cells the finding rests on. Instead the report
+**leads on the numbers the defect cannot touch** — tool calls and pass-through tokens, which
+carry the whole finding — and keeps dollars as measured with the direction-only caveat the
+key-findings lede already states. `NOTES.md` 51.
+
+**Phase 1's `tool-payload tok` column is suppressed, not footnoted.** It understated REST ~10x
+and cannot be recomputed, and it had been sitting in the committed phase-1 report in three
+tables with no disclosure while all of this went on. It now reads `n/a` in the markdown and is
+**blank in `summary.csv`**, because the same number lands in columns 18-19 where no prose
+travels with it: a blank cell asks a question, a wrong number answers one. Driven by a
+one-line registry (`UNRECOVERABLE`) rather than a phase check at each of the four print sites.
+`NOTES.md` 42 and 59.
+
+**NEXT, in the order I would take it:**
+
+1. **The writeup.** The measurement work is done and the lede is written; what does not exist
+   is the prose deliverable for a reader who will not open `summary.md`.
+2. **One $0.04 rerun to read `bp_at`**, optional. The content hypotheses are dead and
+   breakpoint placement is what is left. Worth it only if the answer is *actionable* — a Goose
+   setting that makes caching work would make the dollar column quotable, at the price of
+   re-running the matrix ($43) to collect it. Not worth it as trivia.
+3. **M4@103**, a single named run, whenever the 127k-token question is worth a dollar.
 
 ### What the smoke runs established, and what they cost
 

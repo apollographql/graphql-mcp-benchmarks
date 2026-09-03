@@ -53,6 +53,25 @@ METRICS = [
     ("cache_creation_input_tokens", "cache-create tok"),
     ("tool_result_tokens", "tool-payload tok"),
 ]
+
+# Metrics that are KNOWN WRONG for a phase and must not be printed for it.
+#
+# Phase 1's `tool_result_tokens` undercounts any parallel tool call by the
+# fan-out factor, which understates the REST conditions by roughly 10x. The count
+# was computed inside the proxy and only the total was stored, so it cannot be
+# recomputed from `runs/phase1` — the fix (keying on `tool_use_id`) landed after
+# those runs were recorded. See NOTES.md 42.
+#
+# Suppressed rather than footnoted, because the number also lands in summary.csv
+# where no prose travels with it. A caveat in the markdown does not stop someone
+# reading column 18 of the CSV, and an order-of-magnitude error in a column
+# labelled "tool-payload tok" is exactly what a reader of this study would quote.
+# A blank cell asks a question; a wrong number answers one.
+UNRECOVERABLE = {1: {"tool_result_tokens"}}
+
+
+def metric_ok(key: str, phase: int) -> bool:
+    return key not in UNRECOVERABLE.get(phase, ())
 # Every condition this script knows how to report, in report order, by phase.
 # A condition that appears in `runs/` but not here is a hard error: the previous
 # behaviour was to filter rows against a hardcoded list, which meant an unknown
@@ -1426,6 +1445,17 @@ def write_summary(rows):
                  "never folded into `input_tokens`.\n")
     lines.append("> Cross-check the headline numbers against the audit section and the raw "
                  "logs in `runs/` before publishing.\n")
+    suppressed = sorted(UNRECOVERABLE.get(phase, ()))
+    if suppressed:
+        labels = ", ".join(f"`{lbl}`" for k, lbl in METRICS if k in suppressed)
+        lines.append(
+            f"> **{labels} reads `n/a` in this report, and is blank in `summary.csv`.** The "
+            f"proxy counted tool-result tokens once per request instead of once per "
+            f"`tool_use_id`, so any parallel tool call was undercounted by its fan-out "
+            f"factor — roughly 10x for the REST conditions. Only the total was stored, so it "
+            f"cannot be recomputed from these runs; the fix landed after they were recorded. "
+            f"Every other column here comes from Anthropic's `usage` verbatim and is "
+            f"unaffected, including all costs and call counts. See `NOTES.md` 42.\n")
 
     def task_table(task_id, condset, title):
         out = [f"\n### {title}\n",
@@ -1437,7 +1467,8 @@ def write_summary(rows):
                 continue
             cells = [f"**{c}** — {cell_label(c)}"]
             for k, _ in METRICS:
-                cells.append(fmt(*agg_stats(r[f"proxy_{k}"] for r in sub)))
+                cells.append(fmt(*agg_stats(r[f"proxy_{k}"] for r in sub))
+                             if metric_ok(k, phase) else "n/a")
             out.append("| " + " | ".join(cells) + " |")
         return out
 
@@ -1454,14 +1485,23 @@ def write_summary(rows):
     for c in mcp:
         per_rep = {}
         for r in rows:
-            if r["condition"] != c:
+            if r["cell"] != c:
                 continue
             d = per_rep.setdefault(r["rep"], {k: 0 for k, _ in METRICS})
             for k, _ in METRICS:
                 d[k] += r[f"proxy_{k}"]
+        # `mcp` is derived from the rows, so a cell here has rows by construction.
+        # This matched on `condition` while `c` held a cell id after the fat/lean
+        # split, so every row was skipped and the table rendered a full grid of
+        # `0.0 ± 0.0` — which reads as a measurement, not as an empty join. A
+        # totals row of zeros is impossible for a run that made any call at all.
+        if not per_rep:
+            sys.exit(f"internal: no rows for cell {c!r} in the totals table, but it came "
+                     f"from the rows. A grouping key is wrong; refusing to print zeros.")
         cells = [f"**{c}** — {cell_label(c)}"]
         for k, _ in METRICS:
-            cells.append(fmt(*agg_stats(d[k] for d in per_rep.values())))
+            cells.append(fmt(*agg_stats(d[k] for d in per_rep.values()))
+                         if metric_ok(k, phase) else "n/a")
         lines.append("| " + " | ".join(cells) + " |")
 
     # --- rover (C): reported separately ---
@@ -1573,7 +1613,7 @@ def write_summary(rows):
         w.writerows(rows)
     with open(RESULTS / "summary.csv", "w", newline="") as f:
         w = csv.writer(f)
-        head = ["condition", "profile", "task_id", "n", "n_reps"]
+        head = ["cell", "condition", "profile", "task_id", "n", "n_reps"]
         for _, lbl in METRICS:
             head += [lbl + " mean", lbl + " sd"]
         w.writerow(head)
@@ -1582,9 +1622,16 @@ def write_summary(rows):
                 sub = [r for r in rows if r["cell"] == c and r["task_id"] == t]
                 if not sub:
                     continue
-                row = [c, sub[0].get("profile") or "", t, task_n(t) if task_n(t) is not None else "",
-                       len(sub)]
+                # `profile` used to be filled from sub[0] while `sub` spanned both
+                # profiles, so a row of six mixed runs was labelled with whichever
+                # sorted first. Now that grouping is per cell they agree by
+                # construction, and cell_cond is the authority for the condition.
+                row = [c, cell_cond(c), sub[0].get("profile") or "", t,
+                       task_n(t) if task_n(t) is not None else "", len(sub)]
                 for k, _ in METRICS:
+                    if not metric_ok(k, phase):
+                        row += ["", ""]   # see UNRECOVERABLE — blank, never a wrong number
+                        continue
                     m, sd = agg_stats(r[f"proxy_{k}"] for r in sub)
                     row += [round(m, 2), round(sd, 2)]
                 w.writerow(row)
