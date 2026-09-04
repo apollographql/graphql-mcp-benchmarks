@@ -165,6 +165,18 @@ open(dst, "w").write(text)
 print("wrote", dst)
 PY
 
+  # --- Render the phase-2 dynamic Apollo config (M-G3) ---
+  # Same substitution, one placeholder: this config has no `operations:` block.
+  SUPERGRAPH_ABS="$PROJECT_ROOT/services/generated/supergraph.graphql" \
+  python3 - "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.yaml" \
+           "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.local.yaml" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read().replace("@@SUPERGRAPH_PATH@@", os.environ["SUPERGRAPH_ABS"])
+open(dst, "w").write(text)
+print("wrote", dst)
+PY
+
   # --- Warm uv deps for the proxy ---
   uv run "$PROJECT_ROOT/proxy/anthropic_logging_proxy.py" --selfcheck
 

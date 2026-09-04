@@ -18,7 +18,8 @@ runner, the four recipes, the grader, and the report all exist and are verified.
 numbers: §5.1 (all eleven cells) and §8.1 (the four tool surfaces, pinned in
 `capture/expected-tool-surfaces.json`).
 
-**The matrix is in: 181 runs, all four conditions, both payload brackets** (2026-09-02).
+**The matrix is in: 211 runs, five conditions, both payload brackets** (180 + 1 off-matrix on
+2026-09-02; `M-G3` added and run 2026-09-03).
 `MAX_TURNS=60` held — no run hit the cap. **180 of 180 finished runs are fact-verified with 0
 fabricated.** The one capped run in the tree is the earlier off-matrix M4@103 at the old cap of
 25, listed separately and excluded from every mean.
@@ -687,8 +688,9 @@ Phase-1 IDs (`A1/A2/B/B2/C`) are taken, so phase 2 uses an `M-` prefix.
 |---|---|---|---|
 | **M-R1** | REST | one tool per endpoint, generated from `openapi.json` | 9 |
 | **M-R2** | REST | `rest_request` + `openapi_search` + `openapi_describe` | 3 |
-| **M-G1** | Federated GraphQL | `execute` + `schema_search` + `schema_describe` | 3 |
+| **M-G1** | Federated GraphQL | `execute` + `schema_search` + `schema_describe` (**our server** — a control; see §8.1) | 3 |
 | **M-G2** | Federated GraphQL | pre-baked persisted operations (Apollo MCP `operations:`) | frozen set |
+| **M-G3** | Federated GraphQL | `execute` + `search` + `validate` (Apollo MCP dynamic tools, `introspect` off) — **added 2026-09-03** | 3 |
 
 Each `M-R*` condition runs in both payload profiles from §3.1 — `M-R1-fat` / `M-R1-lean`,
 `M-R2-fat` / `M-R2-lean` — so REST's payload disadvantage is reported as a bracketed range
@@ -1222,9 +1224,29 @@ with `capture/capture_mcp.py` into `capture/M-*.json`:
 | Condition | Server | Tools | `tools_list_bytes` | Representative calls (result bytes) |
 |---|---|---|---|---|
 | M-R1 | `servers/openapi_mcp.py --mode tools` | 9 | **9,601** | `listFlight` 14,312 · `getFlight` 3,110 · `listAircraftAdvisories` 350 |
-| M-R2 | `servers/openapi_mcp.py --mode discovery` | 3 | 2,439 | `openapi_search` 123 · `openapi_describe` 4,494 · `rest_request` 14,312 |
-| M-G1 | `servers/supergraph_mcp.py` | 3 | 2,159 | `schema_search` 3,487 · `schema_describe` 440 · `graphql_execute` 363 |
+| M-R2 | `servers/openapi_mcp.py --mode discovery` | 3 | 2,439 → **2,652** | `openapi_search` 123 · `openapi_describe` 4,494 · `rest_request` 14,312 |
+| M-G1 | `servers/supergraph_mcp.py` | 3 | 2,159 → **2,270** | `schema_search` 3,487 · `schema_describe` 440 · `graphql_execute` 363 |
 | M-G2 | `bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml` | 7 | 4,040 | `FlightSchedule` 1,082 · `FlightRoster` 2,335 · `FlightAirworthiness` 455 |
+| M-G3 | `bin/apollo-mcp-server config/apollo-mcp.phase2-dynamic.local.yaml` | 3 | **1,940** | `search` 789 · `execute` 590 |
+
+**Two surfaces moved on 2026-09-03, deliberately.** `M-R2` and `M-G1` grew when both search
+tools were fixed (`NOTES.md` 73): their descriptions changed, and a tool description is part of
+the measured surface. The arrow form is the point — **the left number is what the 180-run
+matrix carried and the right is what the code exposes now**, and they are different kinds of
+fact. `capture/expected-tool-surfaces.json` tracks the right-hand value because that is what
+the drift gate must compare against; it also records the left-hand one with the timestamp it
+stopped applying, so `results/phase2/summary.md` prints `(as run)` against those runs rather
+than quietly restating today's figure (`NOTES.md` 77). `M-R1` did not move — it exposes no
+search tool.
+
+**M-G3 was added 2026-09-03**, after the matrix had run. `M-G1` is a server we wrote to do
+search-then-execute over the supergraph, and Apollo MCP Server already does exactly that — so
+the original 2x2 measured a hand-rolled substitute in the slot where a product was available,
+and that substitute went on to win every cell. `M-G3` is the product in that slot, with
+`introspect` disabled so `search` is its only discovery tool. It makes the GraphQL axis
+separable: same implementation as `M-G2` with different packaging, same packaging as `M-G1`
+with a different implementation. It ran 30 runs and beat `M-G1` on pass-through in 9 of 10
+cells while losing on cost in 6 — our substitute was wrong in both directions. `NOTES.md` 74.
 
 **M-R1 moved from 9,440 to 9,601 bytes, and nothing said so.** Commit `14d8973` added a
 `roles` filter to the assignments endpoint on both surfaces, which grew `listAssignment`'s

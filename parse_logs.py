@@ -19,6 +19,7 @@ stdlib + optional matplotlib. Usage: python3 parse_logs.py [runs_dir]
                              Env:   RESULTS_DIR=results/phase1
 """
 import csv
+import datetime as dt
 import json
 import os
 import statistics
@@ -115,12 +116,12 @@ def metric_ok(key: str, phase: int, rows=None) -> bool:
 # quietly missing half the experiment (§11).
 PHASE_CONDS = {
     1: ["A1", "A2", "B", "B2", "C"],
-    2: ["M-R1", "M-R2", "M-G1", "M-G2"],
+    2: ["M-R1", "M-R2", "M-G1", "M-G2", "M-G3"],
 }
 COND_PHASE = {c: ph for ph, cs in PHASE_CONDS.items() for c in cs}
 # Conditions whose numbers belong in the same table. Phase 1 keeps C out of it
 # (CLI-as-tool, not MCP, reported separately); all four phase-2 conditions are MCP.
-MCP_CONDS = ["A1", "A2", "B", "B2", "M-R1", "M-R2", "M-G1", "M-G2"]
+MCP_CONDS = ["A1", "A2", "B", "B2", "M-R1", "M-R2", "M-G1", "M-G2", "M-G3"]
 COND_LABEL = {
     "A1": "REST (default toolset)",
     "A2": "REST (minimal toolset)",
@@ -129,8 +130,9 @@ COND_LABEL = {
     "C": "GraphQL (rover CLI, no MCP)",
     "M-R1": "REST (one tool per endpoint)",
     "M-R2": "REST (search + describe + request)",
-    "M-G1": "GraphQL (search + describe + execute)",
-    "M-G2": "GraphQL (frozen persisted operations)",
+    "M-G1": "GraphQL (search + describe + execute, our server)",
+    "M-G2": "GraphQL (frozen persisted operations, Apollo MCP)",
+    "M-G3": "GraphQL (search + validate + execute, Apollo MCP)",
 }
 def cell_id(row) -> str:
     """The report's grouping key: condition plus payload profile.
@@ -188,8 +190,9 @@ COND_SHORT = {
     "C":  "C\nRover CLI",
     "M-R1": "M-R1\nREST front-loaded",
     "M-R2": "M-R2\nREST on-demand",
-    "M-G1": "M-G1\nGraphQL on-demand",
+    "M-G1": "M-G1\nGraphQL on-demand (ours)",
     "M-G2": "M-G2\nGraphQL front-loaded",
+    "M-G3": "M-G3\nGraphQL on-demand (Apollo)",
 }
 
 
@@ -225,7 +228,8 @@ GRADE_FIELDS = ["answer_f1", "answer_precision", "answer_recall", "answer_covera
                 "pass_through_tokens", "pass_through_fraction",
                 "pass_through_tokens_ex_discovery",
                 "pass_through_fraction_ex_discovery",
-                "forced_serial_depth", "discovery_depth"]
+                "forced_serial_depth", "discovery_depth",
+                "tool_errors", "tool_error_tools"]
 # Integrity fields, present on every row regardless of phase.
 INTEGRITY_FIELDS = ["tool_results_recorded", "payload_loss", "payload_complete",
                     "payload_note"]
@@ -256,6 +260,13 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
     grounding = grade.answer_grounded(proxy.get("n_tool_calls"), calls, cell, answer)
     depth = grade.forced_serial_depth(calls, prompt) if calls else {}
     through = grade.pass_through_tokens(calls, answer) if calls else {}
+    # Error results, counted because nothing else in the report names them. The
+    # immediate reason is M-G3: Apollo's remaining tool descriptions still point
+    # at `introspect` after it is disabled, so a run can spend turns on a tool
+    # that is not there, and those turns would otherwise read as discovery cost
+    # (NOTES.md 75). Three-state like the payload fields — `{}` when there is no
+    # sidecar, so an unmeasured run is not reported as a clean one.
+    errors = grade.tool_errors(calls) if calls else {}
     # Exact token total from the proxy, apportioned by the unused-byte fraction —
     # see grade.pass_through_tokens for why the ratio, not the tokenizer, carries
     # the approximation.
@@ -285,6 +296,8 @@ def grade_row(meta: dict, run_dir: Path, proxy: dict) -> dict:
         "correct_items": result["correct_items"],
         "missing_keys": len(result["missing_keys"]),
         "unparsed_values": len(result["unparsed_keys"]),
+        "tool_errors": errors.get("tool_errors"),
+        "tool_error_tools": errors.get("tool_error_tools"),
         "answer_grounded": grounding["grounded"],
         "grounded_facts": grounding["facts"],
         "needs_review": result["needs_review"],
@@ -644,14 +657,51 @@ def stop_cause(meta: Path, stdout: Path) -> str | None:
     return None
 
 
+def observed_model(p: Path, configured: str) -> str:
+    """The model the API actually served, not the string someone typed.
+
+    `meta.json` records the `MODEL` env var verbatim, so the same model reaches
+    the report under two labels depending on whether the operator passed an alias
+    (`claude-haiku-4-5`) or a snapshot (`claude-haiku-4-5-20251001`). The
+    mixed-model guard then refuses to parse a tree that is not actually mixed —
+    which is what happened when M-G3 was run with the alias against 180 runs
+    launched with the snapshot (NOTES.md 76).
+
+    Resolving it from the proxy is strictly better than normalising the label,
+    because an alias is a moving target: if `claude-haiku-4-5` is ever repointed
+    upstream, two genuinely different models would arrive under one configured
+    name and the guard — reading the env var — could not see it. The API response
+    names the snapshot it served, so grouping on that makes the guard detect the
+    case it exists for.
+
+    Falls back to `configured` when there is no proxy log or no matching call, so
+    a run with no observed model is grouped as configured rather than dropped.
+    """
+    if not p.exists():
+        return configured
+    for line in p.read_text().splitlines():
+        try:
+            r = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        served = r.get("model") or ""
+        if r.get("is_messages") and served.startswith(configured):
+            return served
+    return configured
+
+
 def collect():
     rows = []
     for meta_path in sorted(RUNS.glob("*/*/rep*/meta.json")):
         run_dir = meta_path.parent
         meta = json.loads(meta_path.read_text())
-        run_model = meta.get("model", PRIMARY_MODEL).split(" ")[0]
-        proxy = parse_proxy(run_dir / "proxy.jsonl", task_model=run_model)
-        per_call = parse_proxy_per_call(run_dir / "proxy.jsonl", task_model=run_model)
+        configured_model = meta.get("model", PRIMARY_MODEL).split(" ")[0]
+        # Group on what the API served; keep what was configured for provenance.
+        # `parse_proxy` still filters on the configured prefix, which matches an
+        # alias and its snapshot alike, so call selection is unchanged.
+        run_model = observed_model(run_dir / "proxy.jsonl", configured_model)
+        proxy = parse_proxy(run_dir / "proxy.jsonl", task_model=configured_model)
+        per_call = parse_proxy_per_call(run_dir / "proxy.jsonl", task_model=configured_model)
         row = {
             "condition": meta["condition"], "task_id": meta["task_id"], "rep": meta["rep"],
             # Phase-2 report axes (§11). `condition` stays the 2x2 axis — protocol x
@@ -664,8 +714,10 @@ def collect():
             "n": meta.get("n", task_n(meta["task_id"])),
             "profile": meta.get("profile"),
             "model": run_model,
+            "model_configured": configured_model,
             "toolsets": meta.get("toolsets"), "goose_exit": meta.get("goose_exit"),
             "timed_out": meta.get("timed_out"), "budget_killed": meta.get("budget_killed", False),
+            "started": meta.get("started"),
             "duration_s": meta.get("duration_s"), "agent_active_s": proxy.get("agent_active_s", 0.0),
             "stop_cause": stop_cause(meta_path, run_dir / "stdout.txt"),
             **{f"proxy_{k}": proxy[k] for k, _ in METRICS},
@@ -1403,7 +1455,7 @@ def _prefix_section(rows, conds, phase: int = 1) -> list[str]:
         nt = sorted({r["prefix_n_tools"] for r in sub if r.get("prefix_n_tools")})
         nt_txt = "–".join(str(n) for n in (nt[:1] + nt[-1:] if len(nt) > 1 else nt)) or "—"
         rng = f"{lo:,}" if lo == hi else f"{lo:,}–{hi:,}"
-        lines.append(f"| **{c}** | {nt_txt} | {_surface_bytes_for(c)} | {rng} "
+        lines.append(f"| **{c}** | {nt_txt} | {_surface_bytes_for(c, rows)} | {rng} "
                      f"| {cmin_txt} | {verdict} |")
     below = [r for r in measured
              if (mins[r.get("model", PRIMARY_MODEL)] or 0)
@@ -1431,12 +1483,55 @@ def _prefix_section(rows, conds, phase: int = 1) -> list[str]:
     return lines
 
 
-def _surface_bytes_for(cell: str) -> str:
-    """`tools/list` bytes for a cell, from the file that owns them (see §8.1)."""
+def _surface_for_runs(entry: dict, started: list) -> tuple:
+    """Which of a condition's surfaces applied to these runs.
+
+    Returns `(n_tools, bytes, note)`. A tool surface sits in the cached prefix of
+    every call, so printing the wrong one misstates a published cost — and the
+    wrong one is easy to print, because `expected-tool-surfaces.json` tracks what
+    the servers expose *today* while `runs/` holds whatever they exposed when it
+    ran. Those diverged the moment the search fix moved two surfaces and 180 runs
+    on the old ones stayed in the tree (NOTES.md 77).
+
+    So the file records superseded surfaces with the timestamp each stopped
+    applying, and this picks by run start time. A cell whose runs straddle a
+    change gets no single figure: that is not a footnote, it is two experiments,
+    and the caller says so.
+    """
+    history = entry.get("superseded") or []
+    if not history or not started:
+        return entry["n_tools"], entry["tools_list_bytes"], ""
+    cutoffs = []
+    for h in history:
+        try:
+            cutoffs.append((dt.datetime.fromisoformat(h["changed_at"]).timestamp(), h))
+        except (ValueError, KeyError):
+            continue
+    if not cutoffs:
+        return entry["n_tools"], entry["tools_list_bytes"], ""
+    cutoffs.sort()
+    lo, hi = min(started), max(started)
+    for ts, h in cutoffs:
+        if hi < ts:                                  # every run predates the change
+            return h["n_tools"], h["tools_list_bytes"], "as run"
+        if lo < ts <= hi:                            # runs straddle it
+            return None, None, "MIXED"
+    return entry["n_tools"], entry["tools_list_bytes"], ""
+
+
+def _surface_bytes_for(cell: str, rows: list = None) -> str:
+    """`tools/list` bytes for a cell, as it was when these runs ran (see §8.1)."""
     try:
         b = json.loads((ROOT / "capture" / "expected-tool-surfaces.json").read_text())
         e = b[cell_cond(cell)]
-        return f"{e['n_tools']} tools / {e['tools_list_bytes']:,} B"
+        started = [r["started"] for r in (rows or [])
+                   if r.get("cell") == cell and r.get("started")]
+        n, by, note = _surface_for_runs(e, started)
+        if note == "MIXED":
+            return (f"**mixed** — runs straddle a surface change; "
+                    f"currently {e['n_tools']} tools / {e['tools_list_bytes']:,} B")
+        suffix = f" ({note})" if note else ""
+        return f"{n} tools / {by:,} B{suffix}"
     except Exception:
         return "—"
 

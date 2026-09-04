@@ -1994,6 +1994,294 @@ tool-design effect.
 
 ---
 
+73. **Both discovery conditions' search tools required every term to match, so about half of
+    every search in the matrix returned nothing — and the two conditions recovered from that
+    at very different prices.** Found 2026-09-03 by asking a plain question of the run logs:
+    *did the agents use the search tools?* They did, heavily — `openapi_search` was 19% of
+    `M-R2`'s tool calls and `schema_search` was **30%** of `M-G1`'s. Then:
+
+    | | search calls | zero-match | median response |
+    |---|--:|--:|--:|
+    | `M-R2-fat` | 66 | **45%** | 344 B |
+    | `M-R2-lean` | 67 | **48%** | 343 B |
+    | `M-G1` | 58 | **55%** | 122 B |
+
+    Not terse hits — literal `{"matched": 0, "results": []}`, on entirely reasonable
+    phrasings: `flight number departure gate`, `advisory grounding`, `type rating`,
+    `pilot captain first officer`. Two independent causes, one in each tool and both mine:
+
+    - **Terms were AND'd.** `openapi_search` did `any(all(term in haystack ...))`;
+      `schema_search` shelled out to `rover schema search` with `query.split()` as argv,
+      which rover AND's. `rover` was never at fault — every failing query succeeds as a
+      single term (`gate` → 7 hits including `Flight.gate`; `advisories` → 6 including
+      `Aircraft.advisories`). The AND was **deliberate**, and documented as such in
+      `openapi_mcp.py`: *"Same query grammar as rover schema search … keeping the two
+      discovery surfaces ergonomically symmetric is part of what makes M-R2 vs M-G1 a
+      protocol comparison rather than a UX comparison."* The symmetry reasoning was right
+      and the grammar was unusable, which is a combination worth remembering: a fair
+      comparison between two broken instruments is still a broken measurement.
+    - **No stemming.** `advisory` is not a substring of `advisories`, so
+      `openapi_search("advisory")` matched nothing in a catalog whose every relevant
+      response field is `advisories`.
+
+    **Why it is a measurement error and not just a bad tool.** The handicap was symmetric;
+    the *recovery* was not. When `M-R2`'s search missed, the agent guessed a path — REST
+    paths are guessable, and one run opened with an unprompted `GET /v2/flights` that
+    worked — or described a single operation for ~4,760 B. When `M-G1`'s search missed it
+    could not guess a query, so it fell back to `schema_describe(Query)`: **18,410 B**, the
+    largest single response in those runs. Same bug, **~3.9× the cost on the GraphQL side.**
+
+    There was a second, quieter asymmetry underneath it. `openapi_search` returned parameter
+    names all along, so a REST hit was actionable — search → request. `rover schema search`
+    returns `coordinate`, `kind`, `description`, `via` and **no signature**, so a GraphQL hit
+    could not tell the agent that `Query.flightsByNumbers` takes `flightNumbers: [String!]!`.
+    `M-G1` therefore needed search → describe → execute even when search *worked*. That
+    extra hop is most of what `WRITEUP.md` caveat 2 reported as "the query-language approach
+    has a floor". **The floor is real — a hit still leaves you needing a selection set — but
+    we published it at 4–7 calls when its structural minimum is about 3.**
+
+    **Direction: conservative.** Both faults made `M-G1` look worse, which is the fifth
+    instance of that pattern in this ledger and the fourth on a headline metric. It is also
+    the second time a bug hid inside a decision that was *documented and defended* — see 62
+    on `forced_serial_depth`. Reading the defence is not the same as testing the behaviour.
+
+    **Fixed** by moving the grammar into `servers/_search.py`, used by both tools, so they
+    cannot drift apart again: OR within a clause with results ranked by matched-term count,
+    comma still separating alternatives, light stemming so `advisory` finds `advisories`, and
+    stop words dropped so OR over `the` does not return the catalog. Then the two
+    asymmetries: `schema_search` now matches in-process against an index parsed from the same
+    SDL and returns each field's **full signature**, and `openapi_search` now indexes
+    **response field names** so `type rating` finds `listCrewMember` — without that second
+    change the fix would have handed GraphQL an index covering 153 fields against REST's
+    nine endpoints, which is an advantage the protocols do not have. `rover` still backs
+    `schema_describe`, the tool it was always right for.
+
+    Verified: every zero-match query from the logs is a regression case in
+    `servers/test_search.py` (61 checks), pasted from `tool_io.jsonl` rather than invented.
+    `flight number departure gate` now returns `Query.flightsByNumbers(flightNumbers:
+    [String!]!): [Flight!]!` **first**, with `Flight.gate` in the same result set — enough to
+    answer M1 in one search plus one execute. The failure path shrank from 18,410 B to
+    1.8–3.5 kB and mostly disappears.
+
+    **Consequences that are not yet paid.** The tool descriptions changed, so the measured
+    surfaces moved: `M-R2` 2,439 → **2,652 B**, `M-G1` 2,159 → **2,270 B**, `M-R1` unchanged
+    at 9,601 (it has no search tool). Near-symmetric, and slightly *against* GraphQL on
+    prefix. `capture/expected-tool-surfaces.json` is updated so the drift gate reflects the
+    code; **the 180 published runs used the pre-fix surfaces**, so every surface byte figure
+    in `FINDINGS.md`, `PHASE2_PLAN.md` §8.1 and the tables above still correctly describes
+    those runs and legitimately differs from the pinned file until the affected cells are
+    re-run. The cells at risk are the low-N ones where discovery dominates — `M1@1`,
+    `M1@5`, `M2@1` on `M-G1`, `M-R2-fat` and `M-R2-lean`. The join result does not depend on
+    any of this: `M-G1`'s data query on `M3@50` was one request before the fix and is one
+    after, and neither `M-R1` nor `M-G2` has a search tool at all.
+
+74. **The condition that won the whole matrix was a hand-rolled substitute for a shipping
+    tool that already did the job, and did it better.** Raised 2026-09-03, by the plainest
+    possible objection to the previous entry: *Apollo MCP Server has a `search` tool.* It
+    does. Phase-1 condition `B` enabled all four of its dynamic tools —
+    `search` / `introspect` / `validate` / `execute` — which is precisely the shape `M-G1`
+    exists to test. `servers/supergraph_mcp.py` is 225 lines reimplementing it.
+
+    So the phase-2 design put a bespoke server in the slot where a product was available,
+    that server then beat every other condition on all ten task instances, and the previous
+    entry spent its effort **fixing the substitute's search rather than measuring the real
+    one**. Two things follow, and neither was intended:
+
+    - **The GraphQL axis was the confounded one.** `M-R1` vs `M-R2` is one binary in two
+      modes, so it varies packaging alone. `M-G1` vs `M-G2` was two different servers, so it
+      varied packaging *and* implementation, with nothing in the matrix to separate them. The
+      6.7×-apart claim in `WRITEUP.md` said the two GraphQL conditions differed only in the
+      shape of their operations. They also differed in who wrote them.
+    - **Apollo MCP Server appeared only with every dynamic tool switched off** (`M-G2`,
+      which is its worst configuration here), so its `search` was never measured. The one
+      place it was ever enabled is phase-1 `B`, where the agent never called it — all six
+      runs are a single `execute` on training knowledge of GitHub's schema, after the recipe
+      framing that had been driving 7–12 `search` calls was removed.
+
+    **Measured, not assumed.** Apollo's `search` against this same supergraph, probed through
+    the real MCP transport:
+
+    | terms | result |
+    |---|--:|
+    | `flight number departure gate` | 995 B |
+    | `typeRating current` | 2,739 B |
+    | `captain first officer` | 1,828 B |
+    | `advisory grounding` | 986 B |
+
+    Every one of those is a query our `schema_search` returned **zero** results for. Two
+    design differences explain it, and both are the ones entry 73 had to build by hand:
+    `terms` is an **array**, so the AND-a-whole-phrase failure cannot arise; and it returns
+    **SDL fragments** — real type blocks with field signatures, plus the `Query` root — rather
+    than bare coordinates, so a hit is actionable without a second lookup. That second
+    property is exactly what `M-G1` lacked and what `WRITEUP.md` caveat 2 reported as
+    GraphQL's discovery floor.
+
+    **Added `M-G3`**: Apollo MCP Server, four dynamic tools, no persisted operations, same
+    supergraph. 4 tools / **2,900 B** — identical to phase-1 `B`, since it is the same four
+    tools from the same binary, and between `M-R2` (2,652) and `M-G2` (4,040), so the
+    on-demand pair is closer on prefix than `M-R2`/`M-G1` was. Its value is the two pairings:
+    same implementation as `M-G2` with different packaging, same packaging as `M-G1` with a
+    different implementation. `phase 1`'s `introspect` ban is deliberately **not** carried
+    over — that was a cost-control decision about GitHub's live schema, and this supergraph
+    is 12 KB.
+
+    **What this does to entry 73.** The search fix stands: `M-R2`'s half of it is needed
+    regardless, because REST discovery has no vendor equivalent to swap in, and both tools
+    had to move together or the fix would itself have been the bias. But the framing was
+    wrong. 73 called the AND'd grammar a flaw in the instrument; the deeper flaw is that the
+    instrument existed at all in a slot a product could have filled, and `M-G1`'s 55%
+    zero-match rate is a property of code we wrote for this study rather than of anything a
+    reader can install.
+
+    **Direction: unknown, and that is the point.** Every other error in this ledger has a
+    sign. This one does not, until `M-G3` runs. `M-G1` may have been a weak stand-in that
+    understated on-demand GraphQL, or a hand-tuned one that flattered it; the honest position
+    is that the matrix cannot currently tell. **Until `M-G3` has run, `M-G1` should be read as
+    "a small MCP server we wrote", never as "GraphQL on-demand".**
+
+    **RESOLVED 2026-09-04 — the direction is *both*, on different metrics.** `M-G3` ran, 30
+    runs, all ten instances. Against `M-G1`, same packaging, different implementation:
+
+    | | M-G3 better | so M-G1 was |
+    |---|--:|---|
+    | pass-through tokens | **9 of 10** | a weak stand-in — the study **understated** on-demand GraphQL's payload efficiency |
+    | cost per task | 4 of 10 | a flattering stand-in — it **overstated** its cost efficiency |
+    | tool calls | 4 of 10 | same |
+
+    So the substitute was wrong in both directions at once, and no single sign covers it.
+    Apollo's `search` returns SDL fragments, which buys payload efficiency; it also makes more
+    calls, and in a regime where no prefix reaches the cache minimum, calls dominate cost. A
+    reader who had taken `M-G1` as "GraphQL on-demand" would have been wrong about the payload
+    gap in GraphQL's disfavour and wrong about the cost gap in its favour.
+
+    **The headline survived and widened.** Best GraphQL still beats best REST on all ten
+    instances on both metrics, with `M-G3` taking the win in 5 of 10 cells. `M3@50`
+    pass-through went from 8.2x to **11.9x** and its cost gap from 6.0x to **7.0x**. `M-G3` is
+    also the flattest condition in the matrix: 1,021 to 1,376 pass-through tokens from N=1 to
+    N=50 on M1.
+
+    `M-G1` **stays a reported condition**, relabelled as what it is. "We wrote our own MCP
+    server and it was wrong in both directions against the product" is a finding about
+    hand-rolling, and deleting it would hide the error rather than record it.
+
+75. **`M-G3` runs with `introspect` disabled, and the three remaining Apollo tools still tell
+    the agent to use it.** Decided 2026-09-03. `introspect` is the tool that can walk a type
+    tree wholesale — `introspect(Query, depth: N)` approaches a whole-schema dump at large N —
+    and the condition exists to measure *targeted* discovery. Apollo's own `search` advertises
+    itself as sufficient without it: *"Returns complete type definitions including all related
+    types needed to construct GraphQL operations."* So `M-G3` exposes `search` + `validate` +
+    `execute`, and the question it asks is whether search alone is enough.
+
+    Phase-1 condition `B` reached the same conclusion by the other route: it left `introspect`
+    enabled in the config and banned it **in the recipe prompt** — *"Do NOT call `introspect`
+    — it loads entire type trees and is too expensive."* That is condition-specific coaching,
+    which is precisely the phase-1 weakness phase 2 was built to remove; the M-* recipes carry
+    a byte-identical instruction block and a hint in one recipe measures the hint. Disabling
+    the tool is the only way to express the same intent in phase 2.
+
+    **The hazard, verified rather than assumed.** With `introspect` off, all three remaining
+    tools still reference it, twice unconditionally: `execute` says *"Use the `introspect` tool
+    to get information about the GraphQL schema"*, `validate` says *"Use the `introspect` tool
+    first"*, and `search` hedges with *"If the introspect tool is also available"*. So the
+    surface instructs the agent to reach for a tool that is not on it. That is Apollo's text,
+    not ours, and it is a real property of shipping this configuration — but it is also exactly
+    the kind of thing that would arrive in a results table as *"GraphQL discovery is
+    expensive"*.
+
+    So this entry comes with an instrument rather than a caveat. `grade.tool_errors()` counts
+    tool results the API returned with `is_error` set and attributes them by `tool_use_id`, and
+    `parse_logs.py` now carries **`tool_errors`** and **`tool_error_tools`** on every row. The
+    proxy has recorded `is_error` per result since it was written; nothing had ever read it. An
+    error result is payload the agent paid for and could not use, and no column named it. **Read
+    `M-G3`'s `tool_errors` before reading its cost** — and if the count is non-trivial, the
+    honest fix is a `search`-only surface with the descriptions taken as given, not a quiet
+    footnote.
+
+    Surface: 3 tools / **1,940 B**, the smallest in the matrix, against `M-R2`'s 2,652 and the
+    post-fix `M-G1`'s 2,270. With `introspect` enabled it is 4 tools / 2,900 B — identical to
+    phase-1 `B`, since it is the same four tools from the same binary.
+
+    **And the drift gate caught its own author, which is the third time.** This was first
+    pinned at 1,857 B, measured with `json.dumps(..., separators=(",", ":"))`, while
+    `capture_mcp.py` uses `len(json.dumps(...))` with default separators. Same surface, 83
+    bytes apart, purely units. `check_surfaces.py` failed the capture and printed both numbers.
+    A byte count is not a byte count unless the serializer is stated — the same class of error
+    as reading `cache_creation` as a prompt size (68).
+
+76. **The mixed-model guard refused a tree that was not mixed, because `meta.json` records
+    the `MODEL` env var verbatim.** Hit 2026-09-04 on the first parse after `M-G3` ran. The 180
+    existing runs were launched with `MODEL=claude-haiku-4-5-20251001`; I told the operator to
+    launch `M-G3` with `MODEL=claude-haiku-4-5`. Same model — the alias resolves to that exact
+    snapshot, and both sets of proxy logs record `claude-haiku-4-5-20251001` as the model the
+    API actually served — but the guard compares the configured strings, saw two, and stopped
+    (correctly, given what it could see).
+
+    My error twice over: the run command I handed over used a different label from the runs it
+    had to sit beside, and `README.md`'s own repro block says `claude-haiku-4-5` while every
+    published run used the dated form.
+
+    **Fixed by grouping on what the API served, not on what someone typed.**
+    `parse_logs.observed_model()` reads the model off the proxy log and falls back to the
+    configured value; the row now carries both (`model` observed, `model_configured` for
+    provenance). Call selection is unchanged — `parse_proxy` still filters on the configured
+    prefix, which matches an alias and its snapshot alike.
+
+    This is strictly stronger than normalising the label, and that is the reason to prefer it:
+    **an alias is a moving target.** If `claude-haiku-4-5` is ever repointed upstream, two
+    genuinely different models arrive under one configured name, and a guard reading the env
+    var cannot see it — the exact failure it exists to prevent, inverted. Reading the served
+    snapshot makes the guard able to detect the case it was written for.
+
+77. **The report printed today's tool surfaces against yesterday's runs.** Caught 2026-09-04
+    while parsing `M-G3` in, and it had already rendered once. `capture/expected-tool-surfaces.json`
+    tracks what the servers expose **now**; `runs/` holds whatever they exposed **then**. Those
+    are the same file until something changes, and the search fix (73) changed two: `M-R2`
+    2,439 → 2,652 B and `M-G1` 2,159 → 2,270 B, while 180 runs on the old surfaces stayed in
+    the tree. `_surface_bytes_for()` read the pinned file, so the prefix table asserted 2,652 B
+    for runs that had carried 2,439.
+
+    A tool surface sits in the cached prefix of every call, so this is a published cost stated
+    wrongly — the same class as 54 and 63, and it arrived by the same route: a number that was
+    true when it was written, read from a file whose job is to be current.
+
+    **Fixed** by giving the pinned file a `superseded` list per condition — the previous
+    surface plus the timestamp it stopped applying — and making `_surface_bytes_for()` pick by
+    each run's `started`. Runs entirely before a change print the surface they actually carried,
+    marked `(as run)`. Runs that **straddle** a change print no single figure at all: that is
+    not a footnote, it is two experiments in one row, and the table says `mixed`.
+    `test_parse_logs.py` covers all four cases, the straddle included.
+
+    The general lesson, which this repo keeps relearning: **a pinned baseline and a
+    measurement are different kinds of fact.** The baseline answers "what does the code do
+    today", the measurement answers "what did this run see". Reading one for the other is how
+    both 63 and this happened, and the fix is always to key the lookup on the run.
+
+78. **An empty result is not an error, and nothing in the report counted it.** Found
+    2026-09-04 in `M-G3`'s worst cell. `M2@1`'s prompt says *"For flight FL-0001"* and supplies
+    an **id**, while `M1`'s says *"the following flight numbers"* and supplies `AA5751`-style
+    values. So `M-G3` called `flightsByNumbers(flightNumbers: ["FL-0001"])` — three times
+    across one run — got valid, well-formed, **empty** results, and burned six `search` calls
+    around them before reaching `flightsByIds`. 12, 15 and 8 tool calls across its three
+    replicates, against `M-G1`'s 8, 6, 7.
+
+    `tool_errors` is **0** for every one of those runs, and that is correct: nothing errored.
+    Which is the finding. The instrument added in 75 counts errors, and error-free waste is
+    invisible to it — so `tool_errors: 0` must not be read as "no wasted calls". Both readings
+    of that column are now written next to it.
+
+    **One replicate gave up and answered wrong.** `M-G3/M2@1/rep2`, f1 0.00: *"flight FL-0001
+    does not exist in the system"*, with a helpfully confident list of the carrier codes it had
+    seen. Its grounding reads **unassessed**, not failed, because the answer states no
+    checkable fact — the three-state design behaving exactly as intended, and the first time
+    that branch has fired on a completed run.
+
+    **The asymmetry it exposes was not in the pre-registration.** A query-language condition
+    has to *guess the entry point*, and an empty result is indistinguishable from "no such
+    record". `M-G2` cannot make that mistake: `FlightRoster($flightId: ID!)` names the
+    identifier type in its signature, and it answered `M2@1` in **2 calls** — the best of any
+    condition. So the frozen-operation packaging that costs 100 round-trips on `M3@50` buys
+    something real here, and `WRITEUP.md` caveat 1 previously argued only the cost side of it.
+
 ## How the audit's figures were re-derived (2026-09-03)
 
 Ground rule for the fix work: **every number that changed had to come back out of `runs/` or

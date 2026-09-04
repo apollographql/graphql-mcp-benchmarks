@@ -122,6 +122,15 @@ ALLOWED: dict[str, str] = {
     "14,485": "M4@103 payload tokens at the turn cap — off-matrix, NOTES 50",
     "0.0002": "a tolerance, not a measurement",
     "766b07b1ad3f": "sha of the byte-identical phase-2 instruction block",
+    # --- search-tool measurements: runs/**/tool_io.jsonl, not results/ ---
+    "18,410": "schema_describe(Query) response — M-G1's fallback after a search miss, "
+              "measured from tool_io.jsonl (NOTES 73)",
+    "4,760": "openapi_describe response — M-R2's fallback after the same miss, same source",
+    "2,739": "largest Apollo MCP `search` response probed against the airline supergraph "
+             "(NOTES 74); measured through capture_mcp.py, not a run",
+    # --- post-fix tool surfaces: capture/expected-tool-surfaces.json owns these ---
+    "2,652": "M-R2 tools/list bytes AFTER the search fix; the 180 published runs used 2,439",
+    "2,270": "M-G1 tools/list bytes AFTER the search fix; the 180 published runs used 2,159",
 }
 
 

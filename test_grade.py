@@ -495,4 +495,31 @@ if _fails:
     for f in _fails:
         print(f"  - {f}")
     sys.exit(1)
+# ── tool_errors ──────────────────────────────────────────────────────────────
+# Added with M-G3, whose server advertises a tool it does not expose (NOTES.md
+# 75). An error result is payload the agent paid for and could not use, and
+# before this it was invisible: turns spent on a missing tool would have been
+# read as discovery cost.
+
+_ERR_CALLS = [
+    {"call": 1, "tool_use": [{"id": "a", "name": "search", "input": {}}], "tool_result": []},
+    {"call": 2, "tool_use": [{"id": "b", "name": "introspect", "input": {}}],
+     "tool_result": [{"tool_use_id": "a", "content": "ok", "is_error": False}]},
+    {"call": 3, "tool_use": [{"id": "c", "name": "introspect", "input": {}}],
+     "tool_result": [{"tool_use_id": "b", "content": "no such tool", "is_error": True}]},
+    {"call": 4, "tool_use": [],
+     "tool_result": [{"tool_use_id": "c", "content": "no such tool", "is_error": True}]},
+]
+_e = grade.tool_errors(_ERR_CALLS)
+check("two error results counted", _e["tool_errors"], 2)
+check("errors attributed by tool_use_id, not by position — the rule the payload "
+      "metrics use, for the same reason", _e["tool_error_tools"], "introspectx2")
+_clean = grade.tool_errors(
+    [{"call": 1, "tool_use": [{"id": "x", "name": "search"}],
+      "tool_result": [{"tool_use_id": "x", "content": "ok"}]}])
+check("a clean run reports zero, not a missing field", _clean["tool_errors"], 0)
+check("and an empty attribution string", _clean["tool_error_tools"], "")
+check("no calls means no errors; the caller passes {} for no sidecar at all, so an "
+      "unmeasured run is never reported as clean", grade.tool_errors([])["tool_errors"], 0)
+
 print("all grader tests pass")

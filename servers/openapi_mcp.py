@@ -35,6 +35,7 @@ import urllib.request
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _mcp_stdio import make_logger, serve  # noqa: E402
+import _search  # noqa: E402
 
 SERVICES = ("scheduling", "fleet", "personnel")
 DEFAULT_SPEC_DIR = os.path.join(
@@ -225,19 +226,24 @@ DISCOVERY_TOOLS = [
         "name": "openapi_search",
         "description": (
             "Search the REST API catalog for endpoints by keyword. Covers operation "
-            "ids, paths, summaries, and parameter names across all three services "
+            "ids, paths, summaries, parameter names and the fields each endpoint "
+            "returns, across all three services "
             "(scheduling, fleet, personnel). Returns matching endpoints with their "
-            "service, method, path, and parameter names. "
-            "Query syntax: space-separated terms within a clause are AND'd; "
-            "comma-separated clauses are OR (e.g. 'crew, assignment' finds endpoints "
-            "matching either). Use OR to find related entry points in one call."
+            "service, method, path, and parameter names — enough to call the "
+            "endpoint without describing it first. "
+            "Query syntax: several terms are fine and are matched independently, "
+            "with the closest endpoints returned first, so a phrase from the task "
+            "works as a query. A comma separates alternatives (e.g. "
+            "'crew, assignment' finds endpoints matching either). Plurals and "
+            "singulars find each other."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "One or more keywords (e.g. 'flights', 'advisories', 'crew, assignment').",
+                    "description": "Keywords or a phrase from the task (e.g. 'advisories', "
+                                   "'departure gate for a flight', 'crew, assignment').",
                 },
                 "limit": {
                     "type": "integer",
@@ -308,39 +314,99 @@ DISCOVERY_TOOLS = [
 ]
 
 
+def _response_field_names(catalog, op: dict) -> list:
+    """Field names of the entity this endpoint returns, for the search index.
+
+    Symmetry with `M-G1`. `schema_search` indexes every field in the schema, so
+    it can answer `type rating` with `CrewMember.typeRatings`. An OpenAPI search
+    over operation ids, paths, summaries and parameter names cannot: on the REST
+    side `typeRatings` is a property of a response body, not an endpoint or a
+    parameter, so the same query found nothing and the agent had to describe an
+    endpoint at depth 1 to discover it. Indexing response properties is what
+    makes the two searches cover the same ground; without it this fix would have
+    handed the GraphQL condition an advantage the protocols do not have.
+
+    Best-effort by design: a spec shape this does not recognise contributes no
+    names, which loses recall rather than inventing it. `test_search.py` asserts
+    a floor so a codegen change cannot silently empty the index.
+    """
+    names: list = []
+    seen = set()
+
+    def walk(node, depth=0):
+        if depth > 3 or not isinstance(node, dict):
+            return
+        if "$ref" in node:
+            try:
+                walk(catalog.resolve_ref(op["service"], node["$ref"]), depth + 1)
+            except (KeyError, TypeError):
+                return
+            return
+        for key in ("items", "additionalProperties"):
+            if key in node:
+                walk(node[key], depth + 1)
+        for prop, sub in (node.get("properties") or {}).items():
+            if prop not in seen:
+                seen.add(prop)
+                names.append(prop)
+            walk(sub, depth + 1)
+
+    for response in (op.get("responses") or {}).values():
+        for media in (response.get("content") or {}).values():
+            walk(media.get("schema") or {})
+    return names
+
+
 def tool_openapi_search(catalog: Catalog, args: dict) -> str:
     raw = (args.get("query") or "").strip()
     if not raw:
         return json.dumps({"error": "query is required"})
     limit = int(args.get("limit") or 20)
 
-    # Same query grammar as rover schema search (and therefore as M-G1's
-    # schema_search): AND within a clause, OR across comma-separated clauses.
-    # Keeping the two discovery surfaces ergonomically symmetric is part of what
-    # makes M-R2 vs M-G1 a protocol comparison rather than a UX comparison.
-    clauses = [c.split() for c in raw.split(",") if c.strip()]
+    # Grammar lives in `_search` so that this tool and M-G1's `schema_search`
+    # cannot drift apart — that symmetry is what makes M-R2 vs M-G1 a protocol
+    # comparison rather than a UX comparison. It used to be duplicated instead,
+    # and both copies AND'd their terms, so 45% of the searches in the matrix
+    # returned nothing (NOTES.md 73).
+    clauses = _search.parse_query(raw)
+    if not clauses:
+        return json.dumps({"query": raw, "matched": 0, "results": [],
+                           "hint": "every term was a stop word or under three characters"})
 
-    results = []
+    scored = []
     for op in catalog.operations:
+        fields = _response_field_names(catalog, op)
         haystack = " ".join([
             op["operationId"], op["path"], op["service"],
             op["summary"], op["description"],
             *[p["name"] for p in op["parameters"]],
+            *fields,
         ]).lower()
-        if any(all(term.lower() in haystack for term in clause) for clause in clauses):
-            results.append({
+        hits = _search.score(haystack, clauses)
+        if hits:
+            entry = {
                 "operationId": op["operationId"],
                 "service": op["service"],
                 "method": op["method"],
                 "path": op["path"],
                 "summary": op["summary"],
                 "parameters": [p["name"] for p in op["parameters"]],
-            })
+            }
+            # Which response fields matched, not all of them: the point is to
+            # name the field the agent asked about, the way schema_search names
+            # a coordinate. Returning all forty-six would be the over-fetch this
+            # study is about.
+            matched_fields = [f for f in fields
+                              if _search.score(f.lower(), clauses)]
+            if matched_fields:
+                entry["matched_response_fields"] = matched_fields[:8]
+            # priority 0 for every endpoint: all of them are directly callable.
+            scored.append((hits, 0, haystack, entry))
 
     return json.dumps({
         "query": raw,
-        "matched": len(results),
-        "results": results[:limit],
+        "matched": len(scored),
+        "results": _search.rank(scored, limit),
     }, indent=1)
 
 

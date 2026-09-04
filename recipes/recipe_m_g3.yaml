@@ -1,0 +1,54 @@
+# Phase-2 condition M-G3 — federated GraphQL, on-demand, via Apollo MCP Server
+#
+# Apollo MCP Server's four dynamic tools (search / introspect / validate / execute)
+# over the same supergraph M-G2 serves, with no pre-baked operations. This is the
+# condition M-G1 was hand-built to approximate before we noticed the product does
+# it natively — see config/apollo-mcp.phase2-dynamic.yaml for why that mattered
+# and NOTES.md 74 for how it was found.
+#
+# Its pairings are what make it worth the runs: same implementation as M-G2 with
+# different packaging, and same packaging as M-G1 with a different implementation.
+# M-G1 vs M-G2 alone could not separate those two causes.
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (as an indented block
+# scalar) and fills @@APOLLO_BIN@@ and @@APOLLO_PHASE2_DYNAMIC_CONFIG@@ before
+# invoking goose.
+#
+# Prerequisite: the stack must be up, composed, and healthy.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+#
+# The `instructions` block below is byte-identical in all five M-* recipes, and
+# run_benchmark.py refuses to start a phase-2 pass if that stops being true. It
+# names no tool and suggests no strategy: tool discovery and selection is what
+# the matrix measures, so a hint in one recipe and not another measures the hint.
+version: "1.0.0"
+title: "Benchmark — Condition M-G3 (federated GraphQL, on-demand, Apollo MCP Server)"
+description: "Answer the task using Apollo MCP Server's dynamic schema tools."
+instructions: |
+  You are a data analyst assistant working with an airline's operational systems.
+  Answer the user's request using ONLY the tools available to you.
+
+  Every fact in your answer must come from a tool result. Do not fill in values
+  from prior knowledge about airlines, aircraft, or crew: this data is synthetic
+  and nothing in your training data describes it. If you need something a tool
+  result does not contain, make another call rather than inferring it. If a value
+  is genuinely unavailable, say so instead of guessing.
+
+  Be concise: once you have the answer, state it directly in the format the
+  request asks for. Do not ask follow-up questions.
+  (benchmark-run-id: @@RUN_ID@@)
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: @@MODEL@@
+  temperature: 0
+  max_turns: 50
+extensions:
+  - type: stdio
+    name: airline
+    cmd: "@@APOLLO_BIN@@"
+    args:
+      - "@@APOLLO_PHASE2_DYNAMIC_CONFIG@@"
+    timeout: 300

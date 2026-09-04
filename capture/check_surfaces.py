@@ -31,6 +31,36 @@ ROOT = Path(__file__).resolve().parent.parent
 BASELINE = ROOT / "capture" / "expected-tool-surfaces.json"
 
 
+# A probe that comes back empty is not drift, so it had its own way of going
+# unnoticed. `./bench.sh capture` exercises each condition's tools with a
+# representative call, and for the two search tools that call was a phrase —
+# `openapi_search("flight gate departure")`. Under the AND'd grammar those tools
+# shipped with, that probe **returned zero results for the entire life of the
+# matrix**, and this gate compared byte counts and tool names and passed it every
+# time. 45–55% of the agents' real searches were failing the same way (NOTES.md
+# 73). Nothing here can tell a good result from a bad one, but a search that
+# matched nothing is not a working smoke test, and that much is checkable.
+_EMPTY_MARKERS = ('"matched": 0', '"results": []', '"results":[]')
+
+
+def probe_problems(cond: str, got: dict) -> list:
+    """Flag captured probes that errored or came back with no matches."""
+    out = []
+    for call in got.get("calls") or []:
+        name = call.get("name", "?")
+        if call.get("is_error"):
+            out.append(f"{cond}: probe {name} returned an error")
+            continue
+        preview = call.get("result_preview") or ""
+        if "search" in name and any(m in preview for m in _EMPTY_MARKERS):
+            out.append(
+                f"{cond}: probe {name} matched nothing — the smoke test for a search "
+                f"tool must actually find something, or it certifies only that the "
+                f"tool replies"
+            )
+    return out
+
+
 def main() -> int:
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     capture_dir = Path(args[0]) if args else ROOT / "capture"
@@ -89,6 +119,7 @@ def main() -> int:
             if gone:
                 bits.append("missing " + ", ".join(gone))
             problems.append(f"{cond}: tool names changed — {'; '.join(bits)}")
+        problems.extend(probe_problems(cond, got))
         got_bytes, want_bytes = got.get("tools_list_bytes"), want["tools_list_bytes"]
         if got_bytes != want_bytes:
             delta = (got_bytes or 0) - want_bytes
@@ -104,7 +135,7 @@ def main() -> int:
         print(f"  skipped {cond}  (not captured in this run)")
 
     if problems:
-        print("\ntool surface drift:\n")
+        print("\ntool surface drift, or a probe that proved nothing:\n")
         for p in problems:
             print(f"  - {p}")
         print(

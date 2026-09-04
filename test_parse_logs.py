@@ -87,7 +87,17 @@ check("phase-1 conditions are untouched", P.cell_cond("A1"), "A1")
 check("the label names the bracket",
       P.cell_label("M-R1-lean"), "REST (one tool per endpoint), lean payloads")
 check("...and a profile-less condition gets no bracket suffix",
-      P.cell_label("M-G1"), "GraphQL (search + describe + execute)")
+      P.cell_label("M-G1"), "GraphQL (search + describe + execute, our server)")
+# The labels name the server because M-G1 and M-G3 are the same packaging on
+# different implementations — ours and Apollo MCP Server's. A legend that called
+# both "GraphQL on-demand" would imply the matrix varies one thing when it varies
+# two, which is the confound M-G3 exists to remove (NOTES.md 74).
+check("on-demand GraphQL labels distinguish the two implementations",
+      (P.cell_label("M-G1"), P.cell_label("M-G3")),
+      ("GraphQL (search + describe + execute, our server)",
+       "GraphQL (search + validate + execute, Apollo MCP)"))
+check("M-G3 is a phase-2 condition, so a mixed-phase tree still fails loudly",
+      P.COND_PHASE["M-G3"], 2)
 
 # The consequence the fold hid: grouping by cell must never merge two profiles.
 _mixed = [row(profile="fat", pass_through_tokens=36598),
@@ -329,4 +339,37 @@ if _fails:
     for f in _fails:
         print(f"  - {f}")
     sys.exit(1)
+# ── tool surface provenance (NOTES 77) ───────────────────────────────────────
+# `expected-tool-surfaces.json` tracks what the servers expose TODAY; `runs/`
+# holds whatever they exposed when it ran. Those diverged the moment the search
+# fix moved M-R2 and M-G1 while 180 runs on the old surfaces stayed in the tree,
+# and the report printed the new bytes against the old runs — a published cost
+# misstated, with nothing in the table to show it.
+print("\ntool surface provenance")
+import datetime as _dt
+_CUT = "2026-09-03T15:17:00"
+_cut_ts = _dt.datetime.fromisoformat(_CUT).timestamp()
+_entry = {"n_tools": 3, "tools_list_bytes": 2652,
+          "superseded": [{"n_tools": 3, "tools_list_bytes": 2439, "changed_at": _CUT}]}
+
+check("runs entirely before the change get the surface they actually carried",
+      P._surface_for_runs(_entry, [_cut_ts - 3600, _cut_ts - 60]), (3, 2439, "as run"))
+check("runs entirely after get the current surface, unannotated",
+      P._surface_for_runs(_entry, [_cut_ts + 60, _cut_ts + 3600]), (3, 2652, ""))
+check("runs that straddle a change get no single figure — that is two experiments",
+      P._surface_for_runs(_entry, [_cut_ts - 60, _cut_ts + 60]), (None, None, "MIXED"))
+check("a condition with no history is unaffected",
+      P._surface_for_runs({"n_tools": 7, "tools_list_bytes": 4040}, [_cut_ts]),
+      (7, 4040, ""))
+check("...and so is one with history but no run times, which falls back to current",
+      P._surface_for_runs(_entry, []), (3, 2652, ""))
+# The real file must actually carry the history, or the logic above is decoration.
+import json as _json
+_pin = _json.loads((P.ROOT / "capture" / "expected-tool-surfaces.json").read_text())
+check("the pinned file records M-R2's superseded surface",
+      _pin["M-R2"]["superseded"][0]["tools_list_bytes"], 2439)
+check("...and M-G1's", _pin["M-G1"]["superseded"][0]["tools_list_bytes"], 2159)
+check("M-G3 has no superseded surface — it only ever ran on one",
+      "superseded" in _pin["M-G3"], False)
+
 print("all parse_logs tests pass")

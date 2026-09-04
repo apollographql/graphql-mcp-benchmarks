@@ -1,0 +1,85 @@
+# Apollo MCP Server config — phase-2 condition M-G3 (on-demand GraphQL, the product).
+#
+# Why this condition exists. M-G1 is a 225-line server we wrote (`servers/supergraph_mcp.py`)
+# that does search / describe / execute over the supergraph — which is what Apollo MCP Server
+# already does natively, with the same four dynamic tools phase-1 condition B used. So the
+# original 2x2 measured a hand-rolled substitute in the slot where a shipping implementation
+# was available, and then M-G1 won the whole matrix. Two consequences we did not intend:
+#
+#   1. The two GraphQL cells were different *servers*, not one server packaged two ways, so
+#      M-G1 vs M-G2 varied packaging AND implementation with nothing to separate them — while
+#      M-R1 vs M-R2 is one binary in two modes. The GraphQL axis was the confounded one.
+#   2. Apollo MCP Server appeared only with every dynamic tool switched off (M-G2), which is
+#      its worst configuration here, and its `search` was never measured at all.
+#
+# M-G3 closes both. Same implementation as M-G2, different packaging: dynamic tools instead of
+# frozen operations. Same packaging as M-G1, different implementation. Those two pairings are
+# what let a reader attribute a difference to one cause.
+#
+# It also matters that Apollo's `search` is not the tool ours was. It takes `terms` as an
+# array rather than a free-text string, and it returns **SDL fragments** — real type blocks
+# with field signatures, plus the `Query` root — rather than bare coordinate names. Measured
+# against this supergraph, every query that returned zero results from our `schema_search`
+# returns usable SDL here, in 986-2,739 B (NOTES.md 74). A hit is actionable without a second
+# lookup, which is the property M-G1 lacked and which caveat 2 reported as GraphQL's
+# discovery floor.
+#
+# TEMPLATE. lib/setup.sh substitutes the absolute path and writes
+# config/apollo-mcp.phase2-dynamic.local.yaml (gitignored), which is what the recipe runs.
+#
+# Prerequisite: the stack must be up and composed.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+endpoint: http://localhost:5000
+
+transport:
+  type: stdio
+
+# Apollo writes plain-text log lines to stdout by default, which corrupts the
+# JSON-RPC stream before the MCP handshake begins. This cost an afternoon in
+# phase 1; do not remove it.
+logging:
+  path: /tmp/apollo-mcp-phase2-dynamic.log
+
+schema:
+  source: local
+  path: "@@SUPERGRAPH_PATH@@"
+
+# No `operations:` — the agent writes its own queries. That is the whole point of
+# the condition, and it is the one line that separates this file from
+# apollo-mcp.phase2.yaml.
+
+# `introspect` is OFF. The condition is meant to measure *targeted* schema
+# discovery, and `introspect` is the tool that can walk a type tree wholesale —
+# `introspect(Query, depth: N)` is a whole-schema dump at large N. Apollo's own
+# `search` advertises itself as sufficient without it: "Returns complete type
+# definitions including all related types needed to construct GraphQL
+# operations." So this exposes search + validate + execute, and the question the
+# condition asks is whether search alone is enough.
+#
+# Phase-1 condition B reached the same conclusion by the other route: it left
+# `introspect` enabled in the config and banned it in the recipe prompt ("Do NOT
+# call `introspect` — it loads entire type trees and is too expensive"). That is
+# condition-specific coaching, which phase 2 forbids — the M-* recipes carry a
+# byte-identical instruction block, and a hint in one recipe measures the hint.
+# Disabling the tool is the only way to express the same intent here.
+#
+# KNOWN HAZARD, and it is Apollo's text rather than ours: the three remaining
+# tools still reference `introspect` in their descriptions, twice
+# unconditionally — `execute` says "Use the `introspect` tool to get information
+# about the GraphQL schema" and `validate` says "Use the `introspect` tool
+# first". `search` hedges with "If the introspect tool is also available". So the
+# agent is told to reach for a tool that is not on the surface. That is a real
+# property of shipping this configuration, and it is why `parse_logs.py` now
+# reports `tool_errors` per run: if the agent burns turns on a missing tool, that
+# has to show up as an error count rather than as "GraphQL discovery is
+# expensive". Read M-G3's tool_errors column before reading its cost.
+introspection:
+  execute:
+    enabled: true
+  introspect:
+    enabled: false
+  search:
+    enabled: true
+  validate:
+    enabled: true

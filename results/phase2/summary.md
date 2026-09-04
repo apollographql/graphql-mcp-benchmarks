@@ -7,15 +7,15 @@
 - **Cardinality tax (M3@50): GraphQL is both the cheapest and the most expensive condition in the matrix.** M-G1 answered the whole 50-flight join in **one `graphql_execute`** (7 tool calls in total, the rest schema discovery) for $0.079; M-G2 needed **100** calls, one pair per flight, for $2.803 (35.5× the cost); REST sat between them at 4 calls and $0.550. M-G2 has federation underneath and still loops, because none of its seven frozen operations accepts more than one flight — `FlightRoster(flightId)` is sized to a roster screen. **Entity-scoped operations reimpose the 1+N pattern federation exists to remove.** DataLoader cannot help: each call is an honest single-flight query from its own agent turn, so the fan-out has moved above the layer where resolver batching reaches.
 - **The clean control: M-G2 is the best condition on M1@50 and the worst on M3@50, with no change to the surface.** 1 call there, 100 here. `FlightSchedule(flightNumbers: [String!]!)` takes a list; `FlightRoster(flightId: ID!)` takes one id. Same protocol, same server, same seven tools — the only difference is whether the operation that fits the question happens to accept the question's cardinality. That is the actionable finding: **"adopt GraphQL" is not the advice — expose an operation shaped like the question, or expose the query language.**
 - **REST's steelman is real and unreliable in the same breath.** `-lean` cut M1@20 pass-through by 13.2× — and on M4@50 it changed **nothing**: 46,665 tokens fat against 46,599 lean, because the agent never sent `?fields=`. The optimisation was available, documented in the tool schema, and unused. A protocol capability the client does not exercise is not a defence of the protocol.
-- **Accuracy is not where the difference lives.** 137 of 180 graded runs scored a perfect f1 and all 180 were fact-verified against the tool results that entered context, with **0 fabricated**. The widest protocol gap is **M2@1: GraphQL 1.00 against REST 0.85** — and 41 of 60 condition/task cells are perfect outright, so most of the matrix shows no accuracy difference at all. The agents get the answer either way. What differs is what it costs to get it, which is why this report leads with payload and calls rather than correctness.
-- **Read the dollar column with this caveat.** Prompt caching never hit once in this matrix: **0 of 181 runs read a single cached token**, while 134 of 140 multi-call runs wrote 32,216,643 of them. (The 6 multi-call runs not counted there wrote nothing either — too small to cache — so this is not a subset that hit.) Writes cost 1.25x and reads 0.1x, so the inflation scales with **call count** — which penalises exactly the many-call conditions, in the direction the hypothesis predicts. **The call counts and token ratios above are cache-independent and hold; the dollar magnitudes are inflated and their direction is all that should be quoted.** `NOTES.md` 51.
+- **Accuracy is not where the difference lives.** 164 of 210 graded runs scored a perfect f1 and all 209 were fact-verified against the tool results that entered context, with **0 fabricated**. The widest protocol gap is **M4@50: GraphQL 0.97 against REST 0.83** — and 49 of 70 condition/task cells are perfect outright, so most of the matrix shows no accuracy difference at all. The agents get the answer either way. What differs is what it costs to get it, which is why this report leads with payload and calls rather than correctness.
+- **Read the dollar column with this caveat.** Prompt caching never hit once in this matrix: **0 of 211 runs read a single cached token**, while 158 of 170 multi-call runs wrote 33,095,583 of them. (The 12 multi-call runs not counted there wrote nothing either — too small to cache — so this is not a subset that hit.) Writes cost 1.25x and reads 0.1x, so the inflation scales with **call count** — which penalises exactly the many-call conditions, in the direction the hypothesis predicts. **The call counts and token ratios above are cache-independent and hold; the dollar magnitudes are inflated and their direction is all that should be quoted.** `NOTES.md` 51.
 
 All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw Anthropic `usage`). Cache tokens are reported **separately** and are never folded into `input_tokens`.
 
 > Cross-check the headline numbers against the audit section and the raw logs in `runs/` before publishing.
 
 
-## MCP conditions (M-R1-fat / M-R1-lean / M-R2-fat / M-R2-lean / M-G1 / M-G2)
+## MCP conditions (M-R1-fat / M-R1-lean / M-R2-fat / M-R2-lean / M-G1 / M-G2 / M-G3)
 
 
 ### Task M1@1
@@ -26,8 +26,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,014 ± 0 | 119 ± 1 | 0.0 ± 0.0 | 4,941 ± 0 | 866 ± 0 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 4.0 ± 0.0 | 2.0 ± 0.0 | 6,823 ± 2 | 250 ± 1 | 0.0 ± 0.0 | 0.0 ± 0.0 | 1,043 ± 1 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 4.0 ± 0.0 | 2.0 ± 0.0 | 6,822 ± 0 | 246 ± 5 | 0.0 ± 0.0 | 0.0 ± 0.0 | 1,042 ± 0 |
-| **M-G1** — GraphQL (search + describe + execute) | 7.0 ± 1.7 | 5.0 ± 1.7 | 6,694 ± 1,488 | 474 ± 137 | 0.0 ± 0.0 | 16,895 ± 13,183 | 3,597 ± 2,118 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,095 ± 0 | 109 ± 2 | 0.0 ± 0.0 | 0.0 ± 0.0 | 103 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 7.0 ± 1.7 | 5.0 ± 1.7 | 6,694 ± 1,488 | 474 ± 137 | 0.0 ± 0.0 | 16,895 ± 13,183 | 3,597 ± 2,118 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,095 ± 0 | 109 ± 2 | 0.0 ± 0.0 | 0.0 ± 0.0 | 103 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 5.7 ± 1.2 | 3.7 ± 1.2 | 10,830 ± 3,655 | 364 ± 85 | 0.0 ± 0.0 | 0.0 ± 0.0 | 1,043 ± 368 |
 
 ### Task M1@5
 
@@ -37,8 +38,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,048 ± 0 | 250 ± 21 | 0.0 ± 0.0 | 7,347 ± 2,338 | 2,861 ± 1,984 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 5.0 ± 0.0 | 3.0 ± 0.0 | 5,654 ± 1 | 426 ± 1 | 0.0 ± 0.0 | 6,937 ± 1 | 4,204 ± 0 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 5.0 ± 0.0 | 3.0 ± 0.0 | 5,655 ± 0 | 426 ± 0 | 0.0 ± 0.0 | 6,939 ± 0 | 4,205 ± 0 |
-| **M-G1** — GraphQL (search + describe + execute) | 8.3 ± 3.1 | 6.3 ± 3.1 | 5,132 ± 1,465 | 841 ± 317 | 0.0 ± 0.0 | 28,146 ± 11,914 | 4,808 ± 2,307 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,611 ± 0 | 247 ± 0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 478 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 8.3 ± 3.1 | 6.3 ± 3.1 | 5,132 ± 1,465 | 841 ± 317 | 0.0 ± 0.0 | 28,146 ± 11,914 | 4,808 ± 2,307 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,611 ± 0 | 247 ± 0 | 0.0 ± 0.0 | 0.0 ± 0.0 | 478 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 8.0 ± 0.0 | 6.0 ± 0.0 | 17,401 ± 6 | 741 ± 2 | 0.0 ± 0.0 | 0.0 ± 0.0 | 1,375 ± 0 |
 
 ### Task M1@20
 
@@ -48,8 +50,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,172 ± 0 | 730 ± 1 | 0.0 ± 0.0 | 6,427 ± 0 | 1,979 ± 0 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 5.3 ± 0.6 | 3.3 ± 0.6 | 5,905 ± 3 | 961 ± 62 | 0.0 ± 0.0 | 24,827 ± 6,537 | 17,228 ± 2,106 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 5.7 ± 0.6 | 3.7 ± 0.6 | 5,906 ± 3 | 974 ± 45 | 0.0 ± 0.0 | 23,140 ± 8,391 | 13,833 ± 7,172 |
-| **M-G1** — GraphQL (search + describe + execute) | 5.0 ± 0.0 | 3.7 ± 0.6 | 3,865 ± 1 | 1,092 ± 28 | 0.0 ± 0.0 | 15,748 ± 118 | 5,271 ± 14 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.0 ± 0.0 | 1.0 ± 0.0 | 2,205 ± 0 | 721 ± 12 | 0.0 ± 0.0 | 4,268 ± 0 | 1,878 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 5.0 ± 0.0 | 3.7 ± 0.6 | 3,865 ± 1 | 1,092 ± 28 | 0.0 ± 0.0 | 15,748 ± 118 | 5,271 ± 14 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.0 ± 0.0 | 1.0 ± 0.0 | 2,205 ± 0 | 721 ± 12 | 0.0 ± 0.0 | 4,268 ± 0 | 1,878 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 11.3 ± 3.1 | 9.3 ± 3.1 | 20,754 ± 5,862 | 1,461 ± 274 | 0.0 ± 0.0 | 11,396 ± 8,039 | 2,291 ± 544 |
 
 ### Task M1@50
 
@@ -59,8 +62,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 3.0 ± 0.0 | 1.0 ± 0.0 | 4,422 ± 0 | 1,631 ± 25 | 0.0 ± 0.0 | 10,003 ± 0 | 4,817 ± 0 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 5.0 ± 0.0 | 3.0 ± 0.0 | 6,408 ± 8 | 1,928 ± 222 | 0.0 ± 0.0 | 49,452 ± 1 | 39,786 ± 2 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 5.3 ± 0.6 | 3.3 ± 0.6 | 6,414 ± 10 | 1,955 ± 194 | 0.0 ± 0.0 | 39,541 ± 17,159 | 29,410 ± 17,969 |
-| **M-G1** — GraphQL (search + describe + execute) | 5.0 ± 0.0 | 3.0 ± 0.0 | 4,396 ± 1 | 2,134 ± 5 | 0.0 ± 0.0 | 17,350 ± 5 | 6,153 ± 0 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.0 ± 0.0 | 1.0 ± 0.0 | 2,455 ± 0 | 1,616 ± 2 | 0.0 ± 0.0 | 7,737 ± 0 | 4,681 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 5.0 ± 0.0 | 3.0 ± 0.0 | 4,396 ± 1 | 2,134 ± 5 | 0.0 ± 0.0 | 17,350 ± 5 | 6,153 ± 0 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.0 ± 0.0 | 1.0 ± 0.0 | 2,455 ± 0 | 1,616 ± 2 | 0.0 ± 0.0 | 7,737 ± 0 | 4,681 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 7.7 ± 2.5 | 5.7 ± 2.5 | 13,105 ± 5,637 | 2,056 ± 207 | 0.0 ± 0.0 | 7,012 ± 3,040 | 2,668 ± 387 |
 
 ### Task M2@1
 
@@ -70,8 +74,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 4.0 ± 0.0 | 5.0 ± 0.0 | 4,043 ± 0 | 610 ± 42 | 0.0 ± 0.0 | 13,380 ± 778 | 3,132 ± 700 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 4.3 ± 0.6 | 5.3 ± 0.6 | 4,071 ± 3,865 | 749 ± 22 | 0.0 ± 0.0 | 19,441 ± 11,085 | 8,575 ± 4,092 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 5.3 ± 0.6 | 6.3 ± 0.6 | 9,692 ± 2,009 | 796 ± 47 | 0.0 ± 0.0 | 6,729 ± 179 | 3,908 ± 98 |
-| **M-G1** — GraphQL (search + describe + execute) | 7.7 ± 0.6 | 7.0 ± 1.0 | 5,656 ± 1,228 | 896 ± 49 | 0.0 ± 0.0 | 31,272 ± 4,376 | 5,702 ± 1,024 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.0 ± 0.0 | 2.0 ± 0.0 | 5,086 ± 0 | 346 ± 3 | 0.0 ± 0.0 | 0.0 ± 0.0 | 884 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 7.7 ± 0.6 | 7.0 ± 1.0 | 5,656 ± 1,228 | 896 ± 49 | 0.0 ± 0.0 | 31,272 ± 4,376 | 5,702 ± 1,024 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.0 ± 0.0 | 2.0 ± 0.0 | 5,086 ± 0 | 346 ± 3 | 0.0 ± 0.0 | 0.0 ± 0.0 | 884 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 13.7 ± 3.5 | 11.7 ± 3.5 | 13,560 ± 19 | 1,591 ± 412 | 0.0 ± 0.0 | 56,686 ± 30,462 | 8,811 ± 4,719 |
 
 ### Task M3@5
 
@@ -81,8 +86,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 6.0 ± 0.0 | 25.0 ± 0.0 | 4,059 ± 0 | 2,034 ± 3 | 0.0 ± 0.0 | 65,482 ± 3 | 17,535 ± 3 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 7.0 ± 0.0 | 9.3 ± 7.5 | 1,860 ± 0 | 1,619 ± 409 | 0.0 ± 0.0 | 64,625 ± 2,658 | 17,564 ± 651 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 8.0 ± 1.7 | 19.0 ± 1.7 | 1,865 ± 9 | 2,258 ± 257 | 0.0 ± 0.0 | 84,767 ± 29,654 | 19,035 ± 1,240 |
-| **M-G1** — GraphQL (search + describe + execute) | 6.3 ± 0.6 | 11.0 ± 2.6 | 4,692 ± 3 | 1,866 ± 321 | 0.0 ± 0.0 | 30,594 ± 5,400 | 6,440 ± 43 |
-| **M-G2** — GraphQL (frozen persisted operations) | 3.3 ± 0.6 | 10.0 ± 0.0 | 2,079 ± 3 | 1,024 ± 27 | 0.0 ± 0.0 | 9,660 ± 3,732 | 4,465 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 6.3 ± 0.6 | 11.0 ± 2.6 | 4,692 ± 3 | 1,866 ± 321 | 0.0 ± 0.0 | 30,594 ± 5,400 | 6,440 ± 43 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 3.3 ± 0.6 | 10.0 ± 0.0 | 2,079 ± 3 | 1,024 ± 27 | 0.0 ± 0.0 | 9,660 ± 3,732 | 4,465 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 10.7 ± 1.2 | 8.7 ± 1.2 | 12,949 ± 1,848 | 1,475 ± 159 | 0.0 ± 0.0 | 29,888 ± 4,642 | 4,424 ± 201 |
 
 ### Task M3@20
 
@@ -92,8 +98,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 15.3 ± 16.2 | 60.3 ± 0.6 | 4,256 ± 81 | 5,911 ± 606 | 0.0 ± 0.0 | 349,272 ± 497,464 | 21,832 ± 2,137 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 11.7 ± 1.2 | 10.3 ± 2.3 | 4,979 ± 5,107 | 3,972 ± 424 | 0.0 ± 0.0 | 386,340 ± 102,916 | 70,529 ± 4,960 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 9.7 ± 2.3 | 7.7 ± 2.3 | 2,023 ± 12 | 3,612 ± 427 | 0.0 ± 0.0 | 310,140 ± 99,407 | 61,485 ± 9,980 |
-| **M-G1** — GraphQL (search + describe + execute) | 6.0 ± 0.0 | 5.0 ± 0.0 | 3,803 ± 0 | 2,075 ± 51 | 0.0 ± 0.0 | 27,040 ± 7 | 8,456 ± 0 |
-| **M-G2** — GraphQL (frozen persisted operations) | 4.0 ± 0.0 | 40.0 ± 0.0 | 2,232 ± 0 | 3,290 ± 126 | 0.0 ± 0.0 | 43,270 ± 4 | 17,831 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 6.0 ± 0.0 | 5.0 ± 0.0 | 3,803 ± 0 | 2,075 ± 51 | 0.0 ± 0.0 | 27,040 ± 7 | 8,456 ± 0 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 4.0 ± 0.0 | 40.0 ± 0.0 | 2,232 ± 0 | 3,290 ± 126 | 0.0 ± 0.0 | 43,270 ± 4 | 17,831 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 10.7 ± 2.5 | 8.7 ± 2.5 | 13,369 ± 5,814 | 2,489 ± 646 | 0.0 ± 0.0 | 37,818 ± 18,628 | 8,147 ± 2,049 |
 
 ### Task M3@50
 
@@ -103,8 +110,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 6.3 ± 0.6 | 4.3 ± 0.6 | 4,511 ± 3 | 6,011 ± 752 | 0.0 ± 0.0 | 353,581 ± 244,532 | 104,938 ± 59,946 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 10.7 ± 0.6 | 10.0 ± 2.6 | 5,001 ± 4,630 | 6,891 ± 1,592 | 0.0 ± 0.0 | 708,112 ± 172,157 | 152,828 ± 5,317 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 13.3 ± 4.2 | 11.0 ± 3.6 | 2,340 ± 18 | 6,670 ± 2,761 | 0.0 ± 0.0 | 1,039,906 ± 212,190 | 186,156 ± 51,061 |
-| **M-G1** — GraphQL (search + describe + execute) | 7.0 ± 0.0 | 7.0 ± 0.0 | 5,289 ± 73 | 3,218 ± 1,565 | 0.0 ± 0.0 | 46,124 ± 288 | 14,684 ± 59 |
-| **M-G2** — GraphQL (frozen persisted operations) | 44.0 ± 0.0 | 100 ± 0 | 2,732 ± 0 | 8,624 ± 202 | 0.0 ± 0.0 | 2,205,403 ± 0 | 44,461 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 7.0 ± 0.0 | 7.0 ± 0.0 | 5,289 ± 73 | 3,218 ± 1,565 | 0.0 ± 0.0 | 46,124 ± 288 | 14,684 ± 59 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 44.0 ± 0.0 | 100 ± 0 | 2,732 ± 0 | 8,624 ± 202 | 0.0 ± 0.0 | 2,205,403 ± 0 | 44,461 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 8.0 ± 0.0 | 6.0 ± 0.0 | 7,682 ± 2 | 4,126 ± 131 | 0.0 ± 0.0 | 31,527 ± 749 | 11,824 ± 712 |
 
 ### Task M4@20
 
@@ -114,8 +122,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 4.0 ± 0.0 | 20.0 ± 0.0 | 3,973 ± 0 | 1,129 ± 16 | 0.0 ± 0.0 | 50,977 ± 6 | 19,648 ± 6 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 6.7 ± 2.3 | 22.7 ± 2.3 | 1,782 ± 12 | 1,936 ± 300 | 0.0 ± 0.0 | 104,747 ± 49,964 | 19,957 ± 263 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 8.0 ± 0.0 | 24.0 ± 0.0 | 1,789 ± 0 | 2,130 ± 15 | 0.0 ± 0.0 | 133,596 ± 2 | 20,111 ± 2 |
-| **M-G1** — GraphQL (search + describe + execute) | 8.3 ± 1.2 | 7.0 ± 0.0 | 5,797 ± 3 | 754 ± 21 | 0.0 ± 0.0 | 27,903 ± 653 | 5,063 ± 1,869 |
-| **M-G2** — GraphQL (frozen persisted operations) | 4.0 ± 0.0 | 21.0 ± 0.0 | 5,888 ± 2 | 1,197 ± 6 | 0.0 ± 0.0 | 9,119 ± 1 | 5,055 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 8.3 ± 1.2 | 7.0 ± 0.0 | 5,797 ± 3 | 754 ± 21 | 0.0 ± 0.0 | 27,903 ± 653 | 5,063 ± 1,869 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 4.0 ± 0.0 | 21.0 ± 0.0 | 5,888 ± 2 | 1,197 ± 6 | 0.0 ± 0.0 | 9,119 ± 1 | 5,055 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 15.0 ± 4.6 | 14.0 ± 4.6 | 17,636 ± 5,701 | 1,341 ± 419 | 0.0 ± 0.0 | 44,927 ± 36,095 | 3,879 ± 609 |
 
 ### Task M4@50
 
@@ -125,8 +134,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 4.0 ± 0.0 | 46.0 ± 0.0 | 3,973 ± 0 | 2,454 ± 48 | 0.0 ± 0.0 | 114,081 ± 3 | 48,241 ± 3 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 31.3 ± 3.5 | 45.3 ± 3.5 | 1,906 ± 18 | 4,182 ± 300 | 0.0 ± 0.0 | 1,674,428 ± 221,404 | 48,769 ± 527 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 30.3 ± 4.0 | 44.3 ± 4.0 | 1,901 ± 20 | 4,093 ± 330 | 0.0 ± 0.0 | 1,611,315 ± 253,685 | 48,627 ± 732 |
-| **M-G1** — GraphQL (search + describe + execute) | 6.0 ± 0.0 | 9.0 ± 0.0 | 6,572 ± 0 | 839 ± 10 | 0.0 ± 0.0 | 22,411 ± 0 | 8,536 ± 0 |
-| **M-G2** — GraphQL (frozen persisted operations) | 4.0 ± 0.0 | 51.0 ± 0.0 | 2,006 ± 0 | 2,601 ± 4 | 0.0 ± 0.0 | 26,719 ± 0 | 12,746 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 6.0 ± 0.0 | 9.0 ± 0.0 | 6,572 ± 0 | 839 ± 10 | 0.0 ± 0.0 | 22,411 ± 0 | 8,536 ± 0 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 4.0 ± 0.0 | 51.0 ± 0.0 | 2,006 ± 0 | 2,601 ± 4 | 0.0 ± 0.0 | 26,719 ± 0 | 12,746 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 18.7 ± 2.9 | 17.7 ± 2.9 | 16,768 ± 3,784 | 1,737 ± 237 | 0.0 ± 0.0 | 73,726 ± 17,317 | 5,251 ± 571 |
 
 ### Task M4@103
 
@@ -142,8 +152,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 51.7 ± 15.9 | 165 ± 1 | 41,470 ± 79 | 20,879 ± 465 | 0.0 ± 0.0 | 975,492 ± 600,356 | 225,850 ± 59,745 |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 91.0 ± 5.3 | 114 ± 10 | 44,388 ± 7,387 | 22,913 ± 1,044 | 0.0 ± 0.0 | 3,038,908 ± 398,360 | 380,482 ± 7,018 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 94.7 ± 6.8 | 124 ± 7 | 44,408 ± 2,035 | 23,160 ± 2,719 | 0.0 ± 0.0 | 3,256,074 ± 350,795 | 387,813 ± 43,987 |
-| **M-G1** — GraphQL (search + describe + execute) | 66.7 ± 1.5 | 64.0 ± 4.0 | 51,896 ± 1,274 | 14,190 ± 1,760 | 0.0 ± 0.0 | 263,483 ± 9,630 | 68,710 ± 1,548 |
-| **M-G2** — GraphQL (frozen persisted operations) | 74.3 ± 0.6 | 228 ± 0 | 33,389 ± 3 | 19,776 ± 350 | 0.0 ± 0.0 | 2,306,176 ± 3,729 | 92,582 ± 0 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 66.7 ± 1.5 | 64.0 ± 4.0 | 51,896 ± 1,274 | 14,190 ± 1,760 | 0.0 ± 0.0 | 263,483 ± 9,630 | 68,710 ± 1,548 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 74.3 ± 0.6 | 228 ± 0 | 33,389 ± 3 | 19,776 ± 350 | 0.0 ± 0.0 | 2,306,176 ± 3,729 | 92,582 ± 0 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 109 ± 6 | 91.3 ± 5.5 | 144,056 ± 7,227 | 17,381 ± 599 | 0.0 ± 0.0 | 292,980 ± 40,948 | 49,713 ± 2,001 |
 
 ## Accuracy
 
@@ -155,8 +166,9 @@ All values are **mean ± stdev** across reps. Source: per-call proxy logs (raw A
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.89 ± 0.10 | 1.00 ± 0.00 | 0.94 ± 0.10 | 0.87 ± 0.18 | 1.00 ± 0.00 | 0.56 ± 0.19 | — |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.83 ± 0.00 | 1.00 ± 0.00 | 0.98 ± 0.03 | 0.95 ± 0.01 | 1.00 ± 0.00 | 1.00 ± 0.00 | — |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.83 ± 0.00 | 1.00 ± 0.00 | 0.98 ± 0.03 | 0.69 ± 0.22 | 1.00 ± 0.00 | 1.00 ± 0.00 | — |
-| **M-G1** — GraphQL (search + describe + execute) | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.90 ± 0.14 | 1.00 ± 0.00 | 1.00 ± 0.00 | — |
-| **M-G2** — GraphQL (frozen persisted operations) | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.95 ± 0.06 | 0.95 ± 0.05 | 1.00 ± 0.00 | 0.90 ± 0.08 | — |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.90 ± 0.14 | 1.00 ± 0.00 | 1.00 ± 0.00 | — |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.95 ± 0.06 | 0.95 ± 0.05 | 1.00 ± 0.00 | 0.90 ± 0.08 | — |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | 0.67 ± 0.58 | 1.00 ± 0.00 | 0.96 ± 0.03 | 1.00 ± 0.00 | 1.00 ± 0.00 | 1.00 ± 0.00 | — |
 
 ### ⚠️ 1 run(s) stopped by the harness — excluded from the means above
 
@@ -166,7 +178,7 @@ These runs never produced a final answer: the harness stopped the agent mid-task
 |---|---|---|---|---|---|---|
 | M-R1-fat | M4@103 | 1 | **turn cap (25)** | 26 | 56 | 0.00 |
 
-**On grounding.** 180 of 180 finished run(s) are fact-verified: every fact the answer states was traced to a `tool_result` that entered the context before it, using the proxy's `tool_io.jsonl` sidecar. 0 failed that check. `answer_grounded` is never `True` by default, so a blank means unassessed, not passed.
+**On grounding.** 209 of 210 finished run(s) are fact-verified: every fact the answer states was traced to a `tool_result` that entered the context before it, using the proxy's `tool_io.jsonl` sidecar. 0 failed that check. 1 could not be assessed (no sidecar, or the answer states no checkable fact) and are marked blank rather than passing — `answer_grounded` is never `True` by default.
 
 
 ## Join tax — pass-through tokens and forced serial depth
@@ -183,8 +195,9 @@ These runs never produced a final answer: the harness stopped the agent mid-task
 | **M-R1-lean** — REST (one tool per endpoint), lean payloads | 817 tok<br>(94% unused)<br>depth 1.0 | 2,597 tok<br>(82% unused)<br>depth 1.0 | 1,107 tok<br>(56% unused)<br>depth 1.0 | 2,652 tok<br>(55% unused)<br>depth 1.0 | 2,968 tok<br>(95% unused)<br>depth 2.0 | 16,518 tok<br>(94% unused)<br>depth 2.0 | 19,084 tok<br>(87% unused)<br>depth 2.0 | 97,063 tok<br>(90% unused)<br>depth 2.0 | 19,060 tok<br>(97% unused)<br>depth 2.0 | 46,599 tok<br>(97% unused)<br>depth 2.0 | — |
 | **M-R2-fat** — REST (search + describe + request), fat payloads | 986 tok<br>(95% unused)<br>ex-disc 806 tok<br>depth 1.0<br>disc 2.0 | 3,911 tok<br>(93% unused)<br>ex-disc 3,724 tok<br>depth 1.0<br>disc 2.0 | 15,994 tok<br>(93% unused)<br>ex-disc 14,991 tok<br>depth 1.0<br>disc 2.3 | 36,774 tok<br>(92% unused)<br>depth 1.0<br>disc 2.0 | 8,387 tok<br>(97% unused)<br>depth 2.0 | 16,315 tok<br>(93% unused)<br>depth 1.3<br>disc 2.0 | 65,943 tok<br>(93% unused)<br>ex-disc 63,247 tok<br>depth 1.0<br>disc 3.0 | 143,882 tok<br>(94% unused)<br>ex-disc 141,239 tok<br>depth 1.0<br>disc 3.0 | 19,450 tok<br>(97% unused)<br>depth 1.0<br>disc 1.7 | 47,086 tok<br>(97% unused)<br>ex-disc 46,192 tok<br>depth 1.0<br>disc 3.0 | — |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | 988 tok<br>(95% unused)<br>ex-disc 808 tok<br>depth 1.0<br>disc 2.0 | 3,912 tok<br>(93% unused)<br>ex-disc 3,725 tok<br>depth 1.0<br>disc 2.0 | 12,635 tok<br>(89% unused)<br>ex-disc 10,578 tok<br>depth 1.0<br>disc 2.7 | 26,565 tok<br>(85% unused)<br>ex-disc 25,411 tok<br>depth 1.0<br>disc 2.3 | 3,733 tok<br>(96% unused)<br>ex-disc 3,660 tok<br>depth 2.0<br>disc 1.3 | 17,557 tok<br>(92% unused)<br>ex-disc 16,932 tok<br>depth 2.0<br>disc 2.3 | 57,432 tok<br>(93% unused)<br>ex-disc 56,054 tok<br>depth 1.0<br>disc 2.7 | 147,928 tok<br>(94% unused)<br>ex-disc 146,274 tok<br>depth 1.0<br>disc 3.0 | 19,500 tok<br>(97% unused)<br>ex-disc 19,269 tok<br>depth 1.0<br>disc 2.0 | 46,981 tok<br>(97% unused)<br>ex-disc 46,082 tok<br>depth 1.0<br>disc 3.0 | — |
-| **M-G1** — GraphQL (search + describe + execute) | 3,542 tok<br>(98% unused)<br>ex-disc 41 tok<br>depth 1.0<br>disc 2.0 | 4,661 tok<br>(96% unused)<br>ex-disc 754 tok<br>depth 1.0<br>disc 1.7 | 4,813 tok<br>(91% unused)<br>ex-disc 109 tok<br>depth 1.0 | 5,007 tok<br>(81% unused)<br>ex-disc 117 tok<br>depth 1.0 | 5,472 tok<br>(96% unused)<br>ex-disc 217 tok<br>depth 1.0<br>disc 3.3 | 6,074 tok<br>(94% unused)<br>ex-disc 916 tok<br>depth 1.0<br>disc 2.0 | 7,213 tok<br>(85% unused)<br>ex-disc 1,229 tok<br>depth 1.0<br>disc 2.0 | 11,863 tok<br>(81% unused)<br>ex-disc 4,114 tok<br>depth 1.0<br>disc 3.0 | 4,829 tok<br>(95% unused)<br>ex-disc 418 tok<br>depth 1.0<br>disc 2.0 | 8,241 tok<br>(97% unused)<br>ex-disc 973 tok<br>depth 1.0<br>disc 2.0 | — |
-| **M-G2** — GraphQL (frozen persisted operations) | 52 tok<br>(50% unused)<br>depth 1.0 | 242 tok<br>(51% unused)<br>depth 1.0 | 942 tok<br>(50% unused)<br>depth 1.0 | 2,352 tok<br>(50% unused)<br>depth 1.0 | 835 tok<br>(94% unused)<br>depth 1.0 | 4,038 tok<br>(90% unused)<br>depth 1.0 | 16,180 tok<br>(91% unused)<br>depth 1.0 | 40,253 tok<br>(91% unused)<br>depth 1.0 | 4,979 tok<br>(98% unused)<br>depth 2.0 | 12,482 tok<br>(98% unused)<br>depth 2.0 | — |
+| **M-G1** — GraphQL (search + describe + execute, our server) | 3,542 tok<br>(98% unused)<br>ex-disc 41 tok<br>depth 1.0<br>disc 2.0 | 4,661 tok<br>(96% unused)<br>ex-disc 754 tok<br>depth 1.0<br>disc 1.7 | 4,813 tok<br>(91% unused)<br>ex-disc 109 tok<br>depth 1.0 | 5,007 tok<br>(81% unused)<br>ex-disc 117 tok<br>depth 1.0 | 5,472 tok<br>(96% unused)<br>ex-disc 217 tok<br>depth 1.0<br>disc 3.3 | 6,074 tok<br>(94% unused)<br>ex-disc 916 tok<br>depth 1.0<br>disc 2.0 | 7,213 tok<br>(85% unused)<br>ex-disc 1,229 tok<br>depth 1.0<br>disc 2.0 | 11,863 tok<br>(81% unused)<br>ex-disc 4,114 tok<br>depth 1.0<br>disc 3.0 | 4,829 tok<br>(95% unused)<br>ex-disc 418 tok<br>depth 1.0<br>disc 2.0 | 8,241 tok<br>(97% unused)<br>ex-disc 973 tok<br>depth 1.0<br>disc 2.0 | — |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | 52 tok<br>(50% unused)<br>depth 1.0 | 242 tok<br>(51% unused)<br>depth 1.0 | 942 tok<br>(50% unused)<br>depth 1.0 | 2,352 tok<br>(50% unused)<br>depth 1.0 | 835 tok<br>(94% unused)<br>depth 1.0 | 4,038 tok<br>(90% unused)<br>depth 1.0 | 16,180 tok<br>(91% unused)<br>depth 1.0 | 40,253 tok<br>(91% unused)<br>depth 1.0 | 4,979 tok<br>(98% unused)<br>depth 2.0 | 12,482 tok<br>(98% unused)<br>depth 2.0 | — |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | 1,021 tok<br>(98% unused)<br>depth 1.0 | 1,261 tok<br>(92% unused)<br>depth 1.0 | 1,815 tok<br>(78% unused)<br>depth 1.0 | 1,376 tok<br>(51% unused)<br>depth 1.0 | 7,941 tok<br>(92% unused)<br>depth 1.0 | 4,138 tok<br>(94% unused)<br>depth 1.0 | 6,597 tok<br>(81% unused)<br>depth 1.0 | 8,168 tok<br>(69% unused)<br>depth 1.0 | 3,853 tok<br>(99% unused)<br>depth 1.0 | 5,145 tok<br>(98% unused)<br>depth 1.0 | — |
 
 *Token figures apportion the proxy's `tool_result_tokens` by the fraction of result bytes whose values never reach the answer; `ex-disc` uses the same denominator with DISCOVERY_TOOLS results dropped from the numerator, so the two are directly comparable. The approximation is confined to that ratio.*
 
@@ -208,12 +221,13 @@ The prefix is what the model receives on the first call that carries the tool su
 |---|---|---|---|---|---|
 | **M-R1-fat** | 9 | 9 tools / 9,601 B | 3,790–4,053 | 4,096 | **no** — every prefix is below the minimum |
 | **M-R1-lean** | 9 | 9 tools / 9,601 B | 3,790–4,053 | 4,096 | **no** — every prefix is below the minimum |
-| **M-R2-fat** | 3 | 3 tools / 2,439 B | 1,586–1,849 | 4,096 | **no** — every prefix is below the minimum |
-| **M-R2-lean** | 3 | 3 tools / 2,439 B | 1,586–1,849 | 4,096 | **no** — every prefix is below the minimum |
-| **M-G1** | 3 | 3 tools / 2,159 B | 1,491–1,754 | 4,096 | **no** — every prefix is below the minimum |
+| **M-R2-fat** | 3 | 3 tools / 2,439 B (as run) | 1,586–1,849 | 4,096 | **no** — every prefix is below the minimum |
+| **M-R2-lean** | 3 | 3 tools / 2,439 B (as run) | 1,586–1,849 | 4,096 | **no** — every prefix is below the minimum |
+| **M-G1** | 3 | 3 tools / 2,159 B (as run) | 1,491–1,754 | 4,096 | **no** — every prefix is below the minimum |
 | **M-G2** | 7 | 7 tools / 4,040 B | 1,823–2,086 | 4,096 | **no** — every prefix is below the minimum |
+| **M-G3** | 3 | 3 tools / 1,940 B | 1,404–1,667 | 4,096 | **no** — every prefix is below the minimum |
 
-**180 of 180 runs carry a prefix below their model's cache minimum (every condition), so in those runs the tool surface is never written to cache at all.** Their first `cache_creation` charge fires when the *conversation* crosses the minimum, several tool rounds in — which is why Stage 1 below is labelled for that event and not for schema loading. Where a surface does clear the minimum on its own, a fatter one really does buy a bigger Stage 1; where it does not, it buys a bigger uncached `input_tokens` bill on every call until the conversation grows past the threshold. The two are not the same cost and the Stage 1 column does not distinguish them — this table is how you tell which one a row is.
+**210 of 210 runs carry a prefix below their model's cache minimum (every condition), so in those runs the tool surface is never written to cache at all.** Their first `cache_creation` charge fires when the *conversation* crosses the minimum, several tool rounds in — which is why Stage 1 below is labelled for that event and not for schema loading. Where a surface does clear the minimum on its own, a fatter one really does buy a bigger Stage 1; where it does not, it buys a bigger uncached `input_tokens` bill on every call until the conversation grows past the threshold. The two are not the same cost and the Stage 1 column does not distinguish them — this table is how you tell which one a row is.
 
 *1 run(s) predate the proxy's `n_tools` field and have no measurable prefix; they are absent from this table rather than estimated. See `prefix_note` in `raw.csv`.*
 
@@ -222,7 +236,7 @@ The prefix is what the model receives on the first call that carries the tool su
 
 Every inference run goes through three phases. Understanding them explains why the token counts look the way they do.
 
-**First cache write (Stage 1)** — Before Claude can act, the harness sends it a full description of every available tool. For the front-loaded conditions that's nine generated endpoint tools (M-R1) or seven frozen persisted operations (M-G2); for the on-demand pair it is three generic tools each (M-R2, M-G1). Measured `tools/list` sizes: 9,601 / 4,040 bytes front-loaded against 2,439 / 2,159 on-demand (capture/expected-tool-surfaces.json, which owns these numbers). Anthropic will cache that context, but only once the prompt clears the model's **minimum cacheable prefix** — which is model-dependent and not monotonic in model size (4,096 tokens on Haiku 4.5, 1,024 on Sonnet 5, 512 on Opus 5), so it cannot be inferred from the model name. Stage 1 captures the `cache_creation` charge for the first write that happens. **It is named for that event, not for schema loading**, and the two coincide only when the tool surface alone clears the minimum — see the prefix table above for whether it does here. When it does not, the first write fires several tool rounds in, once the *conversation* has grown past the threshold, and the tool surface is paid at the uncached `input_tokens` rate on every call until then. This section previously read "once it exceeds ~1 000 tokens" and attributed Stage 1 to schema size; ~1,000 is Sonnet's minimum, and the wrong threshold is what left the zero-cache-read finding without a mechanism.
+**First cache write (Stage 1)** — Before Claude can act, the harness sends it a full description of every available tool. For the front-loaded conditions that's nine generated endpoint tools (M-R1) or seven frozen persisted operations (M-G2); for the on-demand pair it is three generic tools each (M-R2, M-G1). Measured `tools/list` sizes: 9,601 / 4,040 bytes front-loaded against 2,652 / 2,270 on-demand (capture/expected-tool-surfaces.json, which owns these numbers). Anthropic will cache that context, but only once the prompt clears the model's **minimum cacheable prefix** — which is model-dependent and not monotonic in model size (4,096 tokens on Haiku 4.5, 1,024 on Sonnet 5, 512 on Opus 5), so it cannot be inferred from the model name. Stage 1 captures the `cache_creation` charge for the first write that happens. **It is named for that event, not for schema loading**, and the two coincide only when the tool surface alone clears the minimum — see the prefix table above for whether it does here. When it does not, the first write fires several tool rounds in, once the *conversation* has grown past the threshold, and the tool surface is paid at the uncached `input_tokens` rate on every call until then. This section previously read "once it exceeds ~1 000 tokens" and attributed Stage 1 to schema size; ~1,000 is Sonnet's minimum, and the wrong threshold is what left the zero-cache-read finding without a mechanism.
 
 **Context growth (Stage 2)** — Each tool call extends the conversation: the tool's response is appended and the *now-longer* context must be written to cache again so the next inference call can read it cheaply. Stage 2 sums those incremental `cache_creation` charges — the cost of *maintaining* the cache as it grows, not of using it. Two factors drive Stage 2 higher: more round trips (more re-writes) and larger payloads per round trip (more new tokens to cache each time). The REST conditions are penalised on both axes, and phase 2 is built to separate them: an agent-side join needs one call per record where a federated query needs one in total, and a `-fat` REST response carries every field whether or not the task asked for it (49,049 B against GraphQL's 1,683 B for the same twenty flights, §5.1). The `-lean` profile holds the call count fixed and removes the over-fetch, which is how the two effects are told apart. Stage 2 is where most of the REST–GraphQL cost difference accumulates.
 
@@ -281,26 +295,36 @@ Each run's cost is split across the three stages of the inference prompt lifecyc
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M3@50 | $0.0608 | $1.2391 | $0.0357 | **$1.3356** |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@20 | $0.0257 | $0.1413 | $0.0124 | **$0.1794** |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@50 | $0.0605 | $1.9536 | $0.0224 | **$2.0365** |
-| **M-G1** — GraphQL (search + describe + execute) | M1@1 | $0.0066 | $0.0145 | $0.0091 | **$0.0302** |
-| **M-G1** — GraphQL (search + describe + execute) | M1@5 | $0.0068 | $0.0284 | $0.0093 | **$0.0445** |
-| **M-G1** — GraphQL (search + describe + execute) | M1@20 | $0.0093 | $0.0104 | $0.0093 | **$0.0290** |
-| **M-G1** — GraphQL (search + describe + execute) | M1@50 | $0.0095 | $0.0122 | $0.0151 | **$0.0368** |
-| **M-G1** — GraphQL (search + describe + execute) | M2@1 | $0.0084 | $0.0307 | $0.0101 | **$0.0492** |
-| **M-G1** — GraphQL (search + describe + execute) | M3@5 | $0.0104 | $0.0279 | $0.0140 | **$0.0523** |
-| **M-G1** — GraphQL (search + describe + execute) | M3@20 | $0.0091 | $0.0247 | $0.0142 | **$0.0480** |
-| **M-G1** — GraphQL (search + describe + execute) | M3@50 | $0.0105 | $0.0471 | $0.0214 | **$0.0790** |
-| **M-G1** — GraphQL (search + describe + execute) | M4@20 | $0.0075 | $0.0274 | $0.0096 | **$0.0444** |
-| **M-G1** — GraphQL (search + describe + execute) | M4@50 | $0.0128 | $0.0153 | $0.0108 | **$0.0388** |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@1 | $0.0000 | $0.0000 | $0.0046 | **$0.0046** |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@5 | $0.0000 | $0.0000 | $0.0058 | **$0.0058** |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@20 | $0.0053 | $0.0000 | $0.0058 | **$0.0111** |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@50 | $0.0097 | $0.0000 | $0.0105 | **$0.0202** |
-| **M-G2** — GraphQL (frozen persisted operations) | M2@1 | $0.0000 | $0.0000 | $0.0068 | **$0.0068** |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@5 | $0.0089 | $0.0031 | $0.0072 | **$0.0193** |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@20 | $0.0236 | $0.0305 | $0.0187 | **$0.0728** |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@50 | $0.0554 | $2.7013 | $0.0459 | **$2.8026** |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@20 | $0.0114 | $0.0000 | $0.0119 | **$0.0233** |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@50 | $0.0085 | $0.0249 | $0.0150 | **$0.0484** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@1 | $0.0066 | $0.0145 | $0.0091 | **$0.0302** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@5 | $0.0068 | $0.0284 | $0.0093 | **$0.0445** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@20 | $0.0093 | $0.0104 | $0.0093 | **$0.0290** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@50 | $0.0095 | $0.0122 | $0.0151 | **$0.0368** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M2@1 | $0.0084 | $0.0307 | $0.0101 | **$0.0492** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@5 | $0.0104 | $0.0279 | $0.0140 | **$0.0523** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@20 | $0.0091 | $0.0247 | $0.0142 | **$0.0480** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@50 | $0.0105 | $0.0471 | $0.0214 | **$0.0790** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@20 | $0.0075 | $0.0274 | $0.0096 | **$0.0444** |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@50 | $0.0128 | $0.0153 | $0.0108 | **$0.0388** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@1 | $0.0000 | $0.0000 | $0.0046 | **$0.0046** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@5 | $0.0000 | $0.0000 | $0.0058 | **$0.0058** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@20 | $0.0053 | $0.0000 | $0.0058 | **$0.0111** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@50 | $0.0097 | $0.0000 | $0.0105 | **$0.0202** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M2@1 | $0.0000 | $0.0000 | $0.0068 | **$0.0068** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@5 | $0.0089 | $0.0031 | $0.0072 | **$0.0193** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@20 | $0.0236 | $0.0305 | $0.0187 | **$0.0728** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@50 | $0.0554 | $2.7013 | $0.0459 | **$2.8026** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@20 | $0.0114 | $0.0000 | $0.0119 | **$0.0233** |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@50 | $0.0085 | $0.0249 | $0.0150 | **$0.0484** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@1 | $0.0000 | $0.0000 | $0.0126 | **$0.0126** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@5 | $0.0000 | $0.0000 | $0.0211 | **$0.0211** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@20 | $0.0054 | $0.0088 | $0.0281 | **$0.0423** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@50 | $0.0061 | $0.0026 | $0.0234 | **$0.0321** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M2@1 | $0.0058 | $0.0651 | $0.0215 | **$0.0924** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@5 | $0.0059 | $0.0315 | $0.0203 | **$0.0577** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@20 | $0.0060 | $0.0413 | $0.0258 | **$0.0731** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@50 | $0.0053 | $0.0341 | $0.0283 | **$0.0677** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@20 | $0.0053 | $0.0508 | $0.0243 | **$0.0805** |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@50 | $0.0058 | $0.0864 | $0.0255 | **$0.1176** |
 
 *Stage 1: first non-zero `cache_creation_input_tokens` call. Stage 2: all subsequent `cache_creation_input_tokens`. Stage 3: `input_tokens` + `output_tokens` + `cache_read_input_tokens` across all calls. **Cross-condition caveat:** the Stage 1 / Stage 2 boundary falls at a different point in the conversation for each condition. No phase-2 tool surface clears Haiku 4.5's 4,096-token cache minimum (prefixes run 1,491–4,053), so in every cell the first write fires on conversation growth, not on schema load — several discovery or fan-out rounds in, at a different turn per condition. A larger Stage 1 here means a larger conversation at the crossing point. The Stage 1 + Stage 2 sum (total cache-create cost) and Stage 3 are the reliable cross-condition comparators; the individual stage split reflects within-condition structure, not a symmetric breakdown.*
 
@@ -352,28 +376,38 @@ Pricing per model (USD/1M tokens) — claude-haiku-4-5-20251001: input $1.0/1M o
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M3@50 | 3 | $1.3356 | $4.0067 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@20 | 3 | $0.1794 | $0.5383 |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@50 | 3 | $2.0365 | $6.1095 |
-| **M-G1** — GraphQL (search + describe + execute) | M1@1 | 3 | $0.0302 | $0.0905 |
-| **M-G1** — GraphQL (search + describe + execute) | M1@5 | 3 | $0.0445 | $0.1336 |
-| **M-G1** — GraphQL (search + describe + execute) | M1@20 | 3 | $0.0290 | $0.0870 |
-| **M-G1** — GraphQL (search + describe + execute) | M1@50 | 3 | $0.0368 | $0.1103 |
-| **M-G1** — GraphQL (search + describe + execute) | M2@1 | 3 | $0.0492 | $0.1477 |
-| **M-G1** — GraphQL (search + describe + execute) | M3@5 | 3 | $0.0523 | $0.1568 |
-| **M-G1** — GraphQL (search + describe + execute) | M3@20 | 3 | $0.0480 | $0.1439 |
-| **M-G1** — GraphQL (search + describe + execute) | M3@50 | 3 | $0.0790 | $0.2371 |
-| **M-G1** — GraphQL (search + describe + execute) | M4@20 | 3 | $0.0444 | $0.1333 |
-| **M-G1** — GraphQL (search + describe + execute) | M4@50 | 3 | $0.0388 | $0.1163 |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@1 | 3 | $0.0046 | $0.0139 |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@5 | 3 | $0.0058 | $0.0175 |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@20 | 3 | $0.0111 | $0.0334 |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@50 | 3 | $0.0202 | $0.0606 |
-| **M-G2** — GraphQL (frozen persisted operations) | M2@1 | 3 | $0.0068 | $0.0205 |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@5 | 3 | $0.0193 | $0.0578 |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@20 | 3 | $0.0728 | $0.2183 |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@50 | 3 | $2.8026 | $8.4078 |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@20 | 3 | $0.0233 | $0.0698 |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@50 | 3 | $0.0484 | $0.1452 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@1 | 3 | $0.0302 | $0.0905 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@5 | 3 | $0.0445 | $0.1336 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@20 | 3 | $0.0290 | $0.0870 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@50 | 3 | $0.0368 | $0.1103 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M2@1 | 3 | $0.0492 | $0.1477 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@5 | 3 | $0.0523 | $0.1568 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@20 | 3 | $0.0480 | $0.1439 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@50 | 3 | $0.0790 | $0.2371 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@20 | 3 | $0.0444 | $0.1333 |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@50 | 3 | $0.0388 | $0.1163 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@1 | 3 | $0.0046 | $0.0139 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@5 | 3 | $0.0058 | $0.0175 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@20 | 3 | $0.0111 | $0.0334 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@50 | 3 | $0.0202 | $0.0606 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M2@1 | 3 | $0.0068 | $0.0205 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@5 | 3 | $0.0193 | $0.0578 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@20 | 3 | $0.0728 | $0.2183 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@50 | 3 | $2.8026 | $8.4078 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@20 | 3 | $0.0233 | $0.0698 |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@50 | 3 | $0.0484 | $0.1452 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@1 | 3 | $0.0126 | $0.0379 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@5 | 3 | $0.0211 | $0.0633 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@20 | 3 | $0.0423 | $0.1269 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@50 | 3 | $0.0321 | $0.0965 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M2@1 | 3 | $0.0924 | $0.2771 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@5 | 3 | $0.0577 | $0.1731 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@20 | 3 | $0.0731 | $0.2193 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@50 | 3 | $0.0677 | $0.2032 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@20 | 3 | $0.0805 | $0.2415 |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@50 | 3 | $0.1176 | $0.3528 |
 
-**Grand total across all conditions/tasks/reps: $43.3580**
+**Grand total across all conditions/tasks/reps: $45.1496**
 
 
 ## Timing (seconds)
@@ -423,26 +457,36 @@ Pricing per model (USD/1M tokens) — claude-haiku-4-5-20251001: input $1.0/1M o
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M3@50 | 72.4 ± 20.2s | 49.9 ± 31.5s |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@20 | 24.7 ± 3.4s | 17.3 ± 3.6s |
 | **M-R2-lean** — REST (search + describe + request), lean payloads | M4@50 | 47.5 ± 7.6s | 40.5 ± 7.9s |
-| **M-G1** — GraphQL (search + describe + execute) | M1@1 | 12.3 ± 2.9s | 8.4 ± 2.5s |
-| **M-G1** — GraphQL (search + describe + execute) | M1@5 | 17.3 ± 5.8s | 11.7 ± 5.2s |
-| **M-G1** — GraphQL (search + describe + execute) | M1@20 | 15.6 ± 0.1s | 7.7 ± 0.8s |
-| **M-G1** — GraphQL (search + describe + execute) | M1@50 | 24.0 ± 2.9s | 10.1 ± 0.7s |
-| **M-G1** — GraphQL (search + describe + execute) | M2@1 | 17.3 ± 2.9s | 12.5 ± 0.7s |
-| **M-G1** — GraphQL (search + describe + execute) | M3@5 | 22.3 ± 2.9s | 12.7 ± 2.6s |
-| **M-G1** — GraphQL (search + describe + execute) | M3@20 | 22.4 ± 2.8s | 9.0 ± 0.6s |
-| **M-G1** — GraphQL (search + describe + execute) | M3@50 | 32.3 ± 12.6s | 12.7 ± 2.0s |
-| **M-G1** — GraphQL (search + describe + execute) | M4@20 | 17.5 ± 2.7s | 12.4 ± 1.3s |
-| **M-G1** — GraphQL (search + describe + execute) | M4@50 | 15.6 ± 0.1s | 11.2 ± 0.3s |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@1 | 5.5 ± 0.1s | 1.1 ± 0.2s |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@5 | 5.6 ± 0.1s | 1.2 ± 0.2s |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@20 | 10.7 ± 0.1s | 1.7 ± 0.2s |
-| **M-G2** — GraphQL (frozen persisted operations) | M1@50 | 19.0 ± 2.9s | 2.1 ± 0.1s |
-| **M-G2** — GraphQL (frozen persisted operations) | M2@1 | 7.4 ± 2.9s | 1.9 ± 0.1s |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@5 | 10.7 ± 0.0s | 3.4 ± 1.2s |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@20 | 22.3 ± 2.9s | 10.0 ± 1.5s |
-| **M-G2** — GraphQL (frozen persisted operations) | M3@50 | 82.4 ± 12.6s | 57.9 ± 8.1s |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@20 | 12.3 ± 2.9s | 7.3 ± 2.3s |
-| **M-G2** — GraphQL (frozen persisted operations) | M4@50 | 15.7 ± 0.0s | 10.8 ± 0.2s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@1 | 12.3 ± 2.9s | 8.4 ± 2.5s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@5 | 17.3 ± 5.8s | 11.7 ± 5.2s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@20 | 15.6 ± 0.1s | 7.7 ± 0.8s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M1@50 | 24.0 ± 2.9s | 10.1 ± 0.7s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M2@1 | 17.3 ± 2.9s | 12.5 ± 0.7s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@5 | 22.3 ± 2.9s | 12.7 ± 2.6s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@20 | 22.4 ± 2.8s | 9.0 ± 0.6s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M3@50 | 32.3 ± 12.6s | 12.7 ± 2.0s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@20 | 17.5 ± 2.7s | 12.4 ± 1.3s |
+| **M-G1** — GraphQL (search + describe + execute, our server) | M4@50 | 15.6 ± 0.1s | 11.2 ± 0.3s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@1 | 5.5 ± 0.1s | 1.1 ± 0.2s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@5 | 5.6 ± 0.1s | 1.2 ± 0.2s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@20 | 10.7 ± 0.1s | 1.7 ± 0.2s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M1@50 | 19.0 ± 2.9s | 2.1 ± 0.1s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M2@1 | 7.4 ± 2.9s | 1.9 ± 0.1s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@5 | 10.7 ± 0.0s | 3.4 ± 1.2s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@20 | 22.3 ± 2.9s | 10.0 ± 1.5s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M3@50 | 82.4 ± 12.6s | 57.9 ± 8.1s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@20 | 12.3 ± 2.9s | 7.3 ± 2.3s |
+| **M-G2** — GraphQL (frozen persisted operations, Apollo MCP) | M4@50 | 15.7 ± 0.0s | 10.8 ± 0.2s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@1 | 12.5 ± 2.8s | 5.7 ± 2.5s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@5 | 15.6 ± 0.1s | 9.4 ± 0.7s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@20 | 19.0 ± 2.9s | 13.6 ± 3.6s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M1@50 | 26.0 ± 5.1s | 13.4 ± 4.7s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M2@1 | 32.5 ± 7.9s | 23.5 ± 8.2s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@5 | 20.7 ± 0.1s | 13.3 ± 1.5s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@20 | 29.2 ± 6.1s | 14.8 ± 6.1s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M3@50 | 32.5 ± 2.8s | 11.6 ± 1.7s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@20 | 24.1 ± 2.9s | 18.1 ± 3.8s |
+| **M-G3** — GraphQL (search + validate + execute, Apollo MCP) | M4@50 | 27.5 ± 2.8s | 22.3 ± 4.7s |
 
 ## Audit — per-run disclosure & completion
 
@@ -510,6 +554,36 @@ Headline metrics count only **task-model** (`claude-haiku-4-5-20251001`) calls. 
 | M-G2 | M4@50 | 1 | 4 | 2006 | 0 | $0.048 | 15.7s | 11.0s | 0 | 0 | 0 | yes | 0 |
 | M-G2 | M4@50 | 2 | 4 | 2006 | 0 | $0.048 | 15.7s | 10.6s | 0 | 0 | 0 | yes | 0 |
 | M-G2 | M4@50 | 3 | 4 | 2006 | 0 | $0.048 | 15.7s | 10.8s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@1 | 1 | 7 | 15050 | 0 | $0.017 | 15.7s | 8.6s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@1 | 2 | 5 | 8720 | 0 | $0.010 | 11.1s | 4.2s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@1 | 3 | 5 | 8720 | 0 | $0.010 | 10.7s | 4.2s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@20 | 1 | 8 | 13986 | 0 | $0.025 | 15.6s | 9.4s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@20 | 2 | 12 | 24046 | 0 | $0.044 | 20.7s | 15.2s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@20 | 3 | 14 | 24231 | 0 | $0.058 | 20.6s | 16.1s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@5 | 1 | 8 | 17407 | 0 | $0.021 | 15.6s | 8.7s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@5 | 2 | 8 | 17395 | 0 | $0.021 | 15.6s | 9.4s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@5 | 3 | 8 | 17401 | 0 | $0.021 | 15.7s | 10.0s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@50 | 1 | 8 | 14874 | 0 | $0.032 | 25.8s | 14.1s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@50 | 2 | 10 | 17645 | 0 | $0.042 | 31.1s | 17.8s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M1@50 | 3 | 5 | 6796 | 0 | $0.022 | 21.0s | 8.4s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M2@1 | 1 | 14 | 13562 | 0 | $0.081 | 30.7s | 22.4s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M2@1 | 2 | 17 | 13578 | 0 | $0.137 | 41.1s | 32.2s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M2@1 | 3 | 10 | 13541 | 0 | $0.059 | 25.6s | 15.9s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@20 | 1 | 13 | 14466 | 0 | $0.105 | 36.2s | 21.8s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@20 | 2 | 8 | 7085 | 0 | $0.049 | 25.7s | 10.3s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@20 | 3 | 11 | 18557 | 0 | $0.066 | 25.6s | 12.3s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@5 | 1 | 10 | 14011 | 0 | $0.052 | 20.7s | 11.6s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@5 | 2 | 10 | 10815 | 0 | $0.056 | 20.6s | 14.3s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@5 | 3 | 12 | 14020 | 0 | $0.065 | 20.7s | 13.9s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@50 | 1 | 8 | 7685 | 0 | $0.069 | 31.0s | 9.8s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@50 | 2 | 8 | 7681 | 0 | $0.066 | 35.7s | 13.0s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M3@50 | 3 | 8 | 7681 | 0 | $0.068 | 30.7s | 12.1s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@20 | 1 | 11 | 16364 | 0 | $0.050 | 20.7s | 14.1s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@20 | 2 | 20 | 12679 | 0 | $0.130 | 25.8s | 21.6s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@20 | 3 | 14 | 23866 | 0 | $0.062 | 25.7s | 18.5s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@50 | 1 | 17 | 12643 | 0 | $0.111 | 26.1s | 18.1s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@50 | 2 | 17 | 20077 | 0 | $0.099 | 25.7s | 21.3s | 0 | 0 | 0 | yes | 0 |
+| M-G3 | M4@50 | 3 | 22 | 17585 | 0 | $0.142 | 30.7s | 27.4s | 0 | 0 | 0 | yes | 0 |
 | M-R1 | M1@1 | 1 | 3 | 4014 | 0 | $0.011 | 5.6s | 1.4s | 0 | 0 | 0 | yes | 0 |
 | M-R1 | M1@1 | 1 | 3 | 4014 | 0 | $0.011 | 5.6s | 1.4s | 0 | 0 | 0 | yes | 0 |
 | M-R1 | M1@1 | 2 | 3 | 4014 | 0 | $0.011 | 5.6s | 1.4s | 0 | 0 | 0 | yes | 0 |

@@ -19,15 +19,13 @@ design had welded together: **protocol** (REST vs GraphQL) and **tool packaging*
 GitHub's API design from the result and turns field cardinality and tool-surface size
 into knobs. See [`PHASE2_PLAN.md`](PHASE2_PLAN.md).
 
-**The phase-2 headline is not the one the 2x2 was built to test.** Protocol is not what
-separated these six cells: GraphQL is both the cheapest *and* the most expensive condition.
-What predicted cost here is two independent properties of the tool surface — **field
-selectivity** and **cardinality match** — and the sharpest evidence is that one condition
-(`M-G2`) is the best in the matrix on one task and the worst on another with no change to its
-tool surface at all. That is a description of this matrix and a mechanism, not a verdict about
-protocols; a synthetic three-service app with one model and three reps cannot support one in
-either direction, and an earlier version of this paragraph overclaimed by calling protocol
-"the wrong question". Details below under *Phase 2 findings*.
+**What phase 2 found is not what the 2x2 was built to test.** Protocol is not what separated
+these six cells — GraphQL is both the cheapest *and* the most expensive condition — and what
+predicted cost instead was two properties of the tool surface: **field selectivity** and
+**cardinality match**. The argument is in [`WRITEUP.md`](WRITEUP.md); the tables, the scored
+pre-registration and the caveats that must travel with any number quoted from them are in
+[`FINDINGS.md`](FINDINGS.md). This file is the operating manual: what runs, how to run it, and
+what each artifact owns.
 
 Harness: **Goose** (`goose run --recipe`, `temperature: 0`). Measurement: a local
 **logging reverse-proxy** in front of `api.anthropic.com` captures the raw Anthropic
@@ -162,6 +160,7 @@ useful gate when the interesting failure is an agent silently dropping records:
 | `pass_through_tokens` | Tool-result tokens whose values never reach the answer — payload the agent carried and did not use. |
 | `forced_serial_depth` | Longest chain of calls where each consumed an id the previous returned. Prompt-supplied ids are excluded. |
 | `discovery_depth` | The same over *schema/spec lookup*, reported **beside** the above and never folded in — it exists only in the on-demand conditions, so folding it would make the headline metric track tool packaging rather than the join. |
+| `tool_errors` + `tool_error_tools` | Tool results the API returned as errors, attributed by `tool_use_id`. An error result is payload the agent paid for and could not use, and nothing else in the report names it. Added for `M-G3`, whose server advertises a tool it does not expose (NOTES.md 75); applies to every condition. |
 | `stop_cause` | Why a run stopped: `turn cap`, `timeout`, `budget kill`, `no output`, or none. Goose **exits 0** on a turn cap, so this is the only place it shows. |
 
 ## How measurement works
@@ -210,6 +209,7 @@ config/apollo-mcp.phase2.local.yaml       condition M-G2 (rendered by setup)
 servers/rover_schema_mcp.py        phase 1, condition B2
 servers/openapi_mcp.py             phase 2 — M-R1 (`--mode tools`) and M-R2 (`--mode discovery`)
 servers/supergraph_mcp.py          phase 2 — M-G1 (schema_search/schema_describe/graphql_execute)
+config/apollo-mcp.phase2-dynamic.yaml     condition M-G3 — Apollo MCP Server, dynamic tools
 tasks/tasks.yaml          canonical task wording (single source, both phases)
 tasks/expected.json       phase-2 computed ground truth (generated: `cd services && pnpm expected`)
 tasks/ground_truth.json   phase-1 ground truth
@@ -220,142 +220,41 @@ run_benchmark.py          orchestrator (one phase per invocation)
 parse_logs.py             log parser → results/phase<N>/
 grade.py                  phase-2 grading + the tool-I/O metrics
 test_grade.py  test_parse_logs.py  proxy/test_proxy_tool_io.py   test suites (stdlib, no framework)
+servers/_search.py        shared search grammar for M-R2 and M-G1 — one copy on purpose
+servers/test_search.py    search regressions, every case a query that returned 0 in the matrix
 services/                 the phase-2 backend: three services, REST + GraphQL from one field spec
 docker-compose.yml        the phase-2 stack — 3 subgraphs, 3 REST services, Apollo Router
 runs/  results/  capture/ outputs, split by phase
-WRITEUP.md                the phase-2 result, written as a narrative
-FINDINGS.md               the phase-2 result, terse + the scored pre-registration
+WRITEUP.md                the argument — start here
+FINDINGS.md               the tables, the scored pre-registration, and the caveats in full
+doclint.py                fails if a published figure or quoted prompt has drifted
 PHASE2_PLAN.md            phase-2 design, decisions, and STATUS — read this first for phase 2
 NOTES.md                  every surprise, in order, with what it cost
 ```
 
-## Phase 2 findings
+## What we found, and where it is written down
 
-**Headline: GraphQL-over-MCP is more token-efficient — a GraphQL condition won every task in
-the controlled matrix**, by 3.4× on wasted tokens against the best REST configuration we could
-build and 5.3× against a typical one. On GitHub's live API, the N+1 task cost REST
-**10 tool calls and 26,970 tokens of payload against GraphQL's 1 call and 419** — 64× the
-payload at 7.9× the cost.
-The six caveats are where the useful detail is, and one of them — entity-shaped persisted
-operations — is large enough to put GraphQL *behind* plain REST. Full argument in
-[`WRITEUP.md`](WRITEUP.md).
+**A GraphQL condition won every task instance in the controlled matrix**, on wasted tokens and
+on cost per task, by 1.18× to 15.7×. On GitHub's live API the N+1 task cost REST **10 tool
+calls and 26,970 tokens of payload against GraphQL's 1 call and 419** — 64× the payload at
+7.9× the cost. But protocol is not the variable that separated the seven phase-2 cells; tool
+packaging is, in two independent ways, and one packaging choice is enough to put GraphQL
+*behind* plain REST. A third thing separated them too, which we did not plan to measure:
+**which implementation of the same packaging you use** moved payload by up to 3.7× and flipped
+the cost ordering in six of ten cells. There is no single multiple worth quoting, and neither
+published document prints one.
 
-Two written versions, for different readers:
+Three documents, for three different readers:
 
-- **[`WRITEUP.md`](WRITEUP.md)** — the narrative one. Why the protocol framing collapsed,
-  what replaced it, and the section on our own instruments being worse than the experiment.
-  Start here if you have not seen this repo before.
-- **[`FINDINGS.md`](FINDINGS.md)** — the terse one. Tables, the pre-registration scored
-  against the runs, and the caveats that must travel with any number quoted from it.
+| | For | Contains |
+|---|---|---|
+| [`WRITEUP.md`](WRITEUP.md) | Someone who has not seen this repo | The argument: what was measured, the per-cell result, the six caveats, and what does and does not generalise. Start here. |
+| [`FINDINGS.md`](FINDINGS.md) | Someone about to quote a number from it | The tables, the pre-registration scored against the runs, the limits of the headline metric, and every caveat in full. |
+| [`results/phase2/summary.md`](results/phase2/summary.md) | Someone checking the arithmetic | Machine-generated per-run detail, including a lede **computed from the run rows at render time** rather than written — prose that states a mechanism the data does not show is a bug this project has shipped twice. |
 
-The condensed version follows here.
-
-Machine-generated detail is in `results/phase2/summary.md`, whose lede is **computed from
-the run rows at render time** rather than written — prose that states a mechanism the data
-does not show is a bug this project has shipped twice.
-
-**Protocol is not the variable; the tool surface is, in two independent ways.** M1 and
-M3 isolate them almost perfectly.
-
-**1. Field selectivity.** On M1@50 *every* condition makes about one data call, so call
-count is controlled and the whole spread is which fields come back: **36,598
-pass-through tokens for fat REST (92% never used) against M-G2's 2,352 (50%)** — 15.6x.
-**`?fields=` erases it**: the same REST surface in the lean bracket carries 2,652, within
-1.1x of GraphQL. On selectivity alone REST is competitive, and the gap is a *default*,
-not a protocol limit.
-
-**2. Cardinality match.** On M3@50 the two GraphQL conditions differ in payload by only
-3.4x but in tool calls by 14.3x. M-G1 answered the whole 50-flight join in **one
-`graphql_execute`**; M-G2 needed **100 calls**, one pair per flight; REST sat between at
-4 calls. M-G2 has federation underneath and still loops, because none of its seven
-frozen operations accepts more than one flight — `FlightRoster(flightId)` is sized to a
-roster screen. **Entity-scoped operations reimpose the 1+N pattern federation exists to
-remove**, and DataLoader cannot reach it: each call is an honest single-flight query
-from its own agent turn, so the fan-out sits above the layer where resolver batching
-works. Per-request DataLoaders *are* installed, and non-inference wall time confirms the
-join is not being paid for in latency instead — no condition shows a penalty large enough to
-see: 19.7s mean for M-G1's single query against 31.1s for REST's four list calls, but M-G1's
-three identical reps spread 33.0 / 20.0 / 6.0s (sd 13.5), so the ordering is not significant
-and only the absence of a large effect is (NOTES.md 57, 71).
-
-**The control that makes it publishable:** M-G2 is the **best** condition on M1@50 and
-the **worst** on M3@50, with no change to its tool surface.
-`FlightSchedule(flightNumbers: [String!]!)` takes a list; `FlightRoster(flightId: ID!)`
-takes one id. Same protocol, same server, same seven tools. So the actionable claim is
-not "adopt GraphQL" — it is **expose an operation shaped like the question, or expose
-the query language.**
-
-**A capability the client never exercises is not a defence.** `-lean` cut M1@20
-pass-through 13.2x and changed M4@50 by 66 tokens out of 46,665, because the agent never
-sent `?fields=` there at all.
-
-**Accuracy is not where the difference lives.** 137 of 180 graded runs are perfect, **41 of
-60** condition/task cells perfect outright (an earlier figure of 28 of 40 came from the
-accuracy table still folding the fat/lean brackets — bug #54's second instance, NOTES.md 67).
-All 180 passed the grounding check, which verifies that every *correct* value an answer states
-appears in the tool results that arrived — a retrieval-happened check, not per-fact
-provenance, so "0 fabricated" overstates it. Widest protocol gap: M2@1, GraphQL 1.00 against
-REST 0.85. The agents get the answer either way; what differs is the cost of getting it.
-
-### Read the cost column with this caveat
-
-**Prompt caching never hit in phase 2 — and did hit in phase 1.** 0 of 181 phase-2 runs read
-a cached token, against **32.6M written**. An earlier version added "phase 1 shows the same";
-that is **false** — phase 1 read back **356,070 tokens**, all of it in the REST conditions
-(A1 read 241,672 against 149,020 written; A2 read 114,398). B and B2 wrote and read zero.
-
-The cause is not breakpoint placement, which is what was previously diagnosed. Anthropic's
-prompt cache has a **minimum cacheable prefix**, model-dependent and non-monotone in model
-size — **4,096 tokens on `claude-haiku-4-5`**, 1,024 on Sonnet 5, 512 on Opus 5 — and a
-prompt below it is silently not cached, with nothing in `usage` to say why. Every phase-2
-prefix is 1,491–4,053 tokens, so no phase-2 run ever cached its tool surface; phase 1's A1
-prefix is 18,438 and did. `results/*/summary.md` carries a prefix column and the parser warns
-when a prefix falls below the model's minimum (NOTES.md 51, 68, 69).
-
-Cache writes cost 1.25x and reads 0.1x, so the phase-2 inflation scales with **call count**,
-penalising the many-call conditions — in the direction the hypothesis predicts. **In phase 1
-it runs the other way:** REST read at a tenth price while GraphQL, too small to cache, paid
-full input rate. Charge REST's reads at the uncached rate and T1 goes from 7.9x to **12.6x**,
-so phase 1's cost gap is understated.
-
-**The call counts and token ratios above are cache-independent and hold. The phase-2 dollar
-magnitudes are inflated, and only their direction should be quoted.** A modelled
-"as-if-cached" column was considered and **rejected** — it is a conjecture with decimal
-places that would age against Anthropic's pricing and the cache's matching semantics at once.
-
-### On trusting any of this
-
-The harness found more bugs than the experiment found effects. **Fifteen.** Nine are
-documented individually in `NOTES.md` 42-59: the tool-result fan-out undercount, a
-`forced_serial_depth` off-by-one, discovery depth counted as data depth, a turn-capped
-run's f1 averaged in as accuracy, never-hitting prompt caching, the fat/lean fold, the
-M3 verdict misparse, seven silent API 400s, and a totals table of zeros. Six more came out
-of a hostile audit of `WRITEUP.md` (`NOTES.md` 67-72), and **five of the six are in the
-caching and prefix instrumentation** — the one part of this study with no written-down
-prediction to collide with, which is the section's own thesis landing on its author.
-
-**Direction is not what determined survival — collision with a prediction was.** Counted
-properly, four of these errors were *conservative* for the GraphQL hypothesis (they
-understated the effect the study exists to measure), two favoured it, one is mixed and two
-are neutral — the full tally is `NOTES.md` 62, which also corrects an earlier claim here
-that most of them flattered the thesis. What separates the bug caught in minutes from the
-one that survived months is not bias: discovery depth (which *countered* the thesis) was
-caught fast because M1@5 was deliberately built as the task where REST wins, so GraphQL
-reading deeper there contradicted a written-down expectation. Nobody had a prior for the
-absolute magnitude of a payload column, so a 10x error sat in it unquestioned.
-
-**A bug is caught when it contradicts something you predicted** — not when it is large, and
-not when it is biased. That is the argument for pre-registration and for tasks with
-predictable directions, and it is why the pre-registration proved more reliable than the
-instrumentation.
-
-Every guard in
-`parse_logs.py` exists because something got through: the tool-result conservation law,
-the `stop_cause` split, the zero-cache-read warning, the non-200 warning, the
-tool-surface baseline, and the refusal to print a totals row it could not populate.
-
-**A metric that quietly confirms the thesis is the one to distrust**, and tasks built
-with predictable directions are what make a wrong one visible.
+Every measurement error made along the way, in order, with what each cost:
+[`NOTES.md`](NOTES.md). There are fifteen of them, which is the subject of `WRITEUP.md`'s last
+section.
 
 ## Caveats / methodology notes
 

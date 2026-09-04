@@ -548,6 +548,38 @@ def read_tool_io(path: Path) -> list:
     return sorted(calls, key=lambda c: (c.get("call") or 0, c.get("ts") or 0))
 
 
+def tool_errors(calls: list) -> dict:
+    """Tool results the API returned with `is_error` set, and which tools caused them.
+
+    Added for M-G3 (NOTES.md 75). Apollo MCP Server's remaining tool descriptions
+    still tell the agent to call `introspect` after that tool is disabled, so a
+    run can burn turns on a tool that is not on the surface. Without this column
+    those turns are indistinguishable from discovery work, and "GraphQL
+    discovery is expensive" is exactly the wrong conclusion to draw from a
+    tool-not-found loop.
+
+    Applies to every condition, not just M-G3: an error result is payload the
+    agent paid for and could not use, and nothing else in the report names it.
+    The proxy has recorded `is_error` per result all along; nothing read it.
+    """
+    producers = {}
+    for call in calls:
+        for use in call.get("tool_use") or []:
+            producers[use.get("id")] = use.get("name") or "?"
+    names, count = {}, 0
+    for call in calls:
+        for res in call.get("tool_result") or []:
+            if res.get("is_error"):
+                count += 1
+                name = producers.get(res.get("tool_use_id"), "?")
+                names[name] = names.get(name, 0) + 1
+    return {
+        "tool_errors": count,
+        "tool_error_tools": ", ".join(
+            f"{n}x{c}" if c > 1 else n for n, c in sorted(names.items())) or "",
+    }
+
+
 def _leaf_strings(obj, out=None) -> set:
     """Every scalar in a JSON structure, as a string.
 

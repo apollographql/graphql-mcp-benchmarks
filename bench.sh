@@ -288,6 +288,10 @@ json.dump({
     {"name": "schema_describe", "arguments": {"coord": "Flight.gate"}},
     {"name": "graphql_execute", "arguments": {"query": gql}},
   ],
+  "M-G3": [
+    {"name": "search", "arguments": {"terms": ["flight", "gate", "departure"]}},
+    {"name": "execute", "arguments": {"query": gql}},
+  ],
   "M-G2": [
     {"name": "FlightSchedule", "arguments": {"flightNumbers": numbers}},
     {"name": "FlightRoster", "arguments": {"flightId": fid}},
@@ -311,6 +315,10 @@ CALLS_EOF
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label M-G2 --out "$PROJECT_ROOT/capture/M-G2.json" --calls "$(m_calls M-G2)" \
     -- "$PROJECT_ROOT/bin/apollo-mcp-server" "$PROJECT_ROOT/config/apollo-mcp.phase2.local.yaml" || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-G3 --out "$PROJECT_ROOT/capture/M-G3.json" --calls "$(m_calls M-G3)" \
+    -- "$PROJECT_ROOT/bin/apollo-mcp-server" \
+       "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.local.yaml" || true
 
   rm -f "$calls_file"
 
@@ -318,7 +326,7 @@ CALLS_EOF
   # so a change here moves a published cost with nothing in the results to show it.
   echo "-- phase-2 tool surfaces vs the pinned baseline --"
   python3 "$PROJECT_ROOT/capture/check_surfaces.py" "$PROJECT_ROOT/capture" \
-    --require=M-R1,M-R2,M-G1,M-G2 || return 1
+    --require=M-R1,M-R2,M-G1,M-G2,M-G3 || return 1
 }
 
 # ---------------------------------------------------------------------------

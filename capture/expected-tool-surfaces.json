@@ -1,53 +1,91 @@
 {
-  "_meta": {
-    "readme": "Pinned phase-2 MCP tool surfaces. `./bench.sh capture` compares the live surfaces against this file and FAILS on any difference, because a tool surface is the defining cost of a front-loaded condition and a spec or schema change moves it silently. PHASE2_PLAN.md §8.1 quotes these numbers; this file owns them. To change one deliberately: re-run capture, read the diff it prints, update the value here and the §8.1 table in the same commit.",
-    "why_phase_2_only": "Phase 1's A1/A2/B/B2 surfaces come from GitHub's live MCP server and live GraphQL schema, so they cannot be pinned — re-measuring would compare against today's upstream, not June's (§11). Phase 2's are generated from hash-pinned local fixtures, so they are exactly reproducible and there is no excuse for letting them drift.",
-    "pinned": "2026-09-02",
-    "tools_list_bytes": "len(json.dumps(tools/list result)) as recorded by capture/capture_mcp.py"
-  },
-  "M-R1": {
-    "server": "servers/openapi_mcp.py --mode tools",
-    "n_tools": 9,
-    "tools_list_bytes": 9601,
-    "tool_names": [
-      "getAircraft",
-      "getAssignment",
-      "getCrewMember",
-      "getFlight",
-      "listAircraft",
-      "listAircraftAdvisories",
-      "listAssignment",
-      "listCrewMember",
-      "listFlight"
-    ],
-    "note": "Was 9,440 when §8.1 was first written on 2026-08-28. Commit 14d8973 added a `roles` filter to the assignments endpoint on both surfaces, which grew listAssignment's inputSchema by 161 bytes. A real change, correctly reflected — and it sat unnoticed until this baseline existed, which is the argument for the baseline. Note the asymmetry it illustrates rather than violates: adding an API capability grows a front-loaded tool surface and leaves an on-demand one untouched (M-R2, M-G1 unchanged), while GraphQL's frozen operations absorbed it at zero prefix cost."
-  },
-  "M-R2": {
-    "server": "servers/openapi_mcp.py --mode discovery",
-    "n_tools": 3,
+ "_meta": {
+  "readme": "Pinned phase-2 MCP tool surfaces. `./bench.sh capture` compares the live surfaces against this file and FAILS on any difference, because a tool surface is the defining cost of a front-loaded condition and a spec or schema change moves it silently. PHASE2_PLAN.md \u00a78.1 quotes these numbers; this file owns them. To change one deliberately: re-run capture, read the diff it prints, update the value here and the \u00a78.1 table in the same commit.",
+  "why_phase_2_only": "Phase 1's A1/A2/B/B2 surfaces come from GitHub's live MCP server and live GraphQL schema, so they cannot be pinned \u2014 re-measuring would compare against today's upstream, not June's (\u00a711). Phase 2's are generated from hash-pinned local fixtures, so they are exactly reproducible and there is no excuse for letting them drift.",
+  "pinned": "2026-09-02",
+  "tools_list_bytes": "len(json.dumps(tools/list result)) as recorded by capture/capture_mcp.py",
+  "repinned": "2026-09-03",
+  "repinned_why": "M-R2 2,439 -> 2,652 and M-G1 2,159 -> 2,270 when both search tools were fixed (NOTES.md 73): the AND'd query grammar that returned nothing on ~half of every search in the matrix, plus the signature/response-field asymmetry between them. M-R1 is unchanged at 9,601 because it exposes no search tool. IMPORTANT: the 180 published phase-2 runs used the PRE-FIX surfaces, so 2,439 and 2,159 remain the correct figures for those runs and are quoted as such in FINDINGS.md, NOTES.md and PHASE2_PLAN.md 8.1. This file tracks what the servers expose today, which is what the drift gate must compare against. The two agree again once the affected cells are re-run.",
+  "superseded_readme": "A condition's `superseded` list records surfaces that ran in the tree but are no longer current, newest-first, each with the timestamp it stopped applying. parse_logs.py picks the entry that applies to the runs it is reporting, keyed on each run's `started`, so a report never prints today's surface against yesterday's runs. It also refuses to print a single figure for a cell whose runs straddle a change. Added because the search fix moved two surfaces while 180 runs on the old ones stayed in the tree (NOTES.md 77)."
+ },
+ "M-R1": {
+  "server": "servers/openapi_mcp.py --mode tools",
+  "n_tools": 9,
+  "tools_list_bytes": 9601,
+  "tool_names": [
+   "getAircraft",
+   "getAssignment",
+   "getCrewMember",
+   "getFlight",
+   "listAircraft",
+   "listAircraftAdvisories",
+   "listAssignment",
+   "listCrewMember",
+   "listFlight"
+  ],
+  "note": "Was 9,440 when \u00a78.1 was first written on 2026-08-28. Commit 14d8973 added a `roles` filter to the assignments endpoint on both surfaces, which grew listAssignment's inputSchema by 161 bytes. A real change, correctly reflected \u2014 and it sat unnoticed until this baseline existed, which is the argument for the baseline. Note the asymmetry it illustrates rather than violates: adding an API capability grows a front-loaded tool surface and leaves an on-demand one untouched (M-R2, M-G1 unchanged), while GraphQL's frozen operations absorbed it at zero prefix cost."
+ },
+ "M-R2": {
+  "server": "servers/openapi_mcp.py --mode discovery",
+  "n_tools": 3,
+  "tools_list_bytes": 2652,
+  "tool_names": [
+   "openapi_describe",
+   "openapi_search",
+   "rest_request"
+  ],
+  "superseded": [
+   {
     "tools_list_bytes": 2439,
-    "tool_names": ["openapi_describe", "openapi_search", "rest_request"]
-  },
-  "M-G1": {
-    "server": "servers/supergraph_mcp.py",
     "n_tools": 3,
+    "changed_at": "2026-09-03T15:17:00",
+    "why": "search tools fixed (NOTES.md 73): OR grammar, stemming, and response-field indexing enlarged openapi_search's description. Runs started before this timestamp carried 2,439 B."
+   }
+  ]
+ },
+ "M-G1": {
+  "server": "servers/supergraph_mcp.py",
+  "n_tools": 3,
+  "tools_list_bytes": 2270,
+  "tool_names": [
+   "graphql_execute",
+   "schema_describe",
+   "schema_search"
+  ],
+  "note": "Within 15% of M-R2 by design \u2014 these two are the clean protocol pair, so they share tool count, shape, and search-then-execute grammar (now literally, via servers/_search.py). If that gap widens, the protocol comparison has acquired a tool-packaging confound and needs re-reading before publishing.",
+  "superseded": [
+   {
     "tools_list_bytes": 2159,
-    "tool_names": ["graphql_execute", "schema_describe", "schema_search"],
-    "note": "Within 13% of M-R2 by design — these two are the clean protocol pair, so they share tool count, shape, and search-then-execute grammar. If that gap widens, the protocol comparison has acquired a tool-packaging confound and needs re-reading before publishing."
-  },
-  "M-G2": {
-    "server": "bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml",
-    "n_tools": 7,
-    "tools_list_bytes": 4040,
-    "tool_names": [
-      "AircraftDetail",
-      "CrewCurrency",
-      "CrewDetail",
-      "FlightAirworthiness",
-      "FlightRoster",
-      "FlightSchedule",
-      "FlightsByOrigin"
-    ],
-    "note": "One tool per frozen operation in services/operations/. src/test/operations.test.ts already fails if that set changes; this catches the other direction — Apollo MCP rendering the same operations into a different schema after a version bump."
-  }
+    "n_tools": 3,
+    "changed_at": "2026-09-03T15:17:00",
+    "why": "same fix (NOTES.md 73): schema_search now returns signatures and its description says so. Runs started before this timestamp carried 2,159 B."
+   }
+  ]
+ },
+ "M-G2": {
+  "server": "bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml",
+  "n_tools": 7,
+  "tools_list_bytes": 4040,
+  "tool_names": [
+   "AircraftDetail",
+   "CrewCurrency",
+   "CrewDetail",
+   "FlightAirworthiness",
+   "FlightRoster",
+   "FlightSchedule",
+   "FlightsByOrigin"
+  ],
+  "note": "One tool per frozen operation in services/operations/. src/test/operations.test.ts already fails if that set changes; this catches the other direction \u2014 Apollo MCP rendering the same operations into a different schema after a version bump."
+ },
+ "M-G3": {
+  "server": "bin/apollo-mcp-server config/apollo-mcp.phase2-dynamic.local.yaml",
+  "n_tools": 3,
+  "tools_list_bytes": 1940,
+  "tool_names": [
+   "execute",
+   "search",
+   "validate"
+  ],
+  "note": "Apollo MCP Server with introspect disabled, so search is the only discovery tool \u2014 the condition asks whether targeted search alone is enough. Three tools like M-R2 (2,652 B) and the post-fix M-G1 (2,270 B), and at 1,940 B the smallest surface in the matrix. With introspect enabled it is 4 tools / 2,900 B, identical to phase-1 condition B; that is the number to expect if the config is ever flipped back. Measured with capture_mcp.py, whose len(json.dumps(tools)) uses default separators \u2014 a compact-separator measurement of the same surface reads 1,857 and is what this entry was first pinned at, wrongly."
+ }
 }

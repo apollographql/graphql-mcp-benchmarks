@@ -109,6 +109,10 @@ B2_SDL = str((ROOT / env("B2_SDL", "config/github.graphql")).resolve())
 # paths relative to themselves, so they need no arguments beyond --mode.
 OPENAPI_MCP = str((ROOT / env("OPENAPI_MCP", "servers/openapi_mcp.py")).resolve())
 SUPERGRAPH_MCP = str((ROOT / env("SUPERGRAPH_MCP", "servers/supergraph_mcp.py")).resolve())
+APOLLO_PHASE2_DYNAMIC_CONFIG = str(
+    (ROOT / env("APOLLO_PHASE2_DYNAMIC_CONFIG",
+                "config/apollo-mcp.phase2-dynamic.local.yaml")).resolve()
+)
 APOLLO_PHASE2_CONFIG = str(
     (ROOT / env("APOLLO_PHASE2_CONFIG", "config/apollo-mcp.phase2.local.yaml")).resolve()
 )
@@ -205,6 +209,12 @@ CONDITIONS.update({
     "M-R2": ("recipe_m_r2.yaml", {"phase": 2, "surface": "rest",    "profiles": ("fat", "lean")}),
     "M-G1": ("recipe_m_g1.yaml", {"phase": 2, "surface": "graphql", "profiles": ("fat",)}),
     "M-G2": ("recipe_m_g2.yaml", {"phase": 2, "surface": "graphql", "profiles": ("fat",)}),
+    # M-G3 is M-G1's packaging on M-G2's implementation: Apollo MCP Server's four
+    # dynamic tools instead of a server we wrote. It is the cell that makes the
+    # GraphQL axis separable — without it, M-G1 vs M-G2 varies packaging and
+    # implementation at once, while M-R1 vs M-R2 varies only packaging. See
+    # config/apollo-mcp.phase2-dynamic.yaml and NOTES.md 74.
+    "M-G3": ("recipe_m_g3.yaml", {"phase": 2, "surface": "graphql", "profiles": ("fat",)}),
 })
 
 
@@ -528,6 +538,7 @@ def run_one(cond: str, task: dict, rep: int, base_env: dict, port: str = PORT) -
         "@@OPENAPI_MCP@@": OPENAPI_MCP,
         "@@SUPERGRAPH_MCP@@": SUPERGRAPH_MCP,
         "@@APOLLO_PHASE2_CONFIG@@": APOLLO_PHASE2_CONFIG,
+        "@@APOLLO_PHASE2_DYNAMIC_CONFIG@@": APOLLO_PHASE2_DYNAMIC_CONFIG,
         "@@RUN_ID@@": label,  # unique per run — busts Anthropic's prompt cache across reps
     }
     recipe_text = render_recipe((RECIPES / recipe_tmpl).read_text(), task_prompt, tokens)
