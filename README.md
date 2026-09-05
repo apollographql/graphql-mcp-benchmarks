@@ -20,7 +20,7 @@ GitHub's API design from the result and turns field cardinality and tool-surface
 into knobs. See [`PHASE2_PLAN.md`](PHASE2_PLAN.md).
 
 **What phase 2 found is not what the 2x2 was built to test.** Protocol is not what separated
-these six cells — GraphQL is both the cheapest *and* the most expensive condition — and what
+these seven cells — GraphQL is both the cheapest *and* the most expensive condition — and what
 predicted cost instead was two properties of the tool surface: **field selectivity** and
 **cardinality match**. The argument is in [`WRITEUP.md`](WRITEUP.md); the tables, the scored
 pre-registration and the caveats that must travel with any number quoted from them are in
@@ -86,6 +86,7 @@ Results land in **`results/phase1/`** and **`results/phase2/`** (`summary.md`,
 | `./bench.sh capture`  | Records each server's real tool surface (count + `tools/list` bytes) and representative tool-call response shapes → `capture/`. Grounds claims in actual MCP output. |
 | `./bench.sh run`      | Runs one phase's matrix. Phase 1: `A1, A2, B, B2 [,C] × T1, T2 × REPS`. Phase 2: `M-R1, M-R2, M-G1, M-G2 × 10 task instances × REPS` at one `PAYLOAD_PROFILE`. Filter with `CONDITIONS=` / `TASKS=`; `DRY_RUN=1` plans without spending. |
 | `./bench.sh parse`    | Aggregates one phase's logs → `results/phase<N>/`. Refuses a directory mixing phases. |
+| `./bench.sh test`     | Every test suite in one command — the three stdlib ones, the proxy suite under `uv`, the node suite, and `doclint`. They do not share an invocation, which is worth one dispatcher. |
 | `./bench.sh clean`    | Removes `runs/`, `results/`, generated `capture/*.json`. **Keeps** the committed tool-surface baseline. |
 
 ## Conditions

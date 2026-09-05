@@ -450,13 +450,44 @@ do_clean() {
   echo "cleaned runs/, results/, capture/*.json (kept the pinned baseline)"
 }
 
+# ---------------------------------------------------------------------------
+# Every test suite, one command.
+#
+# Why this exists: there are five suites and they do NOT share an invocation.
+# `proxy/test_proxy_tool_io.py` needs `uv run`, because the proxy declares its
+# dependencies inline (PEP 723) and httpx is not on the system Python. That was
+# reported as "the proxy suite cannot run, httpx is missing" for several days --
+# three Pythons tried, never the one the file's own docstring names on line 6,
+# while README.md filed it under "stdlib, no framework". The suite was green the
+# whole time. A dispatcher is cheaper than remembering which is which.
+do_test() {
+  local rc=0
+  echo "== python suites =="
+  python3 "$PROJECT_ROOT/test_grade.py"        | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/test_parse_logs.py"   | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/servers/test_search.py" | tail -1 || rc=1
+  echo "== proxy suite (uv: needs httpx/tiktoken from the inline script deps) =="
+  uv run "$PROJECT_ROOT/proxy/test_proxy_tool_io.py" | tail -1 || rc=1
+  echo "== services (node) =="
+  if [ -d "$PROJECT_ROOT/services/node_modules" ]; then
+    (cd "$PROJECT_ROOT/services" && pnpm test 2>&1 | grep -E '^# (tests|pass|fail)') || rc=1
+  else
+    echo "  skipped -- run \`cd services && pnpm install\` first"
+  fi
+  echo "== published figures and quoted prompts =="
+  python3 "$PROJECT_ROOT/doclint.py" | tail -1 || rc=1
+  [ "$rc" -eq 0 ] && echo "== all suites pass ==" || echo "== FAILURES above =="
+  return $rc
+}
+
 case "${1:-all}" in
   setup)    do_setup ;;
   precheck) do_precheck ;;
   capture)  do_capture ;;
   run)      do_run ;;
   parse)    do_parse ;;
+  test)     do_test ;;
   clean)    do_clean ;;
   all)      do_setup && do_precheck && do_capture && do_run && do_parse ;;
-  *) echo "usage: ./bench.sh [setup|precheck|capture|run|parse|clean|all]"; exit 2 ;;
+  *) echo "usage: ./bench.sh [setup|precheck|capture|run|parse|test|clean|all]"; exit 2 ;;
 esac

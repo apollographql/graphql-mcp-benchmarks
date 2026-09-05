@@ -1,9 +1,9 @@
 # Who performs the join
 
-**Phase 2 · synthetic three-service stack · 180 runs · `claude-haiku-4-5` · $42.84**
+**Phase 2 · synthetic three-service stack · 210 runs · `claude-haiku-4-5` · $45.15**
 
-We built a 2×2 to test REST against GraphQL. **The protocol axis is not what separated the
-six cells here** — which is a description of this matrix, not a verdict on protocols. A
+We built a 2×2 to test REST against GraphQL, then added a fifth condition when we found the
+GraphQL axis confounded. **The protocol axis is not what separated the seven cells here** — which is a description of this matrix, not a verdict on protocols. A
 synthetic three-service app with one model and three reps can show what these tool surfaces
 cost and name the mechanism; it cannot establish that protocol does or does not matter in
 general, and an earlier version of this document overclaimed in the negative direction by
@@ -238,7 +238,7 @@ selects what it needs and nothing else, and its raw figure is almost all schema 
 `pass_through_tokens_ex_discovery`) are generated, neither is the "real" one, and which you
 want depends on whether orienting in an unfamiliar schema counts as waste. Note that the join
 tax's *depth* metric excludes discovery and the payload metric includes it — that
-inconsistency was itself one of the fifteen bugs.
+inconsistency was itself one of the bugs in the ledger.
 
 **It counts tokens with the wrong tokenizer, in a known direction.** `tool_result_tokens` uses
 `cl100k_base`, which is **OpenAI's** BPE encoding, not Anthropic's. Compared against the
@@ -508,8 +508,8 @@ Phase 1 divides the same way: condition `B` is Apollo MCP Server and `B2` is
 single `execute`, on the model's training knowledge of GitHub's schema.
 
 Each `M-R*` runs in both `fat` (no field selection, the majority of production REST APIs)
-and `lean` (honours `?fields=`) payload brackets — six cells, reported as six rows and
-never averaged together.
+and `lean` (honours `?fields=`) payload brackets. With the three GraphQL conditions that is
+seven cells, reported as seven rows and never averaged together.
 
 Measurement is a logging reverse proxy capturing raw Anthropic `usage` per call, plus a
 sidecar recording every tool call's arguments and result body. Tool results are attributed
@@ -546,7 +546,7 @@ listed.
 
 ### Runs excluded from the means, and one that is reported but not comparable
 
-Ten task instances × three reps = **180 runs** in the matrix. An eleventh instance
+Ten task instances × three reps × seven cells = **210 runs** in the matrix. An eleventh instance
 (`M4@103`, one rep) ran off-matrix to price the REST arm's scaling and is reported separately,
 so `results/phase2/raw.csv` has 181 rows.
 

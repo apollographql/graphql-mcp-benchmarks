@@ -1,6 +1,6 @@
 # GraphQL-backed MCP tools are more token-efficient
 
-**Across 180 runs on a backend we controlled, the best GraphQL-backed MCP server beat the best
+**Across 210 runs on a backend we controlled, the best GraphQL-backed MCP server beat the best
 REST-backed one on all ten task instances — on wasted tokens and on cost per task. The margin
 runs from 1.1× to 15.7×, and it tracks the shape of the question rather than its size: it
 narrows to a near-tie on a batchable single-service lookup and widens on cross-service joins.
@@ -8,8 +8,8 @@ On GitHub's live API, the N+1 case cost REST 64× the payload.**
 
 Two things that headline hides, and they matter more than it does.
 
-**"GraphQL" is not one thing here.** Two of our six conditions are GraphQL, and they are the
-best *and* the fourth-best things we measured — 6.7× apart on cost, winning different halves
+**"GraphQL" is not one thing here.** Three of our seven cells are GraphQL, and they are the
+best *and* the fifth-best things we measured — 6.7× apart on cost, winning different halves
 of the matrix, over the same three services and the same federated router. The variable
 that predicted cost was not the wire format. It was whether a single request could cover the
 fields and the records a question actually spans, and REST can be built that way too.
@@ -210,7 +210,8 @@ Three details of that wording are load-bearing rather than incidental — why `{
 there at all, why M4 says "the first *N* the API returns", and why M4 skips the low-N regime
 where REST wins. All three are in `FINDINGS.md`.
 
-Ten task instances in the matrix, three repetitions each, at N from 1 to 50: **180 runs.**
+Ten task instances in the matrix, three repetitions each, across seven cells, at N from 1 to
+50: **210 runs.**
 Agents run through Goose at temperature 0. Three runs are excluded from means and named where
 they are excluded; one further run is reported but flagged as not comparable.
 
@@ -395,7 +396,7 @@ whole study, and it is an argument about defaults rather than about the wire for
 
 Prompt caching behaved very differently in the two phases, and it took us two months and a
 retraction to work out why. **Phase 2 wrote 32.6M tokens to cache and read zero back**, across
-all 181 runs, no exceptions. **Phase 1 read back 356,070 tokens**, all of it in the REST
+all 211 runs, no exceptions. **Phase 1 read back 356,070 tokens**, all of it in the REST
 conditions.
 
 The cause is not the client, which is where we looked first and for far too long. Anthropic's
@@ -471,7 +472,7 @@ the number that grows.
 
 ## Why you should distrust benchmarks like this one
 
-Including ours. Building this produced **seventeen distinct measurement bugs** — wrong numbers
+Including ours. Building this produced **nineteen distinct measurement bugs** — wrong numbers
 rendered into reports that looked entirely finished. Nine came out of building the matrix; six
 more came out of one adversarial read of this document, five of those six in the caching and
 prefix instrumentation you just read about in caveat 5.
@@ -518,9 +519,9 @@ author.
 ## Disclosure
 
 This work was done by an employee of **Apollo GraphQL**, which sells GraphQL tooling, and it
-lives in an Apollo-owned repository. Two of the six conditions run Apollo software: phase-1
-condition `B` and phase-2 `M-G2` use `apollo-mcp-server` v1.14.0, and the GraphQL backend is
-Apollo Router v2.17.0. That is a commercial interest in one of the answers, and you should
+lives in an Apollo-owned repository. Three of the conditions run Apollo software: phase-1
+condition `B` and phase-2 `M-G2` and `M-G3` use `apollo-mcp-server` v1.14.0, and the GraphQL
+backend is Apollo Router v2.17.0. That is a commercial interest in one of the answers, and you should
 weight the framing accordingly — which is part of why this document reports the per-cell tables
 instead of an average, states the cells where REST wins, and includes the round-trip metric
 GraphQL loses on. The fixtures, recipes, graders and raw logs are in the repository so you do
