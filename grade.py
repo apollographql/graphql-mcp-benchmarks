@@ -516,9 +516,22 @@ MIN_MATCH_LEN = 4
 # `discovery_depth` over these. Matched on the bare tool name, since Goose
 # namespaces them (`airline__schema_search`).
 DISCOVERY_TOOLS = frozenset({
-    "schema_search", "schema_describe",      # M-G1
-    "openapi_search", "openapi_describe",    # M-R2
+    "schema_search", "schema_describe",      # M-G1  (servers/supergraph_mcp.py)
+    "openapi_search", "openapi_describe",    # M-R2  (servers/openapi_mcp.py)
+    # M-G3 (apollo-mcp-server dynamic tools). `search` and `introspect` read the
+    # schema. `validate` is here too: it returns no records, so counting it as
+    # data would charge the condition for reading its own operation back. Only
+    # `execute` retrieves.
+    "search", "introspect", "validate",
 })
+
+# Conditions that reach their data through a discovery step. `DISCOVERY_TOOLS` is
+# a name list, so a condition whose tool names are missing from it does not fail —
+# its schema reads are silently reclassified as data, which is exactly what
+# happened when M-G3 was added: its `ex-discovery` figure came out identical to
+# its raw pass-through in all ten cells, and its depth read 1 everywhere
+# (NOTES.md 79). parse_logs asserts every condition here shows discovery calls.
+DISCOVERY_CONDS = frozenset({"M-R2", "M-G1", "M-G3"})
 
 
 def _bare(name: str) -> str:

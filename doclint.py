@@ -50,8 +50,10 @@ ALLOWED: dict[str, str] = {
     "144,710": "A1 tools/list bytes — capture/A1.json owns it",
     "60,886": "A2 tools/list bytes — capture/A2.json",
     "9,601": "M-R1 tools/list bytes — capture/expected-tool-surfaces.json",
-    "2,439": "M-R2 tools/list bytes — same file",
-    "2,159": "M-G1 tools/list bytes — same file",
+    "2,439": "M-R2 tools/list bytes AS THE 180 RUNS CARRIED IT; the pinned file now holds "
+             "2,652 and keeps this in its `superseded` block (NOTES 77)",
+    "2,159": "M-G1 tools/list bytes as the 180 runs carried it; same, now 2,270",
+    "1,940": "M-G3 tools/list bytes — capture/expected-tool-surfaces.json",
     "4,040": "M-G2 tools/list bytes — same file",
     "2,253": "B2 tools/list bytes — capture/B2.json",
     "2,900": "B tools/list bytes — capture/B.json",
@@ -134,6 +136,44 @@ ALLOWED: dict[str, str] = {
 }
 
 
+# Claims this project has published, retracted in writing, and then published
+# again. The generated report is supposed to outrank the hand-written documents,
+# so an overclaim there is worse than one in prose: `summary.md` asserted "0
+# fabricated" while `FINDINGS.md` was explaining, in its own words, that the
+# grounding check cannot support it (NOTES.md 80).
+#
+# Each pattern must match the ASSERTIVE form only. Naming a retracted claim in
+# order to retract it is the correct thing to do and must stay legal, which is
+# why these are regexes and not substrings.
+RETRACTED = [
+    (r"\*\*\d+ fabricated\*\*|with \*?\*?0 fabricated",
+     'grounding is a retrieval-happened check and cannot support a fabrication '
+     'count; say what it verified and what it could not assess'),
+    (r"(?<!not )(?<!cannot )\ball 1?\d\d were fact-verified",
+     'states the passing count as if it were the total, which hides unassessed runs'),
+    (r"\bzero fabricat\w+\b(?![^.]*\bnot\b)",
+     'same overclaim, spelled out'),
+]
+
+
+def check_retracted_claims() -> list[str]:
+    """Retracted claims must not reappear, in prose or in generated output."""
+    problems = []
+    targets = [ROOT / d for d in DOCS]
+    if RESULTS.is_dir():
+        targets += sorted(RESULTS.rglob("*.md"))
+    for path in targets:
+        if not path.is_file() or "_phase2-preproxyfix" in path.parts:
+            continue
+        text = path.read_text()
+        for pattern, why in RETRACTED:
+            for m in re.finditer(pattern, text):
+                line = text[:m.start()].count("\n") + 1
+                rel = path.relative_to(ROOT)
+                problems.append(f"{rel}:{line}  {m.group(0)!r} — {why}")
+    return problems
+
+
 def check_quoted_prompts() -> list[str]:
     """Task prompts quoted in a document must match `tasks/tasks.yaml` exactly.
 
@@ -195,7 +235,7 @@ def results_corpus() -> str:
 
 
 def main() -> int:
-    prompt_problems = check_quoted_prompts()
+    prompt_problems = check_quoted_prompts() + check_retracted_claims()
     corpus = results_corpus()
     # `36,598` in a document is `36598` in a CSV, so both spellings count.
     haystack = corpus + "\n" + corpus.replace(",", "")
@@ -220,7 +260,7 @@ def main() -> int:
         return 0
 
     if prompt_problems:
-        print("doclint: a quoted task prompt has drifted from tasks/tasks.yaml.\n")
+        print("doclint: a quoted task prompt has drifted, or a retracted claim came back.\n")
         for line in prompt_problems:
             print(f"  {line}")
         return 1
@@ -239,7 +279,7 @@ def main() -> int:
     docs = ", ".join(d for d in DOCS if (ROOT / d).is_file())
     print(f"doclint: every distinctive figure in {docs} traces to results/ or is "
           f"explained in ALLOWED ({len(ALLOWED)} entries), and every quoted task "
-          f"prompt matches tasks/tasks.yaml.")
+          f"prompt matches tasks/tasks.yaml. No retracted claim has reappeared.")
     return 0
 
 

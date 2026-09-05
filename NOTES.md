@@ -2282,6 +2282,78 @@ tool-design effect.
     condition. So the frozen-operation packaging that costs 100 round-trips on `M3@50` buys
     something real here, and `WRITEUP.md` caveat 1 previously argued only the cost side of it.
 
+79. **`M-G3`'s discovery/data split was silently disabled for its whole run, and the numbers
+    looked like measurements.** Caught 2026-09-04, hours after publishing them, and only
+    because the operator asked whether a proposed 90-run re-run was really necessary — the
+    scoping that answered "no" walked through `grade.DISCOVERY_TOOLS` and found `M-G3`'s tool
+    names absent from it.
+
+    `DISCOVERY_TOOLS` classifies by tool **name**. `M-G1` contributes `schema_search` /
+    `schema_describe` and `M-R2` contributes `openapi_search` / `openapi_describe`; Apollo MCP
+    Server's are `search`, `introspect` and `validate`, and none of the three was in the set.
+    So every schema read `M-G3` made was counted as **data**, with no error anywhere:
+
+    - `pass_through_tokens_ex_discovery` came out **identical to `pass_through_tokens` in all
+      ten cells**. Corrected, `M1@1` goes from 1,021 to **0** and the ten-cell mean from 1,376
+      to **1,308** — the raw figure was almost entirely schema text.
+    - `discovery_depth` read 0 and the schema chain fell into `forced_serial_depth`.
+
+    Both columns rendered as plausible numbers. One `M-G3` row whose ex-disc equals its
+    pass-through is unremarkable; ten of them is a bug, and only the parser sees all ten.
+
+    **The same shape as 54 and every registry bug in this ledger:** a new condition added to
+    four lists and not the fifth. `parse_logs.py` already refuses an unknown *condition* — that
+    guard is why `M-G3` was registered in `PHASE_CONDS`, `MCP_CONDS`, `COND_LABEL` and
+    `COND_SHORT` at all. Nothing guarded the *tool-name* registry, which is the one that fails
+    by returning a wrong number rather than by stopping.
+
+    **Fixed** by adding the three names, and by `parse_logs.assert_discovery_classified()`:
+    every condition in the new `grade.DISCOVERY_CONDS` must show at least one run where the
+    ex-discovery figure differs from the raw one, or the parse exits naming the likely cause.
+    Verified by reverting `DISCOVERY_TOOLS` and confirming it fires.
+
+    **A finding fell out of the correction.** `M-G3`'s `discovery_depth` is **1 in every
+    cell**, where `M-G1`'s runs 1–3. `M-G1` chains `schema_search` → `schema_describe`, because
+    a coordinate found by search is the input to describe. `M-G3` has no describe — `introspect`
+    is disabled — so its searches are independent and nothing serializes. **Disabling
+    `introspect` removed the discovery chain, not just a tool**, which is a better outcome than
+    the decision was argued for (75).
+
+80. **The generated report asserted "0 fabricated" while `FINDINGS.md` was explaining, in its
+    own words, that the grounding check cannot support it.** Found 2026-09-04 by sweeping every
+    registry that names a condition, after the operator asked what else was broken. Three
+    defects in the computed lede of `results/phase2/summary.md`, which is the document that is
+    supposed to *outrank* the hand-written ones:
+
+    - **`with 0 fabricated`.** `FINDINGS.md`: *"'Zero fabricated' claims more than it can
+      support."* `WRITEUP.md`: *"a retrieval-happened check, narrower than 'nothing was
+      fabricated'."* Both retractions were written; the generator kept asserting the claim.
+    - **`all 209 were fact-verified`** against 210 graded runs. The passing count printed as
+      though it were the total, so the one run whose grounding is *unassessed* — `M-G3`/`M2@1`/
+      rep2, which states no checkable fact (78) — vanished into a sentence beginning "all".
+    - **`M-G2 is the best condition on M1@50 and the worst on M3@50`.** Two problems in one
+      clause. It silently switched metric between halves — best by pass-through, worst by cost
+      — and it was **asserted rather than computed**, so it went stale the moment `M-G3` beat
+      `M-G2` on M1@50 payload (1,376 against 2,352). The parser's founding rule is *compute at
+      render time, never assert*, and its own headline bullet broke it.
+
+    **Fixed** by computing all three. The accuracy bullet now reports the grounding split
+    three ways — passed / failed / could-not-be-assessed — and states what the check does and
+    does not license. The control bullet computes the argmin and argmax, names the metric for
+    each, and falls back to *"second only to X"* when `M-G2` is not the extreme; the part of
+    that finding which is metric-free — the same seven tools going from 1 call to 100 — is now
+    what the bullet leads with.
+
+    **And a guard, because this is the second time.** `doclint.py` now checks `results/**/*.md`
+    as well as the three published documents against a list of **retracted claims**, matched by
+    regex on the *assertive* form only — naming a retracted claim in order to retract it has to
+    stay legal, and the new lede does exactly that. Mutation-tested: reinserting `with **0
+    fabricated**` fails the lint with the file and line.
+
+    The pattern worth keeping: **a generated document can be stale too.** Every guard in this
+    ledger assumed the risk ran from prose toward the data. Here it ran the other way, and the
+    hand-written documents were right for a week while the machine-generated one was wrong.
+
 ## How the audit's figures were re-derived (2026-09-03)
 
 Ground rule for the fix work: **every number that changed had to come back out of `runs/` or

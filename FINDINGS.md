@@ -231,8 +231,10 @@ scored. **Of the four that were scoreable at all, three came out right.** Full s
 **It charges the discovery conditions for finding their way around.** `M-R2` and `M-G1` read
 OpenAPI and schema text before they can act, and that text is ~100% "carried and never quoted
 in the answer" by this definition — so the metric books it as waste. It is nearly all of
-`M-G1`'s: exclude discovery payload and `M-G1`'s ten-cell mean falls from **6,172 to 889**,
-while `M-R2`'s barely moves. Both columns (`pass_through_tokens` and
+`M-G1`'s and `M-G3`'s: exclude discovery payload and `M-G1`'s ten-cell mean falls from
+**6,172 to 889** and `M-G3`'s from **4,032 to 1,308**, while `M-R2`'s barely moves. On the
+batchable single-service task `M-G3`'s data waste is **0 tokens at N=1** and 8 at N=50 — it
+selects what it needs and nothing else, and its raw figure is almost all schema text. Both columns (`pass_through_tokens` and
 `pass_through_tokens_ex_discovery`) are generated, neither is the "real" one, and which you
 want depends on whether orienting in an unfamiliar schema counts as waste. Note that the join
 tax's *depth* metric excludes discovery and the payload metric includes it — that

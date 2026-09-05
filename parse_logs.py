@@ -657,6 +657,38 @@ def stop_cause(meta: Path, stdout: Path) -> str | None:
     return None
 
 
+def assert_discovery_classified(rows) -> None:
+    """A discovery condition must show discovery calls, or its split is a lie.
+
+    `grade.DISCOVERY_TOOLS` classifies by tool NAME, so a condition whose names
+    are absent from it does not error — every schema read is silently counted as
+    data. `pass_through_tokens_ex_discovery` then equals `pass_through_tokens`,
+    `discovery_depth` reads 0, and both look like measurements. That shipped once,
+    for `M-G3`, whose Apollo tool names (`search`, `introspect`, `validate`) were
+    nowhere in the set (NOTES.md 79).
+
+    Checked here rather than in `grade.py` because only the parser sees every run
+    at once, and the failure is invisible per-run: one `M-G3` row whose ex-disc
+    equals its pass-through is unremarkable, and ten of them is a bug.
+    """
+    seen = {cell_cond(r["cell"]) for r in rows}
+    for cond in sorted(grade.DISCOVERY_CONDS & seen):
+        sub = [r for r in rows if cell_cond(r["cell"]) == cond]
+        if not any(r.get("pass_through_tokens_ex_discovery") is not None
+                   and r.get("pass_through_tokens") is not None
+                   and r["pass_through_tokens_ex_discovery"] != r["pass_through_tokens"]
+                   for r in sub):
+            sys.exit(
+                f"{cond} is in grade.DISCOVERY_CONDS but none of its {len(sub)} run(s) "
+                f"shows a discovery/data split: pass_through_tokens_ex_discovery equals "
+                f"pass_through_tokens throughout.\n"
+                f"Its tool names are almost certainly missing from grade.DISCOVERY_TOOLS, "
+                f"which classifies by name and fails silently — the schema reads are being "
+                f"counted as data, so the ex-discovery column and discovery_depth are both "
+                f"wrong. Add them (NOTES.md 79)."
+            )
+
+
 def observed_model(p: Path, configured: str) -> str:
     """The model the API actually served, not the string someone typed.
 
@@ -939,7 +971,7 @@ def _key_findings_phase2(rows, cells, tasks) -> list[str]:
                 f"ways, and two tasks isolate them.** On **M1@50 every condition makes about "
                 f"one data call** ({c_r1:.0f} for M-R1-fat, {c_g2:.0f} for M-G2), so call "
                 f"count is controlled and the whole spread there is **field selectivity**. "
-                f"The two GraphQL conditions then invert that on M3@50: their payloads differ "
+                f"Two of the GraphQL conditions then invert that on M3@50: their payloads differ "
                 f"by only {_ratio(g2_pt, g1_pt, '')} ({g1_pt:,.0f} against {g2_pt:,.0f} "
                 f"tokens) while their tool calls differ by "
                 f"{_ratio(g2_c, g1_c, '')} ({g1_c:.0f} against {g2_c:.0f}) — so that spread "
@@ -991,10 +1023,27 @@ def _key_findings_phase2(rows, cells, tasks) -> list[str]:
     # 4. Same surface, opposite result — the cardinality point, controlled.
     if ok("M-G2") and "M1@50" in tasks and "M3@50" in tasks:
         a, b = calls("M-G2", "M1@50"), calls("M-G2", "M3@50")
+        # Superlatives are computed, not asserted, and each names its metric. This
+        # read "M-G2 is the best condition on M1@50 and the worst on M3@50" — which
+        # silently switched metric between its halves (best by tokens, worst by
+        # cost) and went stale the moment M-G3 beat it on M1@50 (NOTES.md 80). The
+        # control the bullet is actually about is metric-free: the same seven tools
+        # going from one call to a hundred.
+        def _arg(task, field, worst=False):
+            vals = [(_mean_by(rows, c, task, field), c) for c in cells]
+            vals = [v for v in vals if v[0] is not None]
+            return max(vals)[1] if worst else min(vals)[1] if vals else None
+        best_m1 = _arg("M1@50", "pass_through_tokens")
+        worst_m3 = _arg("M3@50", "cost_usd", worst=True)
         if a and b and b > a:
+            rank = ("the lowest-payload condition on M1@50" if best_m1 == "M-G2"
+                    else f"second only to {best_m1} on M1@50 payload")
+            tail = ("and the costliest on M3@50" if worst_m3 == "M-G2"
+                    else f"while {worst_m3} is the costliest on M3@50")
             out.append(
-                f"**The clean control: M-G2 is the best condition on M1@50 and the worst on "
-                f"M3@50, with no change to the surface.** {a:.0f} call there, {b:.0f} here. "
+                f"**The clean control: the same seven tools, inverted by the question.** "
+                f"M-G2 is {rank} {tail}, with no change to its surface between them: "
+                f"{a:.0f} call there, {b:.0f} here. "
                 f"`FlightSchedule(flightNumbers: [String!]!)` takes a list; "
                 f"`FlightRoster(flightId: ID!)` takes one id. Same protocol, same server, "
                 f"same seven tools — the only difference is whether the operation that fits "
@@ -1021,12 +1070,29 @@ def _key_findings_phase2(rows, cells, tasks) -> list[str]:
     graded = [r for r in rows if r.get("answer_f1") is not None and not r.get("stop_cause")]
     if graded:
         perfect = sum(1 for r in graded if r["answer_f1"] == 1.0)
+        # Three-state, and never summarised as "0 fabricated". The check verifies
+        # that each *correct* value an answer states appears in the tool results
+        # that arrived; it is a retrieval-happened check, not per-fact provenance,
+        # and a run that flips a verdict scores f1 0.00 and still passes it. This
+        # bullet used to read "all N were fact-verified ... with 0 fabricated",
+        # which is the overclaim FINDINGS.md retracts in its own words, asserted by
+        # the generated report that is supposed to outrank it. It also printed the
+        # passing count as if it were the total, hiding the unassessed runs
+        # (NOTES.md 80).
         verified = sum(1 for r in graded if r.get("answer_grounded") is True)
+        refuted = sum(1 for r in graded if r.get("answer_grounded") is False)
+        unassessed = len(graded) - verified - refuted
+        grounding = (f"{verified} of {len(graded)} passed the grounding check"
+                     + (f", {refuted} failed it" if refuted else "")
+                     + (f", and {unassessed} could not be assessed because the answer states "
+                        f"no checkable fact" if unassessed else "")
+                     + ". That check asks whether each *correct* value an answer states "
+                       "appears in the tool results that arrived — retrieval-happened, not "
+                       "per-fact provenance, so a run that flips a verdict scores f1 0.00 and "
+                       "still passes it. It does not license \"nothing was fabricated\". ")
         out.append(
             f"**Accuracy is not where the difference lives.** {perfect} of {len(graded)} "
-            f"graded runs scored a perfect f1 and all {verified} were fact-verified against the "
-            f"tool results that entered context, with "
-            f"**{sum(1 for r in graded if r.get('answer_grounded') is False)} fabricated**. "
+            f"graded runs scored a perfect f1. " + grounding
             + _accuracy_spread(graded)
             + " The agents get the answer either way. What differs is what it costs to get "
               "it, which is why this report leads with payload and calls rather than "
@@ -1817,6 +1883,7 @@ def _write_charts(rows, conds, tasks):
 def write_summary(rows):
     RESULTS.mkdir(parents=True, exist_ok=True)
     phase, conds = resolve_conditions(rows)
+    assert_discovery_classified(rows)
     tasks = sort_tasks({r["task_id"] for r in rows})
 
     title = ("# Benchmark Results — REST-backed MCP vs GraphQL-backed MCP\n" if phase == 1

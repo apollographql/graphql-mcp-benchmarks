@@ -372,4 +372,32 @@ check("...and M-G1's", _pin["M-G1"]["superseded"][0]["tools_list_bytes"], 2159)
 check("M-G3 has no superseded surface — it only ever ran on one",
       "superseded" in _pin["M-G3"], False)
 
+# ── the discovery/data split (NOTES 79) ──────────────────────────────────────
+# grade.DISCOVERY_TOOLS classifies by tool NAME, so a condition whose names are
+# missing from it does not error — its schema reads are counted as data,
+# ex-discovery comes out equal to pass-through, and both look like measurements.
+# That shipped for M-G3, whose Apollo tool names were nowhere in the set.
+print("\ndiscovery/data split")
+import grade as _grade
+check("M-G3's tool names are classified as discovery",
+      all(n in _grade.DISCOVERY_TOOLS for n in ("search", "introspect", "validate")), True)
+check("...and so are the two servers we wrote",
+      all(n in _grade.DISCOVERY_TOOLS for n in
+          ("schema_search", "schema_describe", "openapi_search", "openapi_describe")), True)
+check("every on-demand condition is registered as one",
+      sorted(_grade.DISCOVERY_CONDS), ["M-G1", "M-G3", "M-R2"])
+
+_split_ok = [row(cell="M-G3", condition="M-G3", profile=None,
+                 pass_through_tokens=100, pass_through_tokens_ex_discovery=10)]
+_no_split = [row(cell="M-G3", condition="M-G3", profile=None,
+                 pass_through_tokens=100, pass_through_tokens_ex_discovery=100)]
+try:
+    P.assert_discovery_classified(_split_ok)
+    print("  ok   a condition showing a split passes")
+except SystemExit as exc:
+    _fails.append(f"split guard false-positived: {exc}")
+    print(f"  FAIL a condition showing a split passes  ({exc})")
+exits("a discovery condition with no split anywhere is refused, not printed",
+      lambda: P.assert_discovery_classified(_no_split))
+
 print("all parse_logs tests pass")
