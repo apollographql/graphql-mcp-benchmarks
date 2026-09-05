@@ -38,6 +38,7 @@ Phase-1 matrix — GitHub's live API, tasks T*:
 Phase-2 matrix — the synthetic three-service stack in services/, tasks M*:
   M-R1  REST,    one tool per endpoint (front-loaded)
   M-R2  REST,    rest_request + openapi_search + openapi_describe (on-demand)
+  M-R3  REST,    rest_request only — no spec access (bare)
   M-G1  GraphQL, graphql_execute + schema_search + schema_describe (on-demand)
   M-G2  GraphQL, seven frozen persisted operations (front-loaded)
 
@@ -196,7 +197,7 @@ if ENABLE_ROVER:
 # services read PAYLOAD_PROFILE at container start, so the profile belongs to the
 # running stack and the six-cell matrix is two passes over four conditions:
 #
-#   PAYLOAD_PROFILE=fat  ./bench.sh run    # M-R1, M-R2, M-G1, M-G2
+#   PAYLOAD_PROFILE=fat  ./bench.sh run    # M-R1, M-R2, M-R3, M-G1, M-G2, M-G3
 #   PAYLOAD_PROFILE=lean ./bench.sh run    # M-R1, M-R2
 #
 # The M-G* conditions declare ("fat",) not because they are fat but because a
@@ -215,6 +216,20 @@ CONDITIONS.update({
     # implementation at once, while M-R1 vs M-R2 varies only packaging. See
     # config/apollo-mcp.phase2-dynamic.yaml and NOTES.md 74.
     "M-G3": ("recipe_m_g3.yaml", {"phase": 2, "surface": "graphql", "profiles": ("fat",)}),
+    # M-R3 is REST with no spec: one tool, rest_request, and no way to look
+    # anything up. It runs fat-only for a different reason than the M-G*
+    # conditions do, which is why `profile_note` exists — `?fields=` is
+    # documented in the OpenAPI spec and nowhere else, so an agent without the
+    # spec cannot learn the parameter exists, and advertising it in the tool
+    # description would re-import the spec through the back door. A lean M-R3
+    # would be 30 runs measuring the fat one. See servers/openapi_mcp.py's
+    # bare-mode section.
+    "M-R3": ("recipe_m_r3.yaml", {
+        "phase": 2, "surface": "rest", "profiles": ("fat",),
+        "profile_note": "`?fields=` is documented only in the OpenAPI spec, which this "
+                        "condition never sees, so the lean bracket is unreachable by "
+                        "construction",
+    }),
 })
 
 
@@ -722,9 +737,19 @@ def main():
             sys.exit(f"PAYLOAD_PROFILE={PAYLOAD_PROFILE!r} — expected 'fat' or 'lean'")
         skipped = [c for c in phase2 if PAYLOAD_PROFILE not in CONDITIONS[c][1]["profiles"]]
         if skipped:
-            print(f"Skipping {','.join(skipped)} in the {PAYLOAD_PROFILE} pass: a GraphQL "
-                  f"query names the fields it wants, so the REST payload profile cannot "
-                  f"reach it. Measure those once, in the fat pass.\n")
+            # Grouped by reason, because they are not all skipped for the same one:
+            # the GraphQL conditions cannot be reached by a REST payload profile at
+            # all, while M-R3 is REST and is skipped because the lean bracket is
+            # undiscoverable without the spec. One message for both would have to be
+            # vague enough to be wrong about each.
+            default = ("a GraphQL query names the fields it wants, so the REST payload "
+                       "profile cannot reach it")
+            reasons = {}
+            for c in skipped:
+                reasons.setdefault(CONDITIONS[c][1].get("profile_note", default), []).append(c)
+            for why, cs in reasons.items():
+                print(f"Skipping {','.join(cs)} in the {PAYLOAD_PROFILE} pass: {why}. "
+                      f"Measure those once, in the fat pass.\n")
             conds = [c for c in conds if c not in skipped]
         if not conds:
             sys.exit(f"nothing left to run at PAYLOAD_PROFILE={PAYLOAD_PROFILE}")

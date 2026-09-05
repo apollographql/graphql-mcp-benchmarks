@@ -18,7 +18,7 @@
 #   cd services && pnpm install && pnpm build
 #   docker compose up -d --wait && cd services && pnpm health
 #
-# The `instructions` block below is byte-identical in all five M-* recipes, and
+# The `instructions` block below is byte-identical in every M-* recipe, and
 # run_benchmark.py refuses to start a phase-2 pass if that stops being true. It
 # names no tool and suggests no strategy: tool discovery and selection is what
 # the matrix measures, so a hint in one recipe and not another measures the hint.

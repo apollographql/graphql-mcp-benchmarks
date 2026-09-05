@@ -2354,6 +2354,80 @@ tool-design effect.
     ledger assumed the risk ran from prose toward the data. Here it ran the other way, and the
     hand-written documents were right for a week while the machine-generated one was wrong.
 
+81. **Every REST condition in the matrix had spec access, and the caveat about GraphQL's
+    discovery floor was measured against them.** Found 2026-09-05, not by a test, by the
+    operator reading the setup sections and asking: *did we test any REST without OpenAPI?*
+    Same shape as 74 — a plain-language question about what the conditions actually are,
+    finding a hole no guard was watching.
+
+    The answer was "phase 1 yes, phase 2 no", and the phase-2 half is the one that matters.
+    `M-R1` spends the OpenAPI document at startup, authoring its nine tool schemas from the
+    spec's summaries and parameter descriptions; `M-R2` spends it at run time through
+    `openapi_search` / `openapi_describe`. So *both* REST cells had a spec in some form, while
+    `WRITEUP.md`'s caveat 2 — the query-language approach pays a discovery floor and loses on
+    small questions — compared GraphQL against exactly those two. Phase 1's A1/A2 are REST with
+    no spec anywhere, but on a live API we do not control.
+
+    **Added `M-R3`: `openapi_mcp.py --mode bare`, one tool, 786 B** — the smallest surface in
+    the study, 2.5× under `M-G3` and 12× under `M-R1`. Built and run 2026-09-05, 30 runs.
+    Three things worth recording about how it is built:
+
+    - **Its description is derived, not restated.** `build_bare_tools()` deep-copies `M-R2`'s
+      `rest_request` and removes one sentence — the pointer at the two discovery tools this
+      mode does not expose — and raises if that sentence is ever absent. Restating it would let
+      the two drift, and `M-R2` vs `M-R3` isolates one variable only while they cannot.
+      Keeping the pointer would ship the defect Apollo's `execute` carries under `M-G3`, except
+      there it is the vendor's text and a real property of the product; here it would be ours.
+    - **Fat bracket only, and that is a result rather than an omission.** `?fields=` is
+      documented in the spec and nowhere else, so an agent that never sees the spec cannot
+      learn the parameter exists, and advertising it in the tool description re-imports the
+      spec. REST's cheapest surface and REST's steelman are mutually exclusive. `run_benchmark`
+      now carries a per-condition `profile_note` so the lean-pass skip states *that* reason
+      instead of the GraphQL one it would otherwise have inherited.
+    - **The condition's floor is not zero, and it is disclosed.** What survives the cut still
+      names the three services, their resource families and two example paths. A usable generic
+      HTTP tool cannot say nothing, and whatever it says is a miniature spec. Any path-guessing
+      success also has to be read against the fact that we designed these paths and designed
+      them conventionally — a confound that can be stated and not removed.
+
+    `servers/test_modes.py` (17 checks) guards the two failures that would be invisible: a
+    surface that still names `openapi_search`, and `fields` reappearing in the description,
+    which would silently invalidate the fat-only decision. Both mutation-tested.
+
+    **It ran, and it finished last of eight on pass-through — 45,280 against `M-R2-fat`'s
+    35,873.** Removing 8,815 B from the prefix cost far more than it saved, in two ways that
+    neither `tool_errors` nor `http_errors` records:
+
+    - **`M1@1`: guessed the resource shape, got a clean 404, stopped.** All three replicates
+      issued `GET /v2/flights/AA5751` — flight *number* as *id* — received
+      `404 · flight "AA5751" does not exist`, and reported that the flight did not exist. f1
+      0.00 × 3, at $0.0034 a run and 58 pass-through tokens: **the cheapest cell and the
+      smallest payload in the whole matrix, and a wrong answer.** No replicate tried the
+      collection endpoint.
+    - **`M1@5`: guessed a parameter name, and the server ignored it.** `?flight_numbers=`
+      against a `flightNumbers` parameter. Unknown query params are dropped — normal REST
+      behaviour — so one call returned **122,549 B of unfiltered collection**. f1 1.00, and
+      38,478 pass-through tokens against fat REST-with-a-spec's 3,720 on the same question.
+
+    `tool_errors` is 0 for all thirty runs, because `rest_request` returns HTTP errors as
+    *successful* tool results carrying an error body. So a 404 is as invisible to the error
+    count as `M-G3`'s empty result was (78). The counter added in 75 counts what a tool
+    reports as an error, and neither of these is one.
+
+    **Predictions, scored.** Four were written down before the run. *`M1@1` cheapest or
+    near-cheapest* — right, and useless: it is cheapest because it failed. *`M1@50` ≈
+    `M-R1-fat`'s 36,598* — 49,048, right in direction, 34% understated. *Joins ≈ `M-R1-fat` or
+    worse* — mixed: `M3@50` came in slightly better (119,987 against 131,011), `M4@50` much
+    worse (70,897 against 46,665). *Wins low-N, loses the joins* — **wrong**, and the most
+    useful of the four for being wrong: it lost low-N hardest, at `M1@5`, by 10×. The exposure
+    was never path guessing. Paths are conventional. **Parameter names are not**, and that was
+    named before the run as the sharper risk without being carried into the predictions.
+
+    The pattern: **a condition can be missing without anything failing.** Every guard in this
+    ledger checks that what ran was measured correctly. Nothing checks that the set of things
+    that ran covers the claim being made, and two of the last three findings here (74, 81) are
+    that same hole.
+
 ## How the audit's figures were re-derived (2026-09-03)
 
 Ground rule for the fix work: **every number that changed had to come back out of `runs/` or

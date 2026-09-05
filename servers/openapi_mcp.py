@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """OpenAPI MCP Server — phase-2 REST conditions M-R1 and M-R2.
 
-One file, two modes, because the only difference between the conditions is how
+One file, three modes, because the only difference between the conditions is how
 the same nine endpoints are packaged into tools:
 
   --mode tools      M-R1: one tool per endpoint, generated from the OpenAPI docs.
                     Nine tools, entirely front-loaded into the cached prefix.
   --mode discovery  M-R2: three tools (rest_request, openapi_search,
                     openapi_describe). The endpoint list is discovered on demand.
+  --mode bare       M-R3: one tool (rest_request) and no spec access at all. The
+                    smallest surface in the study, and the only REST condition
+                    that never sees an OpenAPI document.
 
 Everything the agent sees is derived mechanically from
 `services/generated/*/openapi.json`, which is itself generated from the shared
@@ -19,6 +22,7 @@ GraphQL side.
 Usage:
   openapi_mcp.py --mode tools
   openapi_mcp.py --mode discovery [--spec-dir DIR] [--base-url service=URL]
+  openapi_mcp.py --mode bare      [--spec-dir DIR] [--base-url service=URL]
 
 Base URLs come from each spec's `servers[0].url` (localhost:4001-4003, published
 identically by docker compose). Override per service with --base-url or the
@@ -26,6 +30,7 @@ env vars BENCH_SCHEDULING_URL / BENCH_FLEET_URL / BENCH_PERSONNEL_URL, which is
 what running inside the compose network would need.
 """
 import argparse
+import copy
 import json
 import os
 import sys
@@ -490,14 +495,73 @@ def tool_rest_request(catalog: Catalog, args: dict) -> str:
     return http_get(catalog.url_for(service, path, query))
 
 
+# ── mode: bare (M-R3) ────────────────────────────────────────────────────────
+#
+# REST with no spec: one tool, `rest_request`, and no way to look anything up.
+# This is the cheapest surface anyone could plausibly ship — someone hands an
+# agent an HTTP tool and a base URL — and it is the only REST condition in the
+# study that never puts an OpenAPI document in front of the model. M-R1 spends
+# the spec at startup (it authors the nine tool schemas); M-R2 spends it at
+# runtime (openapi_search / openapi_describe). M-R3 spends it nowhere.
+#
+# Two properties of the condition that are structural, not incidental:
+#
+#   1. `?fields=` becomes unreachable. The parameter is documented in the spec
+#      and nowhere else, so an agent without the spec cannot learn it exists.
+#      Advertising it in the tool description would re-import the spec through
+#      the back door. So M-R3 runs in the `fat` bracket only, and "REST's
+#      cheapest surface" and "REST's steelman" are mutually exclusive by
+#      construction. That is a result, not a gap.
+#
+#   2. The remaining description is the condition's floor, and it is not zero.
+#      A usable generic HTTP tool has to say *something* — which services exist,
+#      what the path looks like — and whatever it says is a miniature spec. The
+#      text below names the three services, their resource families, and two
+#      example paths (`/v2/flights`, `/v2/aircraft/ac-0042`). Read any
+#      path-guessing success against that, and against the fact that we designed
+#      these paths and designed them conventionally.
+#
+# The description is M-R2's `rest_request`, byte-for-byte, minus one sentence:
+# the pointer at two tools this mode does not expose. Keeping it would leave the
+# agent chasing a tool that is not on the surface — the same defect Apollo's
+# `execute` carries under M-G3, except there it is the vendor's text and a real
+# property of shipping that configuration, and here it would be ours. Deriving
+# the tool from DISCOVERY_TOOLS rather than restating it keeps the two from
+# drifting apart, which is the only reason M-R2 vs M-R3 isolates one variable.
+
+_DISCOVERY_POINTER = (
+    "Use openapi_search and openapi_describe to find the path and "
+    "parameter names first. "
+)
+
+
+def build_bare_tools() -> list:
+    """M-R2's `rest_request`, with the pointer at the absent discovery tools cut."""
+    src = next((t for t in DISCOVERY_TOOLS if t["name"] == "rest_request"), None)
+    if src is None:
+        raise SystemExit("bare mode: DISCOVERY_TOOLS has no rest_request to derive from")
+    tool = copy.deepcopy(src)
+    if _DISCOVERY_POINTER not in tool["description"]:
+        # Loud, because the silent version of this ships a tool description that
+        # tells the agent to call tools the mode does not expose.
+        raise SystemExit(
+            "bare mode: rest_request's description no longer contains the discovery "
+            "pointer this mode strips. Re-read the description and update "
+            "_DISCOVERY_POINTER, or the condition ships a dangling tool reference."
+        )
+    tool["description"] = tool["description"].replace(_DISCOVERY_POINTER, "", 1)
+    return [tool]
+
+
 # ── entry point ──────────────────────────────────────────────────────────────
 
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--mode", required=True, choices=("tools", "discovery"),
-                    help="tools = M-R1 (one tool per endpoint); discovery = M-R2 (three tools)")
+    ap.add_argument("--mode", required=True, choices=("tools", "discovery", "bare"),
+                    help="tools = M-R1 (one tool per endpoint); discovery = M-R2 "
+                         "(three tools); bare = M-R3 (rest_request only, no spec)")
     ap.add_argument("--spec-dir", default=DEFAULT_SPEC_DIR,
                     help="directory holding <service>/openapi.json (default: services/generated)")
     ap.add_argument("--base-url", action="append", default=[], metavar="SERVICE=URL",
@@ -524,6 +588,15 @@ def main() -> None:
             return dispatch_endpoint_tool(catalog, name, arguments)
 
         server_name = "openapi-mcp-tools"
+    elif args.mode == "bare":
+        tools = build_bare_tools()
+
+        def dispatch(name: str, arguments: dict) -> str:
+            if name == "rest_request":
+                return tool_rest_request(catalog, arguments)
+            raise ValueError(f"unknown tool: {name}")
+
+        server_name = "openapi-mcp-bare"
     else:
         tools = DISCOVERY_TOOLS
 

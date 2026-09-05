@@ -116,12 +116,12 @@ def metric_ok(key: str, phase: int, rows=None) -> bool:
 # quietly missing half the experiment (§11).
 PHASE_CONDS = {
     1: ["A1", "A2", "B", "B2", "C"],
-    2: ["M-R1", "M-R2", "M-G1", "M-G2", "M-G3"],
+    2: ["M-R1", "M-R2", "M-R3", "M-G1", "M-G2", "M-G3"],
 }
 COND_PHASE = {c: ph for ph, cs in PHASE_CONDS.items() for c in cs}
 # Conditions whose numbers belong in the same table. Phase 1 keeps C out of it
 # (CLI-as-tool, not MCP, reported separately); all four phase-2 conditions are MCP.
-MCP_CONDS = ["A1", "A2", "B", "B2", "M-R1", "M-R2", "M-G1", "M-G2", "M-G3"]
+MCP_CONDS = ["A1", "A2", "B", "B2", "M-R1", "M-R2", "M-R3", "M-G1", "M-G2", "M-G3"]
 COND_LABEL = {
     "A1": "REST (default toolset)",
     "A2": "REST (minimal toolset)",
@@ -130,6 +130,7 @@ COND_LABEL = {
     "C": "GraphQL (rover CLI, no MCP)",
     "M-R1": "REST (one tool per endpoint)",
     "M-R2": "REST (search + describe + request)",
+    "M-R3": "REST (one generic request tool, no spec)",
     "M-G1": "GraphQL (search + describe + execute, our server)",
     "M-G2": "GraphQL (frozen persisted operations, Apollo MCP)",
     "M-G3": "GraphQL (search + validate + execute, Apollo MCP)",
@@ -190,6 +191,7 @@ COND_SHORT = {
     "C":  "C\nRover CLI",
     "M-R1": "M-R1\nREST front-loaded",
     "M-R2": "M-R2\nREST on-demand",
+    "M-R3": "M-R3\nREST bare (no spec)",
     "M-G1": "M-G1\nGraphQL on-demand (ours)",
     "M-G2": "M-G2\nGraphQL front-loaded",
     "M-G3": "M-G3\nGraphQL on-demand (Apollo)",
@@ -967,8 +969,10 @@ def _key_findings_phase2(rows, cells, tasks) -> list[str]:
             g1_pt, g2_pt = pt("M-G1", "M3@50"), pt("M-G2", "M3@50")
             g1_c, g2_c = calls("M-G1", "M3@50"), calls("M-G2", "M3@50")
             out.append(
-                f"**The protocol is not the variable — the tool surface is, in two separate "
-                f"ways, and two tasks isolate them.** On **M1@50 every condition makes about "
+                f"**Two independent properties of the tool surface decide where a condition "
+                f"lands within its arm, and two tasks isolate them.** (For where the arms "
+                f"themselves land, see the pass-through ranking below — it is computed, and "
+                f"it is the metric caching cannot touch.) On **M1@50 every condition makes about "
                 f"one data call** ({c_r1:.0f} for M-R1-fat, {c_g2:.0f} for M-G2), so call "
                 f"count is controlled and the whole spread there is **field selectivity**. "
                 f"Two of the GraphQL conditions then invert that on M3@50: their payloads differ "
@@ -1230,6 +1234,62 @@ def _key_findings(rows, conds, tasks) -> list[str]:
     return bullets
 
 
+def _pass_through_ranking(have, conds, tasks) -> list[str]:
+    """Rank the cells on pass-through tokens — the one headline metric caching cannot touch.
+
+    The cost ranking is the one a reader reaches for and the one most distorted by
+    the caching result: phase-2 prefixes never reached the model's minimum, so every
+    call bills a cache write at 1.25x and reads nothing back, and the inflation
+    scales with call count. That penalises many-call conditions specifically, which
+    is a property of the measurement and not of the surface.
+
+    `pass_through_tokens` has no such exposure — it counts payload that crossed the
+    wire and never reached the answer. So this table is computed and printed beside
+    the cost one rather than left for a reader to derive, because the two orderings
+    differ and the difference is the point. Mean and median are both here: the mean
+    over a matrix swept from N=1 to N=50 is weighted by N through the back door, so
+    a reader needs to see whether the ordering survives the other statistic.
+
+    Cells only, never protocol arms — the parser does not know what a "protocol arm"
+    is and should not learn. Whether the arms interleave is visible from the rows.
+    """
+    per_cell = {}
+    for c in conds:
+        vals = [r["pass_through_tokens"] for r in have
+                if r["cell"] == c and r.get("pass_through_tokens") is not None]
+        if not vals:
+            continue
+        # Mean over TASK CELLS, not over runs: three reps of M3@50 would otherwise
+        # outvote one rep of M1@1 in a matrix where the whole point is the sweep.
+        by_task = []
+        for t in tasks:
+            sub = [r["pass_through_tokens"] for r in have
+                   if r["cell"] == c and r["task_id"] == t
+                   and r.get("pass_through_tokens") is not None]
+            if sub:
+                by_task.append(statistics.mean(sub))
+        if by_task:
+            per_cell[c] = (statistics.mean(by_task), statistics.median(by_task), len(by_task))
+    if not per_cell:
+        return []
+
+    out = ["\n### Ranked by pass-through tokens — the metric caching cannot touch\n",
+           "The cost table above is inflated by the caching result and the inflation scales "
+           "with call count, so it penalises many-call conditions as a measurement artifact. "
+           "`pass_through_tokens` carries no such exposure. Where the two orderings disagree, "
+           "this is the one to read first.\n",
+           "| rank | cell | mean pass-through | median cell | task cells |",
+           "|--:|---|--:|--:|--:|"]
+    for i, (c, (mean_, med, n)) in enumerate(
+            sorted(per_cell.items(), key=lambda kv: kv[1][0]), start=1):
+        out.append(f"| {i} | **{c}** — {cell_label(c)} | {mean_:,.0f} | {med:,.0f} | {n} |")
+    out.append("\n*Both statistics are taken over task cells rather than over runs: three "
+               "replicates of `M3@50` would otherwise outvote one of `M1@1` in a matrix whose "
+               "point is the sweep. The mean is still weighted by N through the back door, "
+               "which is why the median is beside it.*\n")
+    return out
+
+
 def _join_tax_section(rows, conds, tasks) -> list[str]:
     """`pass_through_tokens` and `forced_serial_depth` — who performed the join.
 
@@ -1324,6 +1384,8 @@ def _join_tax_section(rows, conds, tasks) -> list[str]:
                "counts are conservative. A previous version of "
                "this footnote claimed these \"share units with every other token column "
                "here\"; they do not. See `grade.pass_through_tokens`.*\n")
+
+    out.extend(_pass_through_ranking(have, conds, tasks))
 
     if lossy:
         out.append(f"\n### ⚠️ {len(lossy)} run(s) with lost tool payloads — excluded above\n")

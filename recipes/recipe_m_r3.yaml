@@ -1,0 +1,69 @@
+# Phase-2 condition M-R3 — REST, no spec
+#
+# One tool: rest_request. No openapi_search, no openapi_describe, and no OpenAPI
+# document anywhere in the agent's context. The cheapest REST surface anyone
+# could plausibly ship — an HTTP tool and a base URL — at 786 B the smallest
+# surface in the study, against M-G3's 1,940 B and M-R1's 9,601 B.
+#
+# Why it exists. M-R1 spends the spec at startup (it authors the nine tool
+# schemas) and M-R2 spends it at run time, so every REST cell in the matrix had
+# spec access in one form or another while the study's caveat about GraphQL's
+# discovery floor compared against them. M-R3 is the REST arm with no discovery
+# affordance at all, and it can only take cells away from the headline, never
+# add them.
+#
+# Fat bracket only, by construction: `?fields=` is documented in the spec and
+# nowhere else, so an agent without the spec cannot learn the parameter exists.
+# Putting it in the tool description would re-import the spec through the back
+# door. REST's cheapest surface and REST's steelman are mutually exclusive here,
+# which is the point rather than an omission.
+#
+# Read any path-guessing success against two things: the tool description still
+# names the three services, their resource families and two example paths (that
+# is the floor — a usable generic HTTP tool cannot say nothing), and we designed
+# these paths and designed them conventionally.
+#
+# TEMPLATE. run_benchmark.py injects the task prompt (as an indented block
+# scalar) and fills @@OPENAPI_MCP@@ before invoking goose.
+#
+# Prerequisite: the stack must be up, composed, and healthy.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+#
+# The `instructions` block below is byte-identical in every M-* recipe, and
+# run_benchmark.py refuses to start a phase-2 pass if that stops being true. It
+# names no tool and suggests no strategy: tool discovery and selection is what
+# the matrix measures, so a hint in one recipe and not another measures the hint.
+# (Phase 1's B/B2 recipes do carry condition-specific coaching — a known weakness
+# of that phase, not a pattern to copy.)
+version: "1.0.0"
+title: "Benchmark — Condition M-R3 (REST, no spec)"
+description: "Answer the task using a single generic REST request tool, with no spec access."
+instructions: |
+  You are a data analyst assistant working with an airline's operational systems.
+  Answer the user's request using ONLY the tools available to you.
+
+  Every fact in your answer must come from a tool result. Do not fill in values
+  from prior knowledge about airlines, aircraft, or crew: this data is synthetic
+  and nothing in your training data describes it. If you need something a tool
+  result does not contain, make another call rather than inferring it. If a value
+  is genuinely unavailable, say so instead of guessing.
+
+  Be concise: once you have the answer, state it directly in the format the
+  request asks for. Do not ask follow-up questions.
+  (benchmark-run-id: @@RUN_ID@@)
+prompt: |
+  @@TASK_PROMPT@@
+settings:
+  goose_provider: anthropic
+  goose_model: @@MODEL@@
+  temperature: 0
+  max_turns: 50
+extensions:
+  - type: stdio
+    name: airline
+    cmd: "@@OPENAPI_MCP@@"
+    args:
+      - "--mode"
+      - "bare"
+    timeout: 300

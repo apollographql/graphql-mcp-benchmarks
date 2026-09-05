@@ -10,7 +10,7 @@ the only variable is what sits underneath the MCP transport.
 | | Backend | Asks |
 |---|---|---|
 | **Phase 1** (`A1 A2 B B2`) | GitHub's live API | Single-service tasks — payload precision and the N+1 differential |
-| **Phase 2** (`M-R1 M-R2 M-G1 M-G2`) | A synthetic three-service airline stack, local | **Who performs the join** — a federated router server-side, or an agent orchestrating three REST services from its own context |
+| **Phase 2** (`M-R1 M-R2 M-R3 M-G1 M-G2 M-G3`) | A synthetic three-service airline stack, local | **Who performs the join** — a federated router server-side, or an agent orchestrating three REST services from its own context |
 
 Phase 2 exists because phase 1 could not separate two variables that GitHub's API
 design had welded together: **protocol** (REST vs GraphQL) and **tool packaging**
@@ -19,10 +19,15 @@ design had welded together: **protocol** (REST vs GraphQL) and **tool packaging*
 GitHub's API design from the result and turns field cardinality and tool-surface size
 into knobs. See [`PHASE2_PLAN.md`](PHASE2_PLAN.md).
 
-**What phase 2 found is not what the 2x2 was built to test.** Protocol is not what separated
-these seven cells — GraphQL is both the cheapest *and* the most expensive condition — and what
-predicted cost instead was two properties of the tool surface: **field selectivity** and
-**cardinality match**. The argument is in [`WRITEUP.md`](WRITEUP.md); the tables, the scored
+**What phase 2 found.** On pass-through tokens — the headline metric, and the one the caching
+result cannot touch — **the two arms do not overlap**: all three GraphQL cells rank above all
+five REST cells, and the worst GraphQL cell carries 2.5× less than the best REST cell. That
+holds against a REST arm we steelmanned (generated OpenAPI, nine uniform endpoints,
+batch-by-id, a `?fields=` bracket), which is REST's best case rather than its typical one. What
+decides where a condition lands *within* its arm is two properties of the tool surface —
+**field selectivity** and **cardinality match** — and they are large enough that GraphQL is
+both the cheapest and, on cost, the fifth-cheapest condition. The argument is in
+[`WRITEUP.md`](WRITEUP.md); the tables, the scored
 pre-registration and the caveats that must travel with any number quoted from them are in
 [`FINDINGS.md`](FINDINGS.md). This file is the operating manual: what runs, how to run it, and
 what each artifact owns.
@@ -61,13 +66,13 @@ docker compose up -d --wait && cd services && pnpm health --profile fat && cd ..
 
 export MODEL=claude-haiku-4-5                             # the published model; see above
 
-DRY_RUN=1 CONDITIONS=M-R1,M-R2,M-G1,M-G2 ./bench.sh run   # plan only, spends nothing
-CONDITIONS=M-R1,M-R2,M-G1,M-G2 PAYLOAD_PROFILE=fat  ./bench.sh run     # 120 runs
+DRY_RUN=1 CONDITIONS=M-R1,M-R2,M-R3,M-G1,M-G2,M-G3 ./bench.sh run   # plan only, spends nothing
+CONDITIONS=M-R1,M-R2,M-R3,M-G1,M-G2,M-G3 PAYLOAD_PROFILE=fat ./bench.sh run    # 180 runs
 
 PAYLOAD_PROFILE=lean docker compose up -d --force-recreate --wait \
     scheduling-rest fleet-rest personnel-rest                          # REST reads the
-CONDITIONS=M-R1,M-R2,M-G1,M-G2 PAYLOAD_PROFILE=lean ./bench.sh run     # profile at start
-CONDITIONS=M-R1,M-R2,M-G1,M-G2 ./bench.sh parse
+CONDITIONS=M-R1,M-R2 PAYLOAD_PROFILE=lean ./bench.sh run               # profile at start
+CONDITIONS=M-R1,M-R2,M-R3,M-G1,M-G2,M-G3 ./bench.sh parse
 ```
 
 `DRY_RUN=1` prints the plan and exits. Use it: there is no confirmation prompt once a
@@ -84,12 +89,12 @@ Results land in **`results/phase1/`** and **`results/phase2/`** (`summary.md`,
 | `./bench.sh setup`    | Install/verify Goose; fetch the Apollo MCP binary (`bin/`); pull the GitHub MCP Docker image; download GitHub's GraphQL SDL via `rover`; render the Apollo config; mint a GitHub token via `gh`. Idempotent. |
 | `./bench.sh precheck` | **Step-1 gate.** A single probe call confirms the proxy logs `cache_read_input_tokens` and `cache_creation_input_tokens`. Aborts `all` if absent. |
 | `./bench.sh capture`  | Records each server's real tool surface (count + `tools/list` bytes) and representative tool-call response shapes → `capture/`. Grounds claims in actual MCP output. |
-| `./bench.sh run`      | Runs one phase's matrix. Phase 1: `A1, A2, B, B2 [,C] × T1, T2 × REPS`. Phase 2: `M-R1, M-R2, M-G1, M-G2 × 10 task instances × REPS` at one `PAYLOAD_PROFILE`. Filter with `CONDITIONS=` / `TASKS=`; `DRY_RUN=1` plans without spending. |
+| `./bench.sh run`      | Runs one phase's matrix. Phase 1: `A1, A2, B, B2 [,C] × T1, T2 × REPS`. Phase 2: `M-R1, M-R2, M-R3, M-G1, M-G2, M-G3 × 10 task instances × REPS` at one `PAYLOAD_PROFILE` (the lean pass reaches only `M-R1` and `M-R2`). Filter with `CONDITIONS=` / `TASKS=`; `DRY_RUN=1` plans without spending. |
 | `./bench.sh parse`    | Aggregates one phase's logs → `results/phase<N>/`. Refuses a directory mixing phases. |
-| `./bench.sh test`     | Every test suite in one command — the three stdlib ones, the proxy suite under `uv`, the node suite, and `doclint`. They do not share an invocation, which is worth one dispatcher. |
+| `./bench.sh test`     | Every test suite in one command — the four stdlib ones, the proxy suite under `uv`, the node suite, and `doclint`. They do not share an invocation, which is worth one dispatcher. |
 | `./bench.sh clean`    | Removes `runs/`, `results/`, generated `capture/*.json`. **Keeps** the committed tool-surface baseline. |
 
-## Conditions
+## Conditions — phase 1
 
 | ID | Underneath | Server |
 |----|-----------|--------|
@@ -98,6 +103,27 @@ Results land in **`results/phase1/`** and **`results/phase2/`** (`summary.md`,
 | **B**  | GraphQL, dynamic | Apollo MCP Server (4 tools: `search`/`introspect`/`validate`/`execute`); `introspect` banned (loads full type trees — too expensive); agent writes its own queries using training knowledge of the GitHub GraphQL schema |
 | **B2** | GraphQL, dynamic | Rover Schema MCP (`servers/rover_schema_mcp.py` — thin Python wrapper, 3 tools: `schema_search`/`schema_describe`/`graphql_execute`); uses `rover schema search` + `rover schema describe` for schema discovery |
 | **C**  | GraphQL via `rover` CLI, **no MCP** | stretch; `ENABLE_ROVER=1`; reported **separately** |
+
+## Conditions — phase 2
+
+Each `M-R*` runs in both payload brackets except `M-R3`, so the matrix is seven REST/GraphQL
+cells plus `M-R3-fat`. Surface figures are the pinned ones in
+`capture/expected-tool-surfaces.json`; the drift gate fails the capture if any of them moves.
+
+| ID | Underneath | Packaging | Surface | Server |
+|---|---|---|---|---|
+| **M-R1** | REST | one tool per endpoint, front-loaded | 9 tools / 9,601 B | `servers/openapi_mcp.py --mode tools` |
+| **M-R2** | REST | spec search + describe + request, on-demand | 3 tools / 2,652 B | `servers/openapi_mcp.py --mode discovery` |
+| **M-R3** | REST | one generic request tool, **no spec access** | 1 tool / 786 B | `servers/openapi_mcp.py --mode bare` |
+| **M-G1** | GraphQL | schema search + describe + execute, on-demand | 3 tools / 2,270 B | `servers/supergraph_mcp.py` — ours; a control |
+| **M-G2** | GraphQL | 7 frozen persisted operations, front-loaded | 7 tools / 4,040 B | `apollo-mcp-server` 1.14.0, dynamic tools off |
+| **M-G3** | GraphQL | search + validate + execute, on-demand | 3 tools / 1,940 B | `apollo-mcp-server` 1.14.0, `introspect` off |
+
+**`M-R3` runs in the fat bracket only, and the reason is the finding.** `?fields=` is documented
+in the OpenAPI spec and nowhere else, so an agent that never sees the spec cannot learn the
+parameter exists; advertising it in the tool description would re-import the spec. REST's cheapest
+surface and REST's steelman are mutually exclusive here. The runner skips it in a lean pass and
+says so.
 
 ## Tasks (constant, word-for-word, across conditions — `tasks/tasks.yaml`)
 
@@ -208,7 +234,7 @@ recipes/recipe_m_{r1,r2,g1,g2}.yaml        phase-2 templates — byte-identical 
 config/apollo-mcp.github.yaml      Apollo MCP config template (→ .local.yaml after setup)
 config/apollo-mcp.phase2.local.yaml       condition M-G2 (rendered by setup)
 servers/rover_schema_mcp.py        phase 1, condition B2
-servers/openapi_mcp.py             phase 2 — M-R1 (`--mode tools`) and M-R2 (`--mode discovery`)
+servers/openapi_mcp.py             phase 2 — M-R1 (`--mode tools`), M-R2 (`--mode discovery`), M-R3 (`--mode bare`)
 servers/supergraph_mcp.py          phase 2 — M-G1 (schema_search/schema_describe/graphql_execute)
 config/apollo-mcp.phase2-dynamic.yaml     condition M-G3 — Apollo MCP Server, dynamic tools
 tasks/tasks.yaml          canonical task wording (single source, both phases)
@@ -220,9 +246,13 @@ capture/check_surfaces.py            fails the build on any tool-surface drift
 run_benchmark.py          orchestrator (one phase per invocation)
 parse_logs.py             log parser → results/phase<N>/
 grade.py                  phase-2 grading + the tool-I/O metrics
-test_grade.py  test_parse_logs.py  proxy/test_proxy_tool_io.py   test suites (stdlib, no framework)
+test_grade.py  test_parse_logs.py   test suites (stdlib, no framework)
+proxy/test_proxy_tool_io.py          the sidecar suite — `uv run`, NOT python3: the proxy declares
+                                     httpx and tiktoken as PEP 723 inline deps, so a system Python
+                                     reports it broken when it is green
 servers/_search.py        shared search grammar for M-R2 and M-G1 — one copy on purpose
 servers/test_search.py    search regressions, every case a query that returned 0 in the matrix
+servers/test_modes.py     openapi_mcp.py's three surfaces; mostly M-R3's derivation from M-R2
 services/                 the phase-2 backend: three services, REST + GraphQL from one field spec
 docker-compose.yml        the phase-2 stack — 3 subgraphs, 3 REST services, Apollo Router
 runs/  results/  capture/ outputs, split by phase
@@ -238,9 +268,11 @@ NOTES.md                  every surprise, in order, with what it cost
 **A GraphQL condition won every task instance in the controlled matrix**, on wasted tokens and
 on cost per task, by 1.18× to 15.7×. On GitHub's live API the N+1 task cost REST **10 tool
 calls and 26,970 tokens of payload against GraphQL's 1 call and 419** — 64× the payload at
-7.9× the cost. But protocol is not the variable that separated the seven phase-2 cells; tool
-packaging is, in two independent ways, and one packaging choice is enough to put GraphQL
-*behind* plain REST. A third thing separated them too, which we did not plan to measure:
+7.9× the cost. Ranked by pass-through tokens, **the arms do not interleave**: all three GraphQL
+cells above all five REST cells, worst GraphQL 2.5× better than best REST. Tool packaging is
+what decides position *within* an arm, in two independent ways, and one packaging choice is
+enough to put a GraphQL cell behind plain REST on cost — where 98.4% of the deciding cell's
+bill is a caching artifact. A third thing separated them too, which we did not plan to measure:
 **which implementation of the same packaging you use** moved payload by up to 3.7× and flipped
 the cost ordering in six of ten cells. There is no single multiple worth quoting, and neither
 published document prints one.

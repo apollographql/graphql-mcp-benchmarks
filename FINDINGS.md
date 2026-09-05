@@ -1,23 +1,35 @@
 # Who performs the join
 
-**Phase 2 · synthetic three-service stack · 210 runs · `claude-haiku-4-5` · $45.15**
+**Phase 2 · synthetic three-service stack · 240 runs · `claude-haiku-4-5` · $51.16**
 
 We built a 2×2 to test REST against GraphQL, then added a fifth condition when we found the
-GraphQL axis confounded. **The protocol axis is not what separated the seven cells here** — which is a description of this matrix, not a verdict on protocols. A
-synthetic three-service app with one model and three reps can show what these tool surfaces
-cost and name the mechanism; it cannot establish that protocol does or does not matter in
-general, and an earlier version of this document overclaimed in the negative direction by
-calling it "the wrong question". Readers should draw their own conclusion; below is the
-measurement.
+GraphQL axis confounded. **On pass-through tokens — this study's headline metric, and the one
+the caching result cannot touch — the two arms do not overlap.** All three GraphQL conditions
+rank above all five REST conditions, on the mean over task cells and on the median cell alike,
+and the worst GraphQL cell carries 2.5× less than the best REST cell. The full ranking is
+generated into `results/phase2/summary.md` rather than asserted here.
 
-On the same 50-flight question, one GraphQL condition answered in a **single request for
-$0.079**. The other needed **100 requests and cost $2.803** — 35× more, and 5× more than
-REST. Both run against the same federated router over the same three services.
+That ordering is the result. What follows is the mechanism, and the mechanism is not the wire
+format: **two independent properties of the tool surface** decide where a condition lands
+*within* its arm — whether a response returns **only the fields asked for**, and whether an
+operation **accepts the cardinality the question has**. A surface can fail either one on its
+own, and two tasks isolate them almost perfectly.
 
-So the variable that predicts cost is not the wire format. It is two independent
-properties of the tool surface: whether a response returns **only the fields asked for**,
-and whether an operation **accepts the cardinality the question has**. A surface can fail
-either one on its own, and two tasks isolate them almost perfectly.
+The within-arm spread is large enough to be worth the rest of this document. On the same
+50-flight question, one GraphQL condition answered in a **single request for $0.079**. Another
+needed **100 requests and cost $2.803** — 35× more, and 5× more than REST. Both run against the
+same federated router over the same three services. **Read that dollar figure with the caching
+section in hand**: 98.4% of it is cache-write charges against a cache that was read zero times,
+and the inflation scales with call count, so it lands hardest on exactly the one GraphQL
+condition that loops. The hundred round-trips underneath it are real and cache-independent; the
+size of the bill is not.
+
+Two things this matrix can and cannot establish. It can show what these tool surfaces cost and
+name the mechanism. It cannot settle protocol in general from one model, three replicates and a
+synthetic backend — and the backend is REST's best case rather than its typical one: the REST
+arm was given an OpenAPI document generated from the implementation, nine endpoints under one
+naming convention, batch-by-id on every collection, and a `?fields=` bracket. GitHub, in phase
+1, has neither of the last two, and the same class of question comes out at 64× there.
 
 ---
 
@@ -173,10 +185,11 @@ on a completed run.
 
 ## What to do about it
 
-The actionable claim is not "adopt GraphQL". It is **expose an operation shaped like the
-question, or expose the query language.** A GraphQL server with per-entity persisted
-operations is the worst of both worlds here: it pays a front-loaded tool surface *and*
-still loops.
+The arm-level ranking already says which protocol won here. The actionable claim underneath
+it is about how not to give that back: **expose an operation shaped like the question, or
+expose the query language.** A GraphQL server with per-entity persisted operations is the
+worst of both worlds — it pays a front-loaded tool surface *and* still loops — and it is
+still third of seven on pass-through, which is the measure of how much room the arm had.
 
 If you are choosing how to expose an API to an agent, the two questions worth asking are
 whether a response can be narrowed to the fields needed, and whether a single request can
@@ -460,6 +473,7 @@ result and turns field cardinality and tool-surface size into knobs.
 |---|---|---|---|
 | `M-R1` | REST | one tool per endpoint (front-loaded, 9 tools / 9,601 B) | `servers/openapi_mcp.py --mode tools` |
 | `M-R2` | REST | spec search + describe + request (on-demand, 3 tools / 2,439 B) | `servers/openapi_mcp.py --mode discovery` |
+| `M-R3` | REST | one generic request tool, **no spec access** (1 tool / 786 B) | `servers/openapi_mcp.py --mode bare` |
 | `M-G1` | GraphQL | schema search + describe + execute (on-demand, 3 tools / 2,159 B) | `servers/supergraph_mcp.py` — **ours; a control, see below** |
 | `M-G2` | GraphQL | 7 frozen persisted operations (front-loaded, 7 tools / 4,040 B) | `apollo-mcp-server` 1.14.0, dynamic tools off |
 | `M-G3` | GraphQL | search + validate + execute (on-demand, 3 tools / 1,940 B) | `apollo-mcp-server` 1.14.0, `introspect` off |
@@ -507,9 +521,11 @@ Phase 1 divides the same way: condition `B` is Apollo MCP Server and `B2` is
 `servers/rover_schema_mcp.py`. Neither exercised its search tool — all six runs of each are a
 single `execute`, on the model's training knowledge of GitHub's schema.
 
-Each `M-R*` runs in both `fat` (no field selection, the majority of production REST APIs)
-and `lean` (honours `?fields=`) payload brackets. With the three GraphQL conditions that is
-seven cells, reported as seven rows and never averaged together.
+`M-R1` and `M-R2` each run in both `fat` (no field selection, the majority of production REST
+APIs) and `lean` (honours `?fields=`) payload brackets. `M-R3` runs `fat` only: `?fields=` is
+documented in the spec and nowhere else, so a condition that never sees the spec cannot discover
+it, and advertising it in the tool description would re-import the spec. With the three GraphQL
+conditions that is eight cells, reported as eight rows and never averaged together.
 
 Measurement is a logging reverse proxy capturing raw Anthropic `usage` per call, plus a
 sidecar recording every tool call's arguments and result body. Tool results are attributed
@@ -546,13 +562,13 @@ listed.
 
 ### Runs excluded from the means, and one that is reported but not comparable
 
-Ten task instances × three reps × seven cells = **210 runs** in the matrix. An eleventh instance
+Ten task instances × three reps × eight cells = **240 runs** in the matrix. An eleventh instance
 (`M4@103`, one rep) ran off-matrix to price the REST arm's scaling and is reported separately,
-so `results/phase2/raw.csv` has 181 rows.
+so `results/phase2/raw.csv` has 241 rows.
 
-Three runs are excluded from means and named at every point of exclusion: one hit the harness
-turn cap, and two recorded fewer tool results than tool calls, which makes their payload
-figures a lower bound rather than a measurement. One further run —
+Four runs are excluded from means and named at every point of exclusion: one hit the harness
+turn cap, one (`M-R3-fat`/`M4@50`) hit the harness timeout, and two recorded fewer tool results
+than tool calls, which makes their payload figures a lower bound rather than a measurement. One further run —
 `M-R2-lean`/`M3@50`/rep1 — took seven silent HTTP 400s mid-task, whereupon Goose restarted the
 conversation and redid the work; its cost covers both attempts and is real but not comparable,
 so the cell is reported as the mean of the other two (147,928) with the including-it figure

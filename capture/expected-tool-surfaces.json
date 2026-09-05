@@ -87,5 +87,14 @@
    "validate"
   ],
   "note": "Apollo MCP Server with introspect disabled, so search is the only discovery tool \u2014 the condition asks whether targeted search alone is enough. Three tools like M-R2 (2,652 B) and the post-fix M-G1 (2,270 B), and at 1,940 B the smallest surface in the matrix. With introspect enabled it is 4 tools / 2,900 B, identical to phase-1 condition B; that is the number to expect if the config is ever flipped back. Measured with capture_mcp.py, whose len(json.dumps(tools)) uses default separators \u2014 a compact-separator measurement of the same surface reads 1,857 and is what this entry was first pinned at, wrongly."
+ },
+ "M-R3": {
+  "server": "servers/openapi_mcp.py --mode bare",
+  "n_tools": 1,
+  "tools_list_bytes": 786,
+  "tool_names": [
+   "rest_request"
+  ],
+  "note": "REST with no spec access at all: one tool, no openapi_search, no openapi_describe. At 786 B the smallest surface in the study \u2014 less than half M-G3's 1,940 B and a twelfth of M-R1's 9,601 B. The description is M-R2's rest_request minus one sentence, the pointer at the two discovery tools this mode does not expose (servers/openapi_mcp.py builds it from DISCOVERY_TOOLS at import so the two cannot drift, and raises if that sentence stops being present). What remains still names the three services, their resource families and two example paths, which is this condition's floor: a usable generic HTTP tool cannot say nothing. Fat bracket only \u2014 `?fields=` is documented in the spec and nowhere else, so an agent without the spec cannot learn it exists, and advertising it here would re-import the spec."
  }
 }

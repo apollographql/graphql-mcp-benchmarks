@@ -85,12 +85,23 @@ ALLOWED: dict[str, str] = {
     "2,517": "RETRACTED M-G1 prefix from the same arithmetic — inside NOTES 63",
     # --- other derived-in-prose figures ---
     "26,970": "A1/T1 tool_result_tokens — proxy_tool_result_tokens in phase1/raw.csv",
+    "122,549": "the single unfiltered /v2/flights response M-R3 pulled on M1@5 after its "
+               "parameter name was silently ignored; result_bytes in that run's tool_io.jsonl "
+               "(runs/phase2/M-R3-fat/M1@5/), which results/ does not aggregate",
     "1,192": "the M-R1-lean/M3@20/rep2 runaway cost, quoted as $1.192",
     "0.1155": "mean lean cost excluding M3@20 — stated with its exclusion",
     "0.0994": "mean fat cost excluding M3@20 — stated with its exclusion",
     "0.1365": "mean lean $/task over the ten cells — a document-level aggregate of "
               "per-cell figures results/ does carry; stated with its own outlier caveat",
     "0.1261": "mean fat $/task over the ten cells — same construction",
+    "0.0597": "mean M-G3 $/task over the ten cells — same construction as the two above",
+    "0.2003": "mean M-R3-fat $/task over the ten cells — same construction",
+    "2.7568": "M-G2/M3@50's cache-write charge: 2,205,403 cache-creation tokens at $1.25/M, "
+              "both in phase2/raw.csv. Quoted to show that 98.4% of that cell's $2.8018 is a "
+              "caching artifact rather than a surface cost",
+    "0.3015": "mean M-G2 $/task over the ten cells — same construction",
+    "0.3958": "mean M-R2-fat $/task over the ten cells — same construction",
+    "0.4230": "mean M-R2-lean $/task over the ten cells — same construction",
     "178,289": "M-R2-lean/M3@50 including the excluded lossy replicate; the generated "
                "table reports 147,928 with it excluded, and both are printed",
     "0.0492": "median lean $/task across ten cells",

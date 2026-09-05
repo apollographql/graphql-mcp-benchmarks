@@ -283,6 +283,10 @@ json.dump({
     {"name": "rest_request", "arguments": {"service": "scheduling", "path": "/v2/flights",
                                            "query": {"origin": origin, "limit": "5"}}},
   ],
+  "M-R3": [
+    {"name": "rest_request", "arguments": {"service": "scheduling", "path": "/v2/flights",
+                                           "query": {"origin": origin, "limit": "5"}}},
+  ],
   "M-G1": [
     {"name": "schema_search", "arguments": {"query": "flight"}},
     {"name": "schema_describe", "arguments": {"coord": "Flight.gate"}},
@@ -310,6 +314,9 @@ CALLS_EOF
     --label M-R2 --out "$PROJECT_ROOT/capture/M-R2.json" --calls "$(m_calls M-R2)" \
     -- "$PROJECT_ROOT/servers/openapi_mcp.py" --mode discovery || true
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-R3 --out "$PROJECT_ROOT/capture/M-R3.json" --calls "$(m_calls M-R3)" \
+    -- "$PROJECT_ROOT/servers/openapi_mcp.py" --mode bare || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label M-G1 --out "$PROJECT_ROOT/capture/M-G1.json" --calls "$(m_calls M-G1)" \
     -- "$PROJECT_ROOT/servers/supergraph_mcp.py" || true
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
@@ -326,7 +333,7 @@ CALLS_EOF
   # so a change here moves a published cost with nothing in the results to show it.
   echo "-- phase-2 tool surfaces vs the pinned baseline --"
   python3 "$PROJECT_ROOT/capture/check_surfaces.py" "$PROJECT_ROOT/capture" \
-    --require=M-R1,M-R2,M-G1,M-G2,M-G3 || return 1
+    --require=M-R1,M-R2,M-R3,M-G1,M-G2,M-G3 || return 1
 }
 
 # ---------------------------------------------------------------------------
@@ -336,8 +343,10 @@ capture_summary() {
 import json, glob, os, sys
 
 d = sys.argv[1]
+# Labels absent from this map are silently dropped from SUMMARY.md, which is how
+# M-G3 went unrendered after it was added. Every condition goes here.
 PHASE = {"A1": 1, "A2": 1, "B": 1, "B2": 1, "C": 1,
-         "M-R1": 2, "M-R2": 2, "M-G1": 2, "M-G2": 2}
+         "M-R1": 2, "M-R2": 2, "M-R3": 2, "M-G1": 2, "M-G2": 2, "M-G3": 2}
 
 # Only capture reports, keyed by label. The directory also holds
 # expected-tool-surfaces.json (the pinned baseline), which has no label and used
@@ -466,6 +475,7 @@ do_test() {
   python3 "$PROJECT_ROOT/test_grade.py"        | tail -1 || rc=1
   python3 "$PROJECT_ROOT/test_parse_logs.py"   | tail -1 || rc=1
   python3 "$PROJECT_ROOT/servers/test_search.py" | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/servers/test_modes.py"  | tail -1 || rc=1
   echo "== proxy suite (uv: needs httpx/tiktoken from the inline script deps) =="
   uv run "$PROJECT_ROOT/proxy/test_proxy_tool_io.py" | tail -1 || rc=1
   echo "== services (node) =="

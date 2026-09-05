@@ -15,11 +15,16 @@ surface size) into knobs we control.
 **Steps 1–7 are complete.** The backend, both generated surfaces, the federated router,
 `docker compose`, all four MCP tool surfaces, the four tasks with computed ground truth, the
 runner, the four recipes, the grader, and the report all exist and are verified. Verified
-numbers: §5.1 (all eleven cells) and §8.1 (the four tool surfaces, pinned in
+numbers: §5.1 (all eleven cells) and §8.1 (the tool surfaces, pinned in
 `capture/expected-tool-surfaces.json`).
 
 **The matrix is in: 211 runs, five conditions, both payload brackets** (180 + 1 off-matrix on
 2026-09-02; `M-G3` added and run 2026-09-03).
+
+**`M-R3` ran 2026-09-05**: REST with no spec access, the sixth condition and the last one the
+packaging axis was missing. 30 runs at `PAYLOAD_PROFILE=fat`, bringing the tree to **241 runs,
+eight cells, $51.16**. It finished last of eight on pass-through and scored f1 0.00 on `M1@1` in
+all three replicates. `NOTES.md` 81.
 `MAX_TURNS=60` held — no run hit the cap. **180 of 180 finished runs are fact-verified with 0
 fabricated.** The one capped run in the tree is the earlier off-matrix M4@103 at the old cap of
 25, listed separately and excluded from every mean.
@@ -691,10 +696,16 @@ Phase-1 IDs (`A1/A2/B/B2/C`) are taken, so phase 2 uses an `M-` prefix.
 | **M-G1** | Federated GraphQL | `execute` + `schema_search` + `schema_describe` (**our server** — a control; see §8.1) | 3 |
 | **M-G2** | Federated GraphQL | pre-baked persisted operations (Apollo MCP `operations:`) | frozen set |
 | **M-G3** | Federated GraphQL | `execute` + `search` + `validate` (Apollo MCP dynamic tools, `introspect` off) — **added 2026-09-03** | 3 |
+| **M-R3** | REST | `rest_request` alone — **no spec access at all** — added and run 2026-09-05 | 1 |
 
 Each `M-R*` condition runs in both payload profiles from §3.1 — `M-R1-fat` / `M-R1-lean`,
 `M-R2-fat` / `M-R2-lean` — so REST's payload disadvantage is reported as a bracketed range
 rather than a single number that silently encodes an assumption about field selection.
+**`M-R3` is the exception, and not by omission:** `?fields=` is documented in the OpenAPI
+spec and nowhere else, so a condition that never sees the spec cannot discover the parameter,
+and putting it in the tool description would re-import the spec through the back door. The
+bracket is unreachable by construction, the condition runs `fat` only, and the runner skips
+it in a lean pass with that reason rather than the GraphQL one.
 
 - **M-R2 vs M-G1** is the structurally symmetric pair — the clean protocol comparison.
 - **M-R1 vs M-G2** is the front-loaded pair — how production deployments actually look.
@@ -1216,7 +1227,7 @@ Small, additive changes:
 | ~~`lib/setup.sh`~~ | ✅ Done in step 5 — renders `config/apollo-mcp.phase2.local.yaml` with absolute paths |
 | ~~`capture/capture_mcp.py`~~ | ✅ Confirmed: works unmodified against all four new servers |
 
-### 8.1 The four MCP tool surfaces — built and measured
+### 8.1 The MCP tool surfaces — built and measured
 
 **✅ Step 5 complete, 2026-08-28.** Measured `tools/list` from the live stack, captured
 with `capture/capture_mcp.py` into `capture/M-*.json`:
@@ -1228,6 +1239,7 @@ with `capture/capture_mcp.py` into `capture/M-*.json`:
 | M-G1 | `servers/supergraph_mcp.py` | 3 | 2,159 → **2,270** | `schema_search` 3,487 · `schema_describe` 440 · `graphql_execute` 363 |
 | M-G2 | `bin/apollo-mcp-server config/apollo-mcp.phase2.local.yaml` | 7 | 4,040 | `FlightSchedule` 1,082 · `FlightRoster` 2,335 · `FlightAirworthiness` 455 |
 | M-G3 | `bin/apollo-mcp-server config/apollo-mcp.phase2-dynamic.local.yaml` | 3 | **1,940** | `search` 789 · `execute` 590 |
+| M-R3 | `servers/openapi_mcp.py --mode bare` | 1 | **786** | `rest_request` 14,312 |
 
 **Two surfaces moved on 2026-09-03, deliberately.** `M-R2` and `M-G1` grew when both search
 tools were fixed (`NOTES.md` 73): their descriptions changed, and a tool description is part of
@@ -1247,6 +1259,24 @@ and that substitute went on to win every cell. `M-G3` is the product in that slo
 separable: same implementation as `M-G2` with different packaging, same packaging as `M-G1`
 with a different implementation. It ran 30 runs and beat `M-G1` on pass-through in 9 of 10
 cells while losing on cost in 6 — our substitute was wrong in both directions. `NOTES.md` 74.
+
+**M-R3 was added 2026-09-05, and it completes the REST axis rather than the GraphQL one.**
+Every REST cell in the matrix had spec access in some form — `M-R1` spends the OpenAPI document
+at startup to author its nine tool schemas, `M-R2` spends it at run time through
+`openapi_search` / `openapi_describe` — while the study's caveat about GraphQL's discovery floor
+compared against exactly those. `M-R3` is REST with no discovery affordance at all: one tool,
+786 B, the smallest surface here by a factor of 2.5 against `M-G3` and 12 against `M-R1`. It can
+only take cells away from the headline, never add them, which is the right shape for a condition
+added after the result is known.
+
+Its description is `M-R2`'s `rest_request` byte-for-byte minus one sentence — the pointer at the
+two tools this mode does not expose — derived from `DISCOVERY_TOOLS` at import rather than
+restated, so `M-R2` vs `M-R3` isolates one variable and cannot drift. What remains still names
+the three services, their resource families and two example paths. **That is the condition's
+floor and it is not zero**: a usable generic HTTP tool has to say something, and whatever it says
+is a miniature spec. Read any path-guessing success against it, and against the fact that we
+designed these paths and designed them conventionally — the guessability of `/v2/flights` is
+partly a measurement of our own naming, and that confound is disclosable rather than removable.
 
 **M-R1 moved from 9,440 to 9,601 bytes, and nothing said so.** Commit `14d8973` added a
 `roles` filter to the assignments endpoint on both surfaces, which grew `listAssignment`'s
