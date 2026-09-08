@@ -281,13 +281,12 @@ Three documents, for three different readers:
 
 | | For | Contains |
 |---|---|---|
-| [`WRITEUP.md`](WRITEUP.md) | Someone who has not seen this repo | The argument: what was measured, the per-cell result, the six caveats, and what does and does not generalise. Start here. |
+| [`WRITEUP.md`](WRITEUP.md) | Someone who has not seen this repo | The argument: what was measured, the per-cell result, the four limits, and what does and does not generalise. Start here. |
 | [`FINDINGS.md`](FINDINGS.md) | Someone about to quote a number from it | The tables, the pre-registration scored against the runs, the limits of the headline metric, and every caveat in full. |
 | [`results/phase2/summary.md`](results/phase2/summary.md) | Someone checking the arithmetic | Machine-generated per-run detail, including a lede **computed from the run rows at render time** rather than written — prose that states a mechanism the data does not show is a bug this project has shipped twice. |
 
 Every measurement error made along the way, in order, with what each cost:
-[`NOTES.md`](NOTES.md). There are fifteen of them, which is the subject of `WRITEUP.md`'s last
-section.
+[`NOTES.md`](NOTES.md). There are fifteen of them.
 
 ## Caveats / methodology notes
 

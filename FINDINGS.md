@@ -183,13 +183,79 @@ The grounding gate behaved as designed on the failure: it reports **unassessed**
 and not failed, because the answer states no checkable fact. First time that branch has fired
 on a completed run.
 
+## 4 — Guessing the interface, and what the OpenAPI document was buying
+
+`M-R3` is REST with the spec taken away: one tool, `rest_request`, **786 bytes** — the smallest
+surface in the study, an eighth of `M-R1`'s and under half `M-G3`'s. It was added last,
+specifically because every other REST cell had spec access in some form and the discovery-floor
+argument was being made against them. It is REST's floor, and it finished **last of eight** on
+pass-through tokens — 45,280 mean against `M-R2-fat`'s 35,873 — and fifth of eight on cost.
+
+Removing 8,815 bytes from the prefix did not make REST cheaper. It produced two failures, and
+**neither one registers as an error anywhere in the instrumentation**:
+
+**It guessed the resource shape, got a clean 404, and stopped.** On `M1@1` all three replicates
+issued `GET /v2/flights/AA5751` — treating the flight *number* as an *id* — and got back
+`404 · flight "AA5751" does not exist`. Every replicate then reported that the flight did not
+exist. **f1 0.00, three for three, at $0.0034 a run: the cheapest cell and the smallest payload
+in the entire matrix, and a wrong answer.** It never tried the collection endpoint. The 404 was
+explicit, correct, and well-worded, and the agent read it as ground truth about the world rather
+than about its own guess.
+
+**Then it guessed a parameter name, and the server silently ignored it.** On `M1@5` the agent
+sent `?flight_numbers=AA5751,DL2753,...` where the parameter is `flightNumbers`. Unknown query
+parameters are dropped — normal REST behaviour, not a defect — so it received the **unfiltered
+collection: 122,549 bytes in one response**, scanned it in context, and answered correctly. f1
+1.00, and **38,478 pass-through tokens against fat REST-with-a-spec's 3,720 on the same
+question.** Ten times the payload for the same right answer.
+
+Put those side by side and the shape is clear. The failure that was loud produced a wrong answer
+cheaply; the failure that was silent produced a right answer expensively. **`tool_errors` is 0
+for all thirty runs** — our `rest_request` returns HTTP errors as successful tool results
+carrying an error body, so even the 404 is invisible to an error count, exactly as an empty
+GraphQL result was in tax three.
+
+This is the REST mirror of the identifier ambiguity that hit `M-G3` on `M2@1`, and it is the
+worse version. An empty GraphQL result at least looks wrong. An unfiltered 200 looks right, and
+it costs a page of records to discover that it was.
+
+*What this says about the spec:* the OpenAPI document is not documentation overhead that a
+smaller tool surface lets you shed. It is the thing that makes the endpoints callable at all —
+paths are guessable because they are conventional, and **parameter names are not**. `M-R1` and
+`M-R2` were not paying 9,601 and 2,652 bytes for convenience; they were paying it for
+`flightNumbers`.
+
+### Which sharpens what the REST arm was granted
+
+Everything the REST arm was given here, it was given deliberately, and most of it is rare in
+the wild:
+
+| what we granted REST | how common it is |
+|---|---|
+| an OpenAPI document **generated from the implementation** — never stale, never partial | real specs are hand-maintained and drift |
+| nine endpoints, three services, one naming convention, one envelope, one pagination scheme | real estates are inconsistent *between* services |
+| batch-by-id on every collection (`?ids=`) | uncommon; GitHub has none |
+| `?fields=` sparse fieldsets (the `lean` bracket) | uncommon; GitHub has none |
+
+Phase 1 is the control on that list: GitHub is a well-resourced, heavily-documented REST API
+and it offers neither of the last two, which is why the same class of question comes out at
+**64× the payload** there. A generated, never-stale OpenAPI document was the single most
+valuable thing we handed the REST arm — and it is the one production REST estates are least
+likely to have.
+
+There is also an asymmetry in what it costs each side to fix its worst result, and calling both
+"packaging" flattens it. GraphQL's worst cell is repaired by changing `$flightId: ID!` to
+`$flightIds: [ID!]!` — one line in one operation. REST's payload disadvantage is repaired by
+adding a field-selection language to every endpoint *and* getting the client to use it, which
+tax one shows ours frequently did not.
+
 ## What to do about it
 
 The arm-level ranking already says which protocol won here. The actionable claim underneath
 it is about how not to give that back: **expose an operation shaped like the question, or
 expose the query language.** A GraphQL server with per-entity persisted operations is the
 worst of both worlds — it pays a front-loaded tool surface *and* still loops — and it is
-still third of seven on pass-through, which is the measure of how much room the arm had.
+still third of eight on pass-through, which is the measure of how much room the arm had.
 
 If you are choosing how to expose an API to an agent, the two questions worth asking are
 whether a response can be narrowed to the fields needed, and whether a single request can
@@ -198,21 +264,24 @@ determine them.
 
 ## Where the difference is not: accuracy
 
-137 of 180 graded runs scored a perfect F1, and **41 of 60** condition/task cells were perfect
+178 of 239 graded runs scored a perfect f1, and **53 of 80** condition/task cells were perfect
 outright. (An earlier version said 28 of 40: the accuracy table was the one grouping site
 that still folded the `fat`/`lean` brackets together, contradicting this document's own
-"six cells, never averaged together" — bug #54, second instance. `NOTES.md` 67.)
+"never averaged together" — bug #54, second instance. `NOTES.md` 67.)
 
-All 180 finished runs passed the grounding check. Being exact about what that check does: for
-each *correct* value an answer states, it verifies the value appears somewhere in the
-concatenated tool results that arrived. Nothing asserted a correct fact no tool returned. It
-is a retrieval-happened check, not per-fact provenance — a run that flips a verdict or reports
-the wrong record scores f1 0.00 and still passes it, because the check only inspects the values
-the run got right. "Zero fabricated" claims more than it can support.
+238 of 239 finished runs passed the grounding check and one could not be assessed. Being exact
+about what that check does: for each *correct* value an answer states, it verifies the value
+appears somewhere in the concatenated tool results that arrived. Nothing asserted a correct
+fact no tool returned. It is a retrieval-happened check, not per-fact provenance — a run that
+flips a verdict or reports the wrong record scores f1 0.00 and still passes it, because the
+check only inspects the values the run got right. "Zero fabricated" claims more than it can
+support.
 
-Widest protocol gap: `M2@1`, GraphQL 1.00 against REST 0.85. Most of the matrix shows no
-accuracy difference at all. *The agents get the answer either way. What differs is the
-cost of getting it.*
+Widest protocol gap: **`M1@1`, GraphQL 1.00 against REST 0.80** — and it is entirely `M-R3`,
+the condition with no spec, failing three times out of three on the simplest question in the
+matrix (tax four, below). Set that cell aside and most of the matrix shows no accuracy
+difference at all. *The agents get the answer either way. What differs is the cost of getting
+it* — but do not set it aside without reading why.
 
 ---
 
@@ -278,7 +347,7 @@ calls where its two siblings made 6, and cost $1.192 against their $0.109. Drop 
 cell and lean is cheaper on the mean too ($0.0994 against $0.1155); by median across the ten
 cells lean is **35% cheaper** ($0.0492 against $0.0759).
 
-So: six rows, ten cells, never averaged together. `WRITEUP.md` prints no single multiple for
+So: eight rows, ten cells, never averaged together. `WRITEUP.md` prints no single multiple for
 this reason.
 
 ### Prompt caching never hit in phase 2 — and did hit in phase 1
@@ -361,8 +430,8 @@ without new runs:
   runner refuses to start if they drift.
 - **Prior schema knowledge.** Phase-1 GraphQL did essentially no schema discovery, which is why
   B2 needs one call there and `M-G1` needs seven on the synthetic graph. On a schema the model
-  has never seen, the discovery floor is real — and that floor is the entire content of
-  `WRITEUP.md`'s caveat 2.
+  has never seen, the discovery floor is real — and that floor is the second of the two ways
+  `WRITEUP.md` says the advantage gets forfeited.
 
 ### The search tools required every word to match, so half of every search missed
 
@@ -534,9 +603,9 @@ undercounted parallel calls.
 
 ### What is load-bearing in the task wording
 
-The four prompts are quoted verbatim in `WRITEUP.md` and owned by `tasks/tasks.yaml`; `doclint.py`
-fails if a quoted copy drifts from the yaml. Three details in them are deliberate rather than
-incidental:
+The four prompts are owned by `tasks/tasks.yaml`, which is the only place the wording lives;
+`doclint.py` fails if a copy quoted in any published document drifts from the yaml. Three details
+in them are deliberate rather than incidental:
 
 - **`{{as_of}}` is not decoration.** "Is this rating still current?" has no answer without a
   reference date. The fixtures are dated 2026-03-14, and an agent reasonably substitutes its own
@@ -573,6 +642,34 @@ than tool calls, which makes their payload figures a lower bound rather than a m
 conversation and redid the work; its cost covers both attempts and is real but not comparable,
 so the cell is reported as the mean of the other two (147,928) with the including-it figure
 (178,289) printed alongside.
+
+---
+
+## What we would run next
+
+- **A second model, then a third.** The cheapest caveat to close and the only one that can move
+  a published number. The behavioural half of tax one — whether an agent opts into `?fields=`
+  when it is available — is the specific thing to re-measure.
+- **Persisted operations with list arguments.** The highest-value follow-up, because it is a
+  one-line change to `FlightRoster`, and tax two predicts it turns the worst GraphQL condition
+  into a contender. If that prediction fails, the cardinality story is wrong.
+- **A lean REST condition where the agent cannot opt out.** Make `?fields=` required rather than
+  optional and re-run `M4`. That separates "REST can be efficient" from "REST was efficient",
+  which the `fat`/`lean` pair currently conflates in REST's favour.
+- **A REST server that rejects unknown query parameters.** `M-R3`'s worst moment was a silently
+  ignored filter returning an unfiltered page. A 400 there would have cost one cheap turn instead
+  of 122,549 bytes, and the comparison would say something useful about failing loudly.
+- **Find the context ceiling.** We predicted REST would exhaust the context window before GraphQL
+  around N ≈ 80 and never got there: the harness turn cap fired first. A run with the cap raised
+  would say whether the ceiling is real or whether cost binds first in practice.
+- **The same matrix against a real production API in both packagings.** Phase 1 has realism and
+  no control; phase 2 has control and no realism. A third phase against an API whose owner will
+  let you vary the tool surface would have both.
+- **Latency under a real network.** Our backend is in-memory with no network between router and
+  subgraphs, so the timing columns can only support a negative result. A federated fan-out over
+  real hops might show what the token metric cannot.
+
+---
 
 Full report: `results/phase2/summary.md` (committed, so the path resolves in a clone). Design
 and decisions: `PHASE2_PLAN.md`. Every surprise, in order, with what it cost: `NOTES.md`.
