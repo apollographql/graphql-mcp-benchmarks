@@ -44,9 +44,9 @@ LABEL = {
     "M-R2-fat": "REST, spec discovery",
     "M-R2-lean": "REST, spec discovery, ?fields=",
     "M-R3-fat": "REST, no spec",
-    "M-G1": "GraphQL, query language (ours)",
-    "M-G2": "GraphQL, frozen operations",
-    "M-G3": "GraphQL, query language (product)",
+    "M-G1": "GraphQL, query language (rover-wrapped)",
+    "M-G2": "GraphQL, persisted operations",
+    "M-G3": "GraphQL, query language (apollo-mcp)",
 }
 
 # --- palette -----------------------------------------------------------------
@@ -169,16 +169,6 @@ def fig1_arm_separation(runs, plt):
     ax.xaxis.set_major_formatter(lambda v, _: f"{v:,.0f}")
     ax.xaxis.grid(True, color=GRID, linewidth=0.8, zorder=0)
     ax.set_axisbelow(True)
-
-    # The boundary between the arms: every GraphQL cell above every REST cell.
-    n_gql = sum(1 for c in cells if c in GQL_CELLS)
-    split = ypos[n_gql] + 0.5
-    ax.axhline(split, color=INK_2, linewidth=1.0, linestyle=(0, (4, 3)), zorder=5)
-    worst_gql = max(m for c, m in zip(cells, means) if c in GQL_CELLS)
-    best_rest = min(m for c, m in zip(cells, means) if c not in GQL_CELLS)
-    ax.text(max(means) * 0.99, split + 0.22,
-            f"the arms do not interleave — {best_rest / worst_gql:.1f}× between them",
-            ha="right", va="bottom", fontsize=8.5, color=INK_2, style="italic")
 
     handles = [plt.Rectangle((0, 0), 1, 1, color=GQL_COLOR),
                plt.Rectangle((0, 0), 1, 1, color=REST_COLOR)]

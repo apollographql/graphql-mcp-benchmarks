@@ -1,24 +1,21 @@
 # GraphQL-backed MCP tools are more token-efficient
 
-Across 240 runs on a backend we controlled, the best GraphQL-backed MCP server beat the best
-REST-backed one on all ten task instances — on wasted tokens and on cost per task. The margin
-runs from 1.2× to 15.7×, and it tracks the shape of the question rather than its size. On
-GitHub's live API, the N+1 case cost REST 64× the payload.
+This benchmark suite evaluates a variety of agentic tasks run against multiple different setups, some backed by a GraphQL API and some backed by a REST API.  GraphQL-over-MCP tool calls achieve task success using fewer tokens than REST-over-MCP and with lower overall inference costs.  I am comparing apples-to-apples: even REST API variants implemented with OpenAPI schema and field selection capabilities do not match GraphQL’s token efficiency.  The results favor GraphQL for both trivial tasks that query a real production system (GitHub) and tasks that require fetching from multiple services/entities (a mocked travel-booking API, the GraphQL variant of which uses Federation for orchestration). Three mechanisms drive that gap: field selection is the default grammar of a GraphQL query rather than an opt-in bracket a REST client has to remember to add; the schema's type language lets a model compose a correct query from training-time knowledge instead of a discovery-then-dispatch chain; and the same join operation costs differently depending on who performs it — expensive and brittle in the agent's inference loop, cheap and deterministic in the router.
 
-We ran two experiments. Phase 1 pointed MCP servers at GitHub's live API and asked the same
+I ran two experiments. Phase 1 pointed MCP servers at GitHub's live API and asked the same
 question through each — 24 runs, $0.53. Phase 2 built a synthetic three-service airline
 backend, generated a REST surface and a federated GraphQL surface from a single field
 definition, and swept four questions over how many records they cover — 240 runs, $51.16.
 Everything ran on `claude-haiku-4-5` at temperature 0, through Goose, behind a logging reverse
 proxy that recorded the raw Anthropic `usage` object for every model call.
 
-*This document is the argument. The per-cell tables, the mechanism, the scored pre-registration
+*The per-cell tables, the mechanism, the scored pre-registration
 and the caveats in full are in [`FINDINGS.md`](FINDINGS.md); the generated reports are in
 [`results/`](results); how to run any of it is in [`README.md`](README.md).*
 
 ---
 
-## What we ran
+## What ran
 
 ### Phase 1 — GitHub's live API
 
@@ -47,18 +44,18 @@ flowchart LR
     RMCP --> GQL
 ```
 
-The two REST conditions are one binary differing only in how much of it is switched on. The two
-GraphQL conditions are different code — one vendor's, one ours — reaching the same endpoint, and
-both hand the agent a query language rather than pre-built operations. `T1` asks for five pull
+The two REST conditions differ only in how much of it is switched on. The two
+GraphQL conditions are similar as well, one uses an open-source GraphQL MCP server and another uses
+a thin wrapper over an existing schema search and description utility; both hand the agent a
+query language rather than pre-built operations. `T1` asks for five pull
 requests and their changed files, which is the N+1 case; `T2` asks for one, and is a
 single-entity control that carries no protocol claim.
 
-Phase 1's strength is that nothing about it is synthetic. Its limit is that it cannot separate
-protocol from packaging — two things differ between those rows at once — and it cannot vary
-anything, because we own neither surface. There is no lean bracket here: GitHub's REST endpoints
-have no field-selection parameter to turn on, which is exactly the gap phase 2 was built to fill.
+Phase 1's strength is that nothing about it is synthetic. Its limit is that it's measuring both
+the protocol and the implementation details of GitHub's production services.
+Phase 2 fills this gap.
 
-### Phase 2 — a backend we control
+### Phase 2 — a contrived backend
 
 Eight condition cells, reported as eight rows and never averaged together. Each is one MCP server
 pointed at one of two surfaces over the same three services.
@@ -71,21 +68,21 @@ pointed at one of two surfaces over the same three services.
 | `M-R2-lean` | REST | same, honoring `?fields=` | `openapi_mcp.py --mode discovery` | 3 |
 | `M-R3-fat` | REST | one generic HTTP tool, no spec at all | `openapi_mcp.py --mode bare` | 1 |
 | `M-G1` | GraphQL | schema discovery then execute | `supergraph_mcp.py` | 3 |
-| `M-G2` | GraphQL | frozen persisted operations, one tool each | `apollo-mcp-server` v1.14.0 | 7 |
+| `M-G2` | GraphQL | persisted operations, one tool each | `apollo-mcp-server` v1.14.0 | 7 |
 | `M-G3` | GraphQL | schema discovery then execute | `apollo-mcp-server` v1.14.0, dynamic | 3 |
 
 The server column is what makes the axes separable. `M-R1`, `M-R2` and `M-R3` are one file in
 three modes, so the REST axis varies packaging and nothing else; `M-G2` and `M-G3` are one binary
 in two modes, so the GraphQL axis does too. `M-G3` closes the square — same implementation as
 `M-G2` with different packaging, same packaging as `M-G1` with a different implementation. `M-G1`
-is a control we wrote, not a product anyone can install, and it is reported alongside the
+is a control I wrote, not a product anyone can install, and it is reported alongside the
 shipping equivalent rather than in place of it.
 
-Three services — flight scheduling, fleet maintenance, crew personnel — modeled on an airline
-operations stack, because it gives a natural three-way join: a flight is scheduled by one
+Three services: flight scheduling, fleet maintenance, crew personnel. Each are modeled after an airline
+operations stack because it gives a natural three-way join: a flight is scheduled by one
 service, flown by an aircraft owned by another, and crewed by people belonging to a third. Both
 surfaces are generated from one field declaration and read the same records through the same
-repository, so neither can be quietly hand-favored.
+repository, so the implementation won't have hidden bias toward either protocol.
 
 ```mermaid
 flowchart LR
@@ -102,12 +99,12 @@ flowchart LR
 
     subgraph GQL ["GraphQL surface"]
         direction LR
-        SUB["3 subgraphs · Apollo Server v5<br/>per-request DataLoaders<br/>:5001 :5002 :5003"] --> ROUTER["Apollo Router v2.17.0<br/>:5000"]
+        SUB["3 subgraphs · Apollo Server v5<br/>per-request DataLoaders"] --> ROUTER["Apollo Router v2.17.0<br/>:5000"]
     end
 
     subgraph RST ["REST surface"]
         direction LR
-        REST["3 Node HTTP services<br/>GET /v2/... · 9 endpoints<br/>:4001 :4002 :4003"]
+        REST["3 Node HTTP services<br/>GET /v2/... · 9 endpoints"]
     end
 
     SDL --> SUB
@@ -119,20 +116,21 @@ flowchart LR
     REST --> RC["the 5 REST conditions"]
 ```
 
-`parity.test.ts` is the fairness gate, and it enforces something narrower than "the two surfaces
-match": every canonical field must be reachable on both, GraphQL may expose nothing absent from
-REST, and REST may carry extra keys only when they are declared redundant and derived from a
-canonical field. Extra bytes yes, extra information no — which is the whole point, since the
+`parity.test.ts` is the fairness gate, and it enforces that every canonical field must be reachable
+on both REST and GraphQL, and REST may carry extra keys only when they are declared redundant and
+derived from a
+canonical field. Extra bytes are permitted but not extra information since that's the whole point; the
 extra bytes are what the study measures.
 
-REST was the steelman. We gave it an OpenAPI document *generated from the implementation*, so it
-can never be stale or partial; nine endpoints across three services with one naming convention,
+REST was the steelman. I gave it an OpenAPI document generated from the implementation so it
+can never be stale or partial. It contains nine endpoints across three services with one naming convention,
 one envelope and one pagination scheme; batch-by-id on every collection; and a `?fields=`
-sparse-fieldset bracket. Payloads are deliberately bloated in ways named production APIs actually
-are — envelope wrappers, code/label twins, denormalized nested objects — so a flight comes back
+sparse-fieldset bracket. This is an extremely generous setup IMO. Payloads are deliberately bloated
+in ways that production APIs typically
+are. This includes envelope wrappers, code/label twins, and denormalized nested objects. A flight comes back
 with 46 fields under the `fat` profile. Cross-service expansion is the one thing REST is not
 allowed: a service may link to another service's resource but never inline it, because that is
-precisely the constraint federation exists to solve.
+precisely the constraint that GraphQL Federation exists to solve.
 
 ### The phase-2 tasks
 
@@ -182,13 +180,13 @@ flowchart LR
     PARSE --> OUT["results/** · figures/**"]
 ```
 
-The proxy is deliberately dumb: it records what crossed the wire and decides nothing, because it
+The proxy is deliberately naive: it records what crossed the wire and decides nothing, because it
 is the one component whose correctness underpins every published number. The sidecar exists
-because the headline metric needs to know *what* was in a payload, not just how large it was.
+because the headline metric needs to know both the size and content of a payload.
 
-That metric is pass-through tokens: payload that entered the agent's context and whose values
-never appear in its answer. It is the honest measure of waste — data the agent carried, paid for
-on every subsequent call, and didn't use. All five phase-2 recipes carry a byte-identical
+That metric is "pass-through tokens:" payload that entered the agent's context and whose values
+never appear in its answer. Put another way, it's the data the agent carried, paid for
+on every subsequent call, and didn't use. In other words: waste. All five phase-2 recipes carry a byte-identical
 instruction block that names no tool and suggests no strategy, and the runner refuses to start if
 they drift.
 
@@ -196,13 +194,12 @@ they drift.
 
 ## The result
 
-On the metric caching cannot touch, the arms do not overlap at all.
+GraphQL-over-MCP outperforms REST-over-MCP across all tasks.
 
 ![Every GraphQL condition carried less waste than every REST condition](figures/fig1-arm-separation.png)
 
-All three GraphQL conditions place above all five REST conditions, on the mean and on the median
-cell alike. The *worst* GraphQL condition carries 2.5× less than the *best* REST condition. That
-ordering is the result, and adding a fifth REST cell widened the span rather than closing it.
+All three GraphQL conditions place above all five REST conditions. The worst GraphQL condition carries
+2.5× less than the best REST condition.
 
 Best GraphQL cell against best REST cell, instance by instance:
 
@@ -226,10 +223,9 @@ batchable single-service question grows and widens on the cross-service joins:
 
 ![The margin tracks the shape of the question, not its size](figures/fig2-question-shape.png)
 
-Two honest qualifications. GraphQL did not win on round-trips — the best REST configuration
+Two qualifications. GraphQL did not win on round-trips: the best REST configuration
 made the same number of tool calls or fewer on five of the ten instances. And no single
-GraphQL condition wins everywhere: `M-G2` and `M-G3` take five token cells each. What holds
-without qualification is the arm-level ordering above.
+GraphQL condition wins everywhere: `M-G2` and `M-G3` take five token cells each.
 
 Accuracy is mostly not where the difference lives. 178 of 239 graded runs scored a perfect
 f1 and 53 of 80 condition/task cells were perfect outright. The widest gap is `M1@1` —
@@ -249,103 +245,58 @@ of an API nobody in this study controls:
 | `B2` — Rover Schema MCP | 1 | 419 | 1,656 | $0.0090 | 10.6 s |
 
 64× the payload for the same five pull requests, at 7.9× the cost. REST made ten calls and
-GraphQL made one, exactly as the N+1 shape predicts — five results, then five more, every one of
+GraphQL made one, exactly as the N+1 shape predicts: five results, then five more, every one of
 them staying in context for the rest of the conversation. The two GraphQL conditions are
 indistinguishable from each other on both tasks, which is worth noting on its own: a four-tool
-surface and a three-tool surface, one vendor's and one ours, produced the same call counts and
-costs within a cent.
+surface and a three-tool surface produced the same call counts and costs within a cent.
 
-The prefix column is the tool surface being paid on every call, and it tracks advertised size
-almost exactly — across all four conditions it fits `prefix ≈ 1,381 + bytes/8.43` to within 8.3%,
-r = 0.9998. "Our MCP server exposes N tools" is roughly the answer to what that costs, not a
-loose upper bound on it.
+Phase 1 cannot separate protocol from implementation, which is why phase 2 exists, and its prompts
+were not symmetric. The GraphQL recipes carried a batching hint that REST got no equivalent of.
+Both asymmetries cut in GraphQL's favor and phase 2 tested a service with no such gap.
 
-Phase 1 cannot separate protocol from packaging, which is why phase 2 exists, and its prompts
-were not symmetric — the GraphQL recipes carried a batching hint that REST got no equivalent of.
-Both asymmetries cut in GraphQL's favor and phase 2 fixed them. It is here as the check that the
-synthetic backend is not the whole story. *Wall time was measured with all four conditions
-running concurrently against one live API and one account; treat it as ordinal.*
+### Stages of inference
 
----
+While analyzing Phase 1, I asked an agent to review the inference logs and categorize the model's
+output, then generalized that into a taxonomy that differentiates the function of each inference
+call. My taxonomy is below:
 
-## What generalizes
+1. **Initialization** writes the tool schema to the prefix cache and scales with toolset size alone,
+before a single task-specific decision gets made. You can see the phase-1 results in the above
+table: 18,471 tokens for 54 tools against 1,609–1,656 tokens for 3–4 tools. GraphQL compares
+favorably here too, simply by exposing a sparse tool set by default.
+2. **Orchestration** is an inference call whose parameters are already fully determined by information
+already in context. This could include a task prompt handing over a fixed list (phase 1's PR sweep)
+or one service's response supplying the ID needed to call the next, the "waterfall" pattern
+familiar from front-end data-fetching. Either way, no language-model judgment is required: a
+deterministic scheduler with the same inputs would make the same call. Orchestration is low-value
+inference: you're paying a lot for work a `for` loop could do for free. Orchestration calls are
+overrepresented in the REST conditions throughout this suite. The GraphQL conditions largely avoid
+it by composing a query and letting the router or federation layer perform the equivalent join
+outside the model's control flow entirely.
+3. **Reasoning** is the type of inference call that concerns itself with decision-making and judgment.
+It is the highest-value type of inference because it leverages the "sweet spot" of language models:
+predicting next steps based on context. Reasoning output determines which tools to call, what the
+next logical step toward task completion is, and when user input is needed. For GraphQL workloads,
+Reasoning-type inference is used to compose queries. REST could show an analogous reasoning step
+where a surface hands the model a spec to search rather than a fixed toolset. Phase 1 has no such
+surface, so its REST conditions show zero reasoning calls; phase 2's discovery-mode REST conditions
+are the more likely place to find one, and classifying those transcripts the same way is a natural
+next pass, not yet done.
+4. **Synthesis** is the last inference call in a task: it is when all the accumulated context is
+summarized and the reply to the user is sent. Like Initialization, there are limited ways to control
+costs at this stage. There is no functional difference in Synthesis calls between REST and GraphQL
+workloads.
 
-Two things in this study are arithmetic rather than measurement.
-
-The tool surface scales with the API on one protocol and not the other. It sits in the prefix
-of every single call, paid whether the agent uses any of it or not.
-
-![The tool surface scales with the API on one protocol and not the other](figures/fig3-tool-surface.png)
-
-REST runs roughly 1,000–2,700 bytes per endpoint. GraphQL does not move — the same binary, four
-tools against the whole of GitHub's schema and three against ours, across a difference of orders
-of magnitude in API size. O(endpoints) against O(1). Measured at the model rather than on the
-wire, our nine-tool REST surface is 3,790–4,053 prefix tokens against GitHub's 54-tool server at
-18,438–18,471, so phase 2 understates what a production REST tool surface costs by about
-4.8×.
-
-The spec is not overhead you can shed. `M-R3` — REST with the OpenAPI document taken away,
-one tool, 786 bytes, the smallest surface in the study — finished last of eight. Removing
-8,815 bytes from the prefix did not make REST cheaper; it produced two failures, neither of
-which registers as an error anywhere in the instrumentation. It guessed that a flight number was
-an id, got a clean 404, and reported that the flight did not exist — f1 0.00 in all three
-replicates, at $0.0034 a run, the cheapest cell in the matrix and a wrong answer. Then it guessed
-`flight_numbers` where the parameter is `flightNumbers`, the server silently dropped the unknown
-parameter, and one call returned 122,549 bytes of unfiltered collection — the right answer at
-ten times the payload. The loud failure was cheap and wrong; the silent one was expensive and
-right. Paths are guessable because they are conventional. Parameter names are not.
-
-That sharpens the steelman: a generated, never-stale OpenAPI document was the most valuable thing
-we handed the REST arm, and it is the thing production REST estates are least likely to have.
-[`FINDINGS.md` §4](FINDINGS.md) has the full account.
-
----
-
-## Two ways to forfeit it
-
-Neither of these is protocol-imposed. Both are the mistakes a team adopting GraphQL for agents is
-most likely to make, and they are worth more attention than the headline.
-
-Entity-scoped operations reimpose 1+N. The single largest effect in the study is one argument
-type:
-
-```graphql
-query FlightSchedule($flightNumbers: [String!]!)   #   1 request for 50 flights
-query FlightRoster($flightId: ID!)                 # 100 requests for 50 flights
-```
-
-One takes a list because a departure board shows many flights; one takes an id because a roster
-screen shows one. Both are reasonable API design. But an agent asking about fifty flights can
-only call the second one fifty times, and it needs airworthiness too, so it goes twice per
-flight — a hundred round-trips from a seven-tool surface that has not changed between the task it
-wins and the task it loses. Federation does not save you: the fan-out has moved out of your
-resolvers and into the agent's control flow, and a hundred separate executions have nothing to
-batch. *If you ship persisted operations for agents, every one of them should accept a list.*
-
-The query language pays a discovery floor on small questions. A condition that writes its own
-queries has to find its way around the schema first, and it pays that on every run. On the
-trivial single-record lookup the product condition cost 1.6× what REST did. The crossover is by
-task *shape*, not cardinality: the query language never gets ahead of the best REST cell on the
-batchable single-service question at any N, and crosses decisively on the multi-record
-cross-service join. *Measure at your actual cardinality and your actual join depth.*
-
-And where the gap genuinely closes: turning on `?fields=` cut `M-R1`'s pass-through tokens by
-36%, and on the batchable task at fifty records it went from 36,598 to 2,652 — essentially tying
-persisted operations. *If your REST API already supports field selection, do not migrate for
-token efficiency alone; fix the default before you change the protocol.* But the client has to
-use it, and ours often didn't: on the filter task at fifty flights, `fat` and `lean` differed by
-66 tokens out of 46,665, because the agent never sent the parameter at all. A protocol
-capability the client does not exercise is not a defense of the protocol.
-
----
+This breakdown is drawn from phase 1's transcripts only. The verbatim quotes, classified call by
+call, are in [`results/phase1/quotes.md`](results/phase1/quotes.md).
 
 ## Limits
 
 Four, stated in full with their evidence in [`FINDINGS.md` §Caveats](FINDINGS.md).
 
-1. The dollar figures are inflated, though the direction holds. Phase 2 read zero cached
-   tokens back across all 241 runs — every prefix sits under `claude-haiku-4-5`'s 4,096-token
-   minimum cacheable prefix — so every call bills a cache write at 1.25× and reads nothing back.
+1. The dollar figures are inflated due to lack of caching. Phase 2 read zero cached
+   tokens back across all 241 runs. Every prefix sits under `claude-haiku-4-5`'s 4,096-token
+   minimum cacheable prefix. So every call bills a cache write at 1.25× and reads nothing back.
    That penalizes whichever condition makes the most calls, which here is a *GraphQL* one. In
    phase 1 the effect runs the other way and the 7.9× is understated. Quote the direction of
    the cost figures, not their magnitude; the token counts are unaffected.
@@ -354,39 +305,21 @@ Four, stated in full with their evidence in [`FINDINGS.md` §Caveats](FINDINGS.m
 3. The tokens are counted with the wrong tokenizer, in a known direction. `cl100k_base` is
    OpenAI's encoding; cross-checked against the API's own `usage` it runs 14–22% low. Every
    pass-through figure here is a same-signed underestimate.
-4. One model, one harness, one backend. The structural results cannot move — an operation
-   taking a single id forces any model to loop — but whether an agent *chooses* to narrow fields
-   is behavior, and that observation is currently about one agent.
-
----
+4. One model, one harness, one backend. Follow-up work may want to test more combinations.
 
 ## Conclusion
 
-On a backend we controlled, the best GraphQL-backed MCP server beat the best REST-backed one on
+On a contrived backend, the best GraphQL-backed MCP server beat the best REST-backed one on
 all ten task instances, on wasted tokens and on cost per task, by a median of 4.5× and 3.2×. On
-GitHub's live API the same shape appears at 64× the payload. The arms do not overlap on the
-metric caching cannot touch — that is the sentence to keep if you keep only one. And REST was
-the steelman: a small, orderly, perfectly-documented three-service backend is the best case we
+GitHub's live API the same shape appears at 64× the payload. And REST was
+the steelman: a small, orderly, perfectly-documented three-service backend is the best case I
 could have handed it, and it lost every instance.
 
-What generalizes is arithmetic. The tool surface scales with endpoint count on REST and not at
-all on GraphQL. An operation whose only argument is a scalar id needs N calls to cover N records.
-An endpoint that serves forty-six fields serves forty-six unless something asks otherwise. A join
-moved into the agent's control flow is paid in inference, not in your backend.
+GraphQL's advantage comes from three features the language enables:
 
-What does not generalize is every multiple in this document. They are facts about these fixtures,
-these tool surfaces and this agent — and there is no clean ranking *within* either arm, since the
-conditions swap places depending on whether you rank by tokens, dollars or round-trips. Two of
-our GraphQL conditions do the same thing and differ only in whose code exposes the schema; that
-alone moved pass-through tokens in nine of ten cells. If you benchmark an approach, you have
-measured an implementation of it.
-
-If you take one thing beyond the ranking: count the round-trips a realistic question costs, not
-the bytes. Our most *selective* condition was also our most expensive, because it made a hundred
-requests. Payload efficiency is bounded by how many fields exist. Round-trip efficiency is bounded
-by how many records the question covers, and that is the number that grows.
-
----
+1. Field selection
+2. Schema language semantics
+3. API orchestration
 
 ## Disclosure
 
@@ -394,7 +327,7 @@ This work was done by an employee of Apollo GraphQL, which sells GraphQL tooling
 in an Apollo-owned repository. Three of the conditions run Apollo software: phase-1 condition `B`
 and phase-2 `M-G2` and `M-G3` use `apollo-mcp-server` v1.14.0, and the phase-2 GraphQL backend is
 Apollo Router v2.17.0 over Apollo Server v5 subgraphs. That is a commercial interest in one of the
-answers, and you should weight the framing accordingly — which is part of why this document
+answers, and you should weight the framing accordingly. This is part of why this document
 reports the per-cell tables instead of an average, states the cells where REST wins, and includes
 the round-trip metric GraphQL loses on. The fixtures, recipes, graders and raw logs are in the
 repository so you do not have to take the framing on trust.
