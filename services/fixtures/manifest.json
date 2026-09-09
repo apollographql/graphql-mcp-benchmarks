@@ -1,0 +1,32 @@
+{
+  "generated": [
+    {
+      "entity": "Flight",
+      "service": "scheduling",
+      "count": 2000,
+      "canonicalFields": 46,
+      "sha256": "ae4a827e170031069c05b97a15dd3a13829395a1b19df8563771be9269207799"
+    },
+    {
+      "entity": "Aircraft",
+      "service": "fleet",
+      "count": 300,
+      "canonicalFields": 36,
+      "sha256": "cab761e28ba4cc489d5cd1d8f807fba3b5ca384172b5e62a3d4dfe8a0c150ae0"
+    },
+    {
+      "entity": "CrewMember",
+      "service": "personnel",
+      "count": 900,
+      "canonicalFields": 26,
+      "sha256": "001eefc5e826725406d7ba0f688398f854e50f769414ebae3fc64458a1dcceeb"
+    },
+    {
+      "entity": "Assignment",
+      "service": "personnel",
+      "count": 8000,
+      "canonicalFields": 11,
+      "sha256": "3e7076388108376ae9ea236b771f6227c5fedf274aaef43abe05523ff12c4363"
+    }
+  ]
+}

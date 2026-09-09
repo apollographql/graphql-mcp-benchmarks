@@ -1,0 +1,35 @@
+# Who is crewing one flight, and what each of them is qualified to fly.
+#
+# The crew-scheduling roster view. Type ratings belong here because the question
+# a scheduler asks of a roster is "is this crew legal for this flight" — but the
+# airframe itself is fleet data, so which model the flight is actually operating
+# comes from FlightAirworthiness or AircraftDetail rather than being duplicated
+# into every roster read.
+query FlightRoster($flightId: ID!) {
+  flight(id: $flightId) {
+    id
+    flightNumber
+    scheduledDeparture
+    crewBaseCode
+    assignments {
+      id
+      role
+      dutyStatus
+      deadhead
+      reportTime
+      crew {
+        id
+        name
+        employeeNumber
+        rank
+        status
+        base
+        typeRatings {
+          model
+          certifiedAt
+          expiresAt
+        }
+      }
+    }
+  }
+}

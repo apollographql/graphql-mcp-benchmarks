@@ -42,13 +42,17 @@ do_setup() {
   ensure_docker || return 1
   _need gh "Install GitHub CLI and run: gh auth login" || return 1
   _need rover "Install: https://www.apollographql.com/docs/rover/getting-started" || return 1
-  # Condition B2 shells out to `rover schema search` / `rover schema describe`, which
-  # were added in rover v0.38/v0.40. An older rover satisfies `command -v rover` but
-  # makes B2 fail at run time, so probe the capability here instead of at first use.
+  # Conditions B2 and M-G1 shell out to `rover schema search` / `rover schema describe`,
+  # which were added in rover v0.38/v0.40. An older rover satisfies `command -v rover`
+  # but makes them fail at run time, so probe the capability here instead of at first use.
+  # (Phase 2's other rover uses — `supergraph compose` and `dev` — are much older and
+  # are not covered by this probe.)
   if ! rover schema --help >/dev/null 2>&1; then
     echo "WARNING: this rover ($(rover --version 2>/dev/null | head -1)) has no 'rover schema' subcommand."
-    echo "         Condition B2 requires 'rover schema search'/'describe' (rover >= v0.40) and will fail."
-    echo "         Upgrade rover, drop B2 with CONDITIONS=A1,A2,B, or place a newer rover in ./bin"
+    echo "         Conditions B2 (servers/rover_schema_mcp.py) and M-G1"
+    echo "         (servers/supergraph_mcp.py) require 'rover schema search'/'describe'"
+    echo "         (rover >= v0.40) and will fail."
+    echo "         Upgrade rover, drop those conditions, or place a newer rover in ./bin"
     echo "         (already first on PATH, same as apollo-mcp-server)."
   fi
   _need uv "Install: https://docs.astral.sh/uv/" || return 1
@@ -56,6 +60,14 @@ do_setup() {
   ensure_token || return 1
 
   # --- Goose CLI ---
+  # Every other version in this study is pinned; Goose was not, and its version was
+  # recorded in no meta.json. That is the one component the largest cost caveat
+  # blames ("this is the client's breakpoint placement"), so an unpinned, unrecorded
+  # version made the caveat unfalsifiable by anyone including us. The published
+  # matrix ran on GOOSE_VERSION below. `brew install` and the `stable` channel both
+  # move, so this warns loudly rather than failing: pinning an installed Goose is
+  # not something setup can do for you.
+  : "${GOOSE_VERSION:=1.37.0}"     # the version the published matrix ran on
   if ! command -v goose >/dev/null 2>&1; then
     echo "Installing Goose..."
     if command -v brew >/dev/null 2>&1; then
@@ -66,7 +78,16 @@ do_setup() {
     fi
   fi
   command -v goose >/dev/null 2>&1 || { echo "ERROR: Goose install failed; install it manually (https://goose-docs.ai/docs/getting-started/installation)"; return 1; }
-  echo "goose: $(command -v goose)"
+  local goose_have; goose_have="$(goose --version 2>&1 | head -1 | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
+  echo "goose: $(command -v goose) (${goose_have:-unknown})"
+  if [ -n "$goose_have" ] && [ "$goose_have" != "$GOOSE_VERSION" ]; then
+    echo "WARNING: goose ${goose_have} != the published matrix's ${GOOSE_VERSION}."
+    echo "         Harness behaviour — turn handling, cache_control placement, tool"
+    echo "         serialization — is not held constant across Goose versions, and"
+    echo "         NOTES.md 51/69 turn on exactly that. Results are still recorded"
+    echo "         (run_benchmark.py writes goose_version into every meta.json), but"
+    echo "         they are not directly comparable to the published numbers."
+  fi
 
   # Minimal Goose config so headless runs pick up provider/model (env still overrides).
   local gcfg="$HOME/.config/goose/config.yaml"
@@ -84,6 +105,17 @@ do_setup() {
   mkdir -p "$PROJECT_ROOT/bin"
   if [ ! -x "$PROJECT_ROOT/bin/apollo-mcp-server" ]; then
     local ver="${APOLLO_BIN_VERSION:-v1.14.0}"
+    # aarch64-apple-darwin only. Reproducing this repo needs an Apple Silicon Mac
+    # (or a hand-placed bin/apollo-mcp-server for your platform) — stated here
+    # because the README's "one command" reads as portable and is not.
+    case "$(uname -s)/$(uname -m)" in
+      Darwin/arm64) ;;
+      *) echo "ERROR: setup only downloads the aarch64-apple-darwin build of"
+         echo "       apollo-mcp-server. On $(uname -s)/$(uname -m), fetch the matching"
+         echo "       release from github.com/apollographql/apollo-mcp-server and place"
+         echo "       it at bin/apollo-mcp-server, then re-run setup."
+         return 1 ;;
+    esac
     local tarball="apollo-mcp-server-${ver}-aarch64-apple-darwin.tar.gz"
     local url="https://github.com/apollographql/apollo-mcp-server/releases/download/${ver}/${tarball}"
     echo "Downloading Apollo MCP Server ${ver} ..."
@@ -114,6 +146,34 @@ do_setup() {
 import os, sys
 src, dst = sys.argv[1], sys.argv[2]
 open(dst, "w").write(open(src).read().replace("@@SDL_PATH@@", os.environ["SDL_ABS"]))
+print("wrote", dst)
+PY
+
+  # --- Render the phase-2 Apollo config (M-G2) with absolute paths ---
+  # Rendered unconditionally: it costs nothing, and the phase-2 conditions fail
+  # confusingly if the file is missing. The supergraph itself is built by
+  # `cd services && pnpm build`, which is a separate (node + rover) prerequisite.
+  SUPERGRAPH_ABS="$PROJECT_ROOT/services/generated/supergraph.graphql" \
+  OPERATIONS_ABS="$PROJECT_ROOT/services/operations" \
+  python3 - "$PROJECT_ROOT/config/apollo-mcp.phase2.yaml" "$PROJECT_ROOT/config/apollo-mcp.phase2.local.yaml" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read()
+text = text.replace("@@SUPERGRAPH_PATH@@", os.environ["SUPERGRAPH_ABS"])
+text = text.replace("@@OPERATIONS_DIR@@", os.environ["OPERATIONS_ABS"])
+open(dst, "w").write(text)
+print("wrote", dst)
+PY
+
+  # --- Render the phase-2 dynamic Apollo config (M-G3) ---
+  # Same substitution, one placeholder: this config has no `operations:` block.
+  SUPERGRAPH_ABS="$PROJECT_ROOT/services/generated/supergraph.graphql" \
+  python3 - "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.yaml" \
+           "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.local.yaml" <<'PY'
+import os, sys
+src, dst = sys.argv[1], sys.argv[2]
+text = open(src).read().replace("@@SUPERGRAPH_PATH@@", os.environ["SUPERGRAPH_ABS"])
+open(dst, "w").write(text)
 print("wrote", dst)
 PY
 

@@ -1,0 +1,48 @@
+# Apollo MCP Server config — phase-2 condition M-G2 (front-loaded GraphQL).
+#
+# The mirror of M-R1: every operation the agent can run is decided in advance and
+# baked into the cached prefix. Where M-R1's nine tools are generated from the
+# OpenAPI docs, M-G2's seven come from services/operations/*.graphql — frozen and
+# dated BEFORE any task was authored (see services/operations/README.md), because
+# an operation set written with the tasks in hand would be a strawman on the REST
+# side of the comparison.
+#
+# TEMPLATE. lib/setup.sh substitutes the absolute paths and writes
+# config/apollo-mcp.phase2.local.yaml (gitignored), which is what the recipe runs.
+#
+# Prerequisite: the stack must be up and composed.
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait && cd services && pnpm health
+endpoint: http://localhost:5000
+
+transport:
+  type: stdio
+
+# Apollo writes plain-text log lines to stdout by default, which corrupts the
+# JSON-RPC stream before the MCP handshake begins. This cost an afternoon in
+# phase 1; do not remove it.
+logging:
+  path: /tmp/apollo-mcp-phase2.log
+
+schema:
+  source: local
+  path: "@@SUPERGRAPH_PATH@@"
+
+# The frozen set. Each named operation becomes one MCP tool.
+operations:
+  source: local
+  paths:
+    - "@@OPERATIONS_DIR@@"
+
+# No dynamic tools. Enabling any of these would make M-G2 "M-R1's mirror plus an
+# escape hatch" and blur it into M-G1, which is the condition that measures
+# on-demand GraphQL. The whole 2x2 depends on this staying off.
+introspection:
+  execute:
+    enabled: false
+  introspect:
+    enabled: false
+  search:
+    enabled: false
+  validate:
+    enabled: false

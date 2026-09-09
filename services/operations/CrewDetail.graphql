@@ -1,0 +1,30 @@
+# One crew member, in full.
+#
+# The personnel record behind a crew-scheduling profile: qualifications,
+# certificates, duty accumulation, and contact details.
+query CrewDetail($id: ID!) {
+  crewMember(id: $id) {
+    id
+    name
+    employeeNumber
+    base
+    rank
+    status
+    typeRatings {
+      model
+      certifiedAt
+      expiresAt
+      checkRideAt
+      simulatorHours
+    }
+    dutyHoursLast7d
+    dutyHoursLast30d
+    seniorityDate
+    medicalCertExpiresAt
+    passportExpiresAt
+    languages
+    qualifications
+    contactEmail
+    contactPhone
+  }
+}

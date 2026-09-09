@@ -45,6 +45,11 @@ fi
 : "${ENABLE_ROVER:=0}"
 : "${CONDITIONS:=}"   # comma-separated subset, e.g. A1,B2 — empty means all
 : "${TASKS:=}"        # comma-separated subset, e.g. T2    — empty means all
+# Which payload profile the phase-2 REST stack is serving. The REST services read
+# it at container start, so this only DECLARES what is running; the gate in
+# run_benchmark.py asks the stack and refuses to proceed if they disagree. The six
+# phase-2 cells are two passes: fat (all four M-* conditions) then lean (M-R* only).
+: "${PAYLOAD_PROFILE:=fat}"
 # Download version for the apollo-mcp-server binary. Deliberately NOT named with
 # the APOLLO_MCP_ prefix: the Apollo MCP server reads every APOLLO_MCP_* env var
 # as a config override, so APOLLO_MCP_VERSION parses as the unknown config key
@@ -52,7 +57,7 @@ fi
 # .env for back-compat, then unset it so it can't leak into the server process.
 : "${APOLLO_BIN_VERSION:=${APOLLO_MCP_VERSION:-v1.14.0}}"
 unset APOLLO_MCP_VERSION
-export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION CONDITIONS TASKS
+export REPO WINDOW_START WINDOW_END FILE_PATH MODEL REPS PORT MAX_TURNS ENABLE_ROVER APOLLO_BIN_VERSION CONDITIONS TASKS PAYLOAD_PROFILE
 
 # shellcheck source=lib/setup.sh
 . "$PROJECT_ROOT/lib/setup.sh"
@@ -140,8 +145,32 @@ PY
 }
 
 # ---------------------------------------------------------------------------
+# Does the CONDITIONS filter select anything from this phase? Empty means all.
+wants_phase() {
+  local phase="$1"
+  [ -z "${CONDITIONS:-}" ] && return 0
+  case "$phase" in
+    1) [[ ",$CONDITIONS," == *",A1,"* || ",$CONDITIONS," == *",A2,"* \
+       || ",$CONDITIONS," == *",B,"*  || ",$CONDITIONS," == *",B2,"* \
+       || ",$CONDITIONS," == *",C,"* ]] ;;
+    2) [[ ",$CONDITIONS," == *",M-"* ]] ;;
+  esac
+}
+
+# Phase 1 and phase 2 capture different backends with different prerequisites, so
+# they are separable: a down phase-2 stack must not stop A1/A2 being captured, and
+# a missing GitHub PAT must not stop the phase-2 surfaces being checked.
 do_capture() {
-  echo "== capture (real MCP tool surfaces + response shapes) =="
+  local rc=0
+  if wants_phase 1; then capture_phase1 || rc=1; fi
+  if wants_phase 2; then capture_phase2 || rc=1; fi
+  capture_summary
+  return $rc
+}
+
+# ---------------------------------------------------------------------------
+capture_phase1() {
+  echo "== capture phase 1 (GitHub's live API) =="
   ensure_prereqs_min
   ensure_docker   # A1/A2 capture the GitHub MCP server via Docker
   [ -f "$PROJECT_ROOT/config/apollo-mcp.github.local.yaml" ] || { echo "ERROR: run setup first (missing rendered Apollo config)"; return 1; }
@@ -210,48 +239,255 @@ PY
   python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
     --label B2 --out "$PROJECT_ROOT/capture/B2.json" --calls "$b2_calls" \
     -- "$PROJECT_ROOT/servers/rover_schema_mcp.py" "$PROJECT_ROOT/config/github.graphql" || true
+}
 
+# ---------------------------------------------------------------------------
+capture_phase2() {
+  echo "== capture phase 2 (the synthetic three-service stack) =="
+  ensure_prereqs_min
+  mkdir -p "$PROJECT_ROOT/capture"
+  [ -f "$PROJECT_ROOT/config/apollo-mcp.phase2.local.yaml" ] || { echo "ERROR: run setup first (missing rendered phase-2 Apollo config)"; return 1; }
+  [ -f "$PROJECT_ROOT/services/generated/supergraph.graphql" ] || { echo "ERROR: run 'cd services && pnpm build' first (missing composed supergraph)"; return 1; }
+
+  # tools/list needs only the generated specs and SDL on disk, so the surface
+  # check at the end works with the stack down. The representative CALLS need the
+  # services, so say so plainly rather than letting three of them just fail.
+  if ! (cd "$PROJECT_ROOT/services" && pnpm health --quiet >/dev/null 2>&1); then
+    echo "   NOTE: stack is down. Tool surfaces will still be captured and checked, but"
+    echo "         the representative tool calls will fail. Bring it up first if you want"
+    echo "         response shapes too:  docker compose up -d --wait"
+  fi
+
+  # Representative calls, drawn from tasks/expected.json so they name records that
+  # exist rather than ids invented here.
+  local calls_file="$PROJECT_ROOT/capture/.m-calls.json"
+  python3 - "$PROJECT_ROOT" "$calls_file" <<'CALLS_EOF'
+import json, sys
+root, out = sys.argv[1], sys.argv[2]
+exp = json.load(open(f"{root}/tasks/expected.json"))
+numbers = exp["M1@5"]["sample"]["flightNumbers"][:3]
+origin = exp["M4@20"]["sample"]["origin"]
+fid = exp["M2@1"]["sample"]["flightIds"][0]
+aircraft = exp["M2@1"]["sample"].get("aircraftId", "AC-0160")
+gql = ("query { flightsByNumbers(flightNumbers: %s) { flightNumber scheduledDeparture gate } }"
+       % json.dumps(numbers))
+json.dump({
+  "M-R1": [
+    {"name": "listFlight", "arguments": {"origin": origin, "limit": 5}},
+    {"name": "getFlight", "arguments": {"id": fid}},
+    {"name": "listAircraftAdvisories", "arguments": {"id": aircraft}},
+  ],
+  "M-R2": [
+    {"name": "openapi_search", "arguments": {"query": "flight gate departure"}},
+    {"name": "openapi_describe", "arguments": {"operation": "listFlight"}},
+    {"name": "rest_request", "arguments": {"service": "scheduling", "path": "/v2/flights",
+                                           "query": {"origin": origin, "limit": "5"}}},
+  ],
+  "M-R3": [
+    {"name": "rest_request", "arguments": {"service": "scheduling", "path": "/v2/flights",
+                                           "query": {"origin": origin, "limit": "5"}}},
+  ],
+  "M-G1": [
+    {"name": "schema_search", "arguments": {"query": "flight"}},
+    {"name": "schema_describe", "arguments": {"coord": "Flight.gate"}},
+    {"name": "graphql_execute", "arguments": {"query": gql}},
+  ],
+  "M-G3": [
+    {"name": "search", "arguments": {"terms": ["flight", "gate", "departure"]}},
+    {"name": "execute", "arguments": {"query": gql}},
+  ],
+  "M-G2": [
+    {"name": "FlightSchedule", "arguments": {"flightNumbers": numbers}},
+    {"name": "FlightRoster", "arguments": {"flightId": fid}},
+    {"name": "FlightAirworthiness", "arguments": {"flightId": fid}},
+  ],
+}, open(out, "w"), indent=2)
+CALLS_EOF
+
+  local m_calls
+  m_calls() { python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1]))[sys.argv[2]]))' "$calls_file" "$1"; }
+
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-R1 --out "$PROJECT_ROOT/capture/M-R1.json" --calls "$(m_calls M-R1)" \
+    -- "$PROJECT_ROOT/servers/openapi_mcp.py" --mode tools || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-R2 --out "$PROJECT_ROOT/capture/M-R2.json" --calls "$(m_calls M-R2)" \
+    -- "$PROJECT_ROOT/servers/openapi_mcp.py" --mode discovery || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-R3 --out "$PROJECT_ROOT/capture/M-R3.json" --calls "$(m_calls M-R3)" \
+    -- "$PROJECT_ROOT/servers/openapi_mcp.py" --mode bare || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-G1 --out "$PROJECT_ROOT/capture/M-G1.json" --calls "$(m_calls M-G1)" \
+    -- "$PROJECT_ROOT/servers/supergraph_mcp.py" || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-G2 --out "$PROJECT_ROOT/capture/M-G2.json" --calls "$(m_calls M-G2)" \
+    -- "$PROJECT_ROOT/bin/apollo-mcp-server" "$PROJECT_ROOT/config/apollo-mcp.phase2.local.yaml" || true
+  python3 "$PROJECT_ROOT/capture/capture_mcp.py" \
+    --label M-G3 --out "$PROJECT_ROOT/capture/M-G3.json" --calls "$(m_calls M-G3)" \
+    -- "$PROJECT_ROOT/bin/apollo-mcp-server" \
+       "$PROJECT_ROOT/config/apollo-mcp.phase2-dynamic.local.yaml" || true
+
+  rm -f "$calls_file"
+
+  # Hard gate. A front-loaded tool surface sits in the cached prefix of every run,
+  # so a change here moves a published cost with nothing in the results to show it.
+  echo "-- phase-2 tool surfaces vs the pinned baseline --"
+  python3 "$PROJECT_ROOT/capture/check_surfaces.py" "$PROJECT_ROOT/capture" \
+    --require=M-R1,M-R2,M-R3,M-G1,M-G2,M-G3 || return 1
+}
+
+# ---------------------------------------------------------------------------
+capture_summary() {
   # Summarize into capture/SUMMARY.md (referenced by NOTES.md).
-  python3 - "$PROJECT_ROOT/capture" <<'PY'
+  python3 - "$PROJECT_ROOT/capture" <<'SUMMARY_EOF'
 import json, glob, os, sys
+
 d = sys.argv[1]
+# Labels absent from this map are silently dropped from SUMMARY.md, which is how
+# M-G3 went unrendered after it was added. Every condition goes here.
+PHASE = {"A1": 1, "A2": 1, "B": 1, "B2": 1, "C": 1,
+         "M-R1": 2, "M-R2": 2, "M-R3": 2, "M-G1": 2, "M-G2": 2, "M-G3": 2}
+
+# Only capture reports, keyed by label. The directory also holds
+# expected-tool-surfaces.json (the pinned baseline), which has no label and used
+# to render as a `| None | ? | ? |` row in the published table.
+reports = {}
+for f in sorted(glob.glob(os.path.join(d, "*.json"))):
+    try:
+        r = json.load(open(f))
+    except (json.JSONDecodeError, ValueError):
+        continue
+    if r.get("label") in PHASE:
+        reports[r["label"]] = r
+
 out = ["# Captured MCP tool surfaces & response shapes\n",
        "Generated by `./bench.sh capture`. Used to ground claims in actual MCP output.\n",
-       "| Condition | # tools | tools/list bytes | representative calls (name: result bytes) |",
-       "|---|---|---|---|"]
-for f in sorted(glob.glob(os.path.join(d, "*.json"))):
-    r = json.load(open(f))
-    calls = "; ".join(f"{c.get('name')}: {c.get('result_bytes','err')}" for c in r.get("calls", []))
-    out.append(f"| {r.get('label')} | {r.get('n_tools','?')} | {r.get('tools_list_bytes','?')} | {calls} |")
+       "The two phases are separate experiments against different backends — the table is "
+       "grouped, and a row from one phase is not comparable with a row from the other.\n"]
+
+SECTIONS = [
+    (1, "Phase 1 — GitHub's live API",
+     "`tools/list bytes` is the tool-schema overhead a condition pays in the cached prefix of "
+     "every run, before the agent makes a single call. These figures come from GitHub's live "
+     "MCP server and live GraphQL schema, so they are **not** reproducible from this "
+     "repository at a later date and are not pinned (PHASE2_PLAN.md §11)."),
+    (2, "Phase 2 — the synthetic three-service stack",
+     "Generated from hash-pinned local fixtures, so these are exactly reproducible and ARE "
+     "pinned: `capture/expected-tool-surfaces.json` owns the numbers and "
+     "`capture/check_surfaces.py` fails the capture if any of them moves. The pairs to read "
+     "together are M-R2 vs M-G1 (same tool count and shape — the clean protocol comparison) "
+     "and M-R1 vs M-G2 (both front-loaded — how production deployments actually look)."),
+]
+
+for phase, title, blurb in SECTIONS:
+    rows = [(k, r) for k, r in reports.items() if PHASE[k] == phase]
+    if not rows:
+        continue
+    out.append(f"\n## {title}\n")
+    out.append(blurb + "\n")
+    out.append("| Condition | # tools | tools/list bytes | representative calls (name: result bytes) |")
+    out.append("|---|---|---|---|")
+    for label, r in sorted(rows, key=lambda kv: list(PHASE).index(kv[0])):
+        calls = "; ".join(f"{c.get('name')}: {c.get('result_bytes', 'err')}"
+                          for c in r.get("calls", []))
+        flag = "" if r.get("ok") else " **(capture failed)**"
+        out.append(f"| {label}{flag} | {r.get('n_tools', '?')} | "
+                   f"{r.get('tools_list_bytes', '?')} | {calls} |")
+
 out.append("\nFull payloads (including result previews) are in `capture/<label>.json`.\n")
-out.append("Key point: a large `# tools` / `tools/list bytes` is the tool-schema overhead the "
-           "REST condition pays on every cached prefix; GraphQL exposes only 4 tools.\n")
 open(os.path.join(d, "SUMMARY.md"), "w").write("\n".join(out) + "\n")
 print("wrote", os.path.join(d, "SUMMARY.md"))
-PY
+SUMMARY_EOF
   echo "== capture done (see capture/SUMMARY.md) =="
 }
 
 # ---------------------------------------------------------------------------
 do_run() {
-  echo "== run matrix =="
+  local phase; phase=$(selected_phase) || return 1
+  echo "== run matrix (phase $phase) =="
   ensure_prereqs_min
   # GitHub MCP (A1/A2) needs Docker; skip the check only if the filter excludes them.
   if [ -z "${CONDITIONS:-}" ] || [[ ",$CONDITIONS," == *",A1,"* ]] || [[ ",$CONDITIONS," == *",A2,"* ]]; then
     ensure_docker
   fi
-  uv run "$PROJECT_ROOT/run_benchmark.py"
+  # Each phase gets its own tree. run_benchmark.py's own services_up() gate handles
+  # the phase-2 stack; this just keeps the two sets of artifacts apart.
+  RUNS_DIR="$PROJECT_ROOT/runs/phase$phase" uv run "$PROJECT_ROOT/run_benchmark.py"
+}
+
+# Which phase the selected CONDITIONS belong to. Refuses a mix for the same reason
+# parse_logs.py does: they are separate experiments against separate backends, and
+# a merged tree invites the invalid comparison. Empty CONDITIONS defaults to 1,
+# the historical behaviour.
+selected_phase() {
+  local one=0 two=0
+  if [ -z "${CONDITIONS:-}" ]; then echo 1; return 0; fi
+  wants_phase 1 && one=1
+  wants_phase 2 && two=1
+  if [ "$one" = 1 ] && [ "$two" = 1 ]; then
+    echo "ERROR: CONDITIONS mixes phases ($CONDITIONS). Run each phase separately —" >&2
+    echo "       they use different backends and produce separate reports." >&2
+    return 1
+  fi
+  [ "$two" = 1 ] && echo 2 || echo 1
 }
 
 do_parse() {
-  echo "== parse =="
-  python3 "$PROJECT_ROOT/parse_logs.py"
+  local phase; phase=$(selected_phase) || return 1
+  echo "== parse (phase $phase) =="
+  RESULTS_DIR="$PROJECT_ROOT/results/phase$phase" \
+    python3 "$PROJECT_ROOT/parse_logs.py" "$PROJECT_ROOT/runs/phase$phase" || return 1
+  # A regenerated report can leave a hand-written document quoting the old number,
+  # which is what happened to FINDINGS.md for a week (NOTES.md 71). Advisory, not
+  # fatal: a parse of one phase cannot satisfy figures the other phase owns.
+  python3 "$PROJECT_ROOT/doclint.py" || {
+    echo "NOTE: doclint above is advisory here — a single-phase parse cannot see the"
+    echo "      other phase's figures. Run both parses, then \`python3 doclint.py\`."
+  }
 }
 
 do_clean() {
   rm -rf "$PROJECT_ROOT/runs" "$PROJECT_ROOT/results"
-  rm -f "$PROJECT_ROOT/capture"/*.json "$PROJECT_ROOT/capture/SUMMARY.md"
-  echo "cleaned runs/, results/, capture/*.json"
+  # capture/*.json is generated EXCEPT for the pinned baseline, which is committed
+  # (see the !-exception in .gitignore) and is the only thing that can detect tool
+  # surface drift. Deleting it left check_surfaces.py with nothing to compare
+  # against, and it fails closed telling you to restore rather than regenerate —
+  # so `clean` used to break drift detection until someone ran git checkout.
+  find "$PROJECT_ROOT/capture" -maxdepth 1 -name '*.json' \
+    ! -name 'expected-tool-surfaces.json' -delete
+  rm -f "$PROJECT_ROOT/capture/SUMMARY.md"
+  echo "cleaned runs/, results/, capture/*.json (kept the pinned baseline)"
+}
+
+# ---------------------------------------------------------------------------
+# Every test suite, one command.
+#
+# Why this exists: there are five suites and they do NOT share an invocation.
+# `proxy/test_proxy_tool_io.py` needs `uv run`, because the proxy declares its
+# dependencies inline (PEP 723) and httpx is not on the system Python. That was
+# reported as "the proxy suite cannot run, httpx is missing" for several days --
+# three Pythons tried, never the one the file's own docstring names on line 6,
+# while README.md filed it under "stdlib, no framework". The suite was green the
+# whole time. A dispatcher is cheaper than remembering which is which.
+do_test() {
+  local rc=0
+  echo "== python suites =="
+  python3 "$PROJECT_ROOT/test_grade.py"        | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/test_parse_logs.py"   | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/servers/test_search.py" | tail -1 || rc=1
+  python3 "$PROJECT_ROOT/servers/test_modes.py"  | tail -1 || rc=1
+  echo "== proxy suite (uv: needs httpx/tiktoken from the inline script deps) =="
+  uv run "$PROJECT_ROOT/proxy/test_proxy_tool_io.py" | tail -1 || rc=1
+  echo "== services (node) =="
+  if [ -d "$PROJECT_ROOT/services/node_modules" ]; then
+    (cd "$PROJECT_ROOT/services" && pnpm test 2>&1 | grep -E '^# (tests|pass|fail)') || rc=1
+  else
+    echo "  skipped -- run \`cd services && pnpm install\` first"
+  fi
+  echo "== published figures and quoted prompts =="
+  python3 "$PROJECT_ROOT/doclint.py" | tail -1 || rc=1
+  [ "$rc" -eq 0 ] && echo "== all suites pass ==" || echo "== FAILURES above =="
+  return $rc
 }
 
 case "${1:-all}" in
@@ -260,7 +496,8 @@ case "${1:-all}" in
   capture)  do_capture ;;
   run)      do_run ;;
   parse)    do_parse ;;
+  test)     do_test ;;
   clean)    do_clean ;;
   all)      do_setup && do_precheck && do_capture && do_run && do_parse ;;
-  *) echo "usage: ./bench.sh [setup|precheck|capture|run|parse|clean|all]"; exit 2 ;;
+  *) echo "usage: ./bench.sh [setup|precheck|capture|run|parse|test|clean|all]"; exit 2 ;;
 esac

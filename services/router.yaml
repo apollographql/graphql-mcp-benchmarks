@@ -1,0 +1,33 @@
+# Apollo Router configuration for the phase-2 federated graph.
+#
+# Deliberately minimal. Anything that appends to a GraphQL response — tracing
+# extensions, APQ metadata, telemetry payloads — would land in the agent's
+# context and inflate the very token counts this benchmark measures. The
+# subgraphs already expose their own request counters on :51xx/__metrics for the
+# `backend_requests` metric (PHASE2_PLAN.md §6), so the router needs no
+# instrumentation of its own.
+
+supergraph:
+  listen: 127.0.0.1:5000
+  path: /
+  # Introspection stays on: schema-discovery conditions (M-G1) may use it, and
+  # `rover graph introspect` against the router is how the MCP server's local
+  # SDL copy gets refreshed.
+  introspection: true
+
+# Surface subgraph errors verbatim. A benchmark run that silently swallows a
+# subgraph failure would look like a cheap correct answer instead of a broken
+# one — the same failure mode NOTES.md records for Goose exiting 0.
+include_subgraph_errors:
+  all: true
+
+# Automatic persisted queries off. Conditions differ in how they send operations
+# and APQ would let a cache hit change the request shape between reps.
+apq:
+  enabled: false
+
+homepage:
+  enabled: false
+
+sandbox:
+  enabled: false

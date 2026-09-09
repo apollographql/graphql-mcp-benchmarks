@@ -1,0 +1,43 @@
+# One airframe, in full.
+#
+# The fleet-management record: configuration, lease, engines, inspection state,
+# and open advisories. Reached from a tail number on a board, or from the
+# `aircraftId` on a flight.
+query AircraftDetail($id: ID!) {
+  aircraft(id: $id) {
+    id
+    tailNumber
+    model
+    operator
+    homeBase
+    status
+    seatCount
+    cabinConfiguration
+    wifiEquipped
+    etopsCertified
+    deliveryDate
+    totalFlightHours
+    totalCycles
+    lastInspectionAt
+    inspectionDueAt
+    hoursSinceInspection
+    cyclesSinceInspection
+    ownershipType
+    lessor
+    leaseExpiresAt
+    engineManufacturer
+    engineModel
+    engineCount
+    advisories {
+      id
+      severity
+      requiresGrounding
+      category
+      description
+      referenceNumber
+      openedAt
+      estimatedClearanceAt
+      resolvedAt
+    }
+  }
+}

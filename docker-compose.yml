@@ -1,0 +1,143 @@
+# Phase-2 synthetic multi-service backend.
+#
+# Six application containers from ONE image (see services/Dockerfile) plus the
+# official Apollo Router. Both surfaces of a service run identical code over
+# identical data — that symmetry is part of the fairness argument, so resist the
+# urge to give REST and GraphQL different base images or build steps.
+#
+# Prerequisite: the router needs a composed supergraph schema, and composition
+# needs `rover` (a host tool, deliberately not baked into an image):
+#
+#   cd services && pnpm install && pnpm build
+#   docker compose up -d --wait
+#   cd services && pnpm verify:federation --live
+#
+# Knobs (both default sensibly, both apply identically to REST and GraphQL):
+#   PAYLOAD_PROFILE=lean      the steelman bracket — REST honors ?fields=
+#   SERVICE_LATENCY_MS=25     artificial per-read delay; leave 0 for token runs,
+#                             set it for wall-clock runs, or the router's fan-out
+#                             looks free
+#   ROUTER_VERSION=v2.17.0    pinned to the version `rover dev` runs locally, so
+#                             containerized and local results are comparable
+
+name: graphql-mcp-benchmarks
+
+x-service-image: &service-image
+  build:
+    context: ./services
+    dockerfile: Dockerfile
+  image: graphql-mcp-benchmarks/services:latest
+  restart: "no"
+  environment: &service-env
+    SERVICE_LATENCY_MS: ${SERVICE_LATENCY_MS:-0}
+    NODE_ENV: production
+
+x-graphql-healthcheck: &graphql-healthcheck
+  # The GraphQL health/metrics sidecar listens on the GraphQL port + 100, kept off
+  # the GraphQL schema so it never becomes part of the agent's tool surface.
+  interval: 3s
+  timeout: 3s
+  retries: 20
+  start_period: 5s
+
+services:
+  # ── GraphQL subgraphs ──────────────────────────────────────────────────────
+
+  scheduling-graphql:
+    <<: *service-image
+    container_name: bench-scheduling-graphql
+    command: ["node", "--import", "tsx", "src/server/graphql/serve.ts", "scheduling"]
+    ports: ["5001:5001", "5101:5101"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:5101/__health"]
+
+  fleet-graphql:
+    <<: *service-image
+    container_name: bench-fleet-graphql
+    command: ["node", "--import", "tsx", "src/server/graphql/serve.ts", "fleet"]
+    ports: ["5002:5002", "5102:5102"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:5102/__health"]
+
+  personnel-graphql:
+    <<: *service-image
+    container_name: bench-personnel-graphql
+    command: ["node", "--import", "tsx", "src/server/graphql/serve.ts", "personnel"]
+    ports: ["5003:5003", "5103:5103"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:5103/__health"]
+
+  # ── REST surfaces ──────────────────────────────────────────────────────────
+  # Same image, same data layer, same projection. PAYLOAD_PROFILE is process-level
+  # by design: a condition runs entirely in one profile and results are reported
+  # as a range (PHASE2_PLAN.md §3.1).
+
+  scheduling-rest:
+    <<: *service-image
+    container_name: bench-scheduling-rest
+    command: ["node", "--import", "tsx", "src/server/rest/serve.ts", "scheduling"]
+    environment:
+      <<: *service-env
+      PAYLOAD_PROFILE: ${PAYLOAD_PROFILE:-fat}
+    ports: ["4001:4001"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:4001/__health"]
+
+  fleet-rest:
+    <<: *service-image
+    container_name: bench-fleet-rest
+    command: ["node", "--import", "tsx", "src/server/rest/serve.ts", "fleet"]
+    environment:
+      <<: *service-env
+      PAYLOAD_PROFILE: ${PAYLOAD_PROFILE:-fat}
+    ports: ["4002:4002"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:4002/__health"]
+
+  personnel-rest:
+    <<: *service-image
+    container_name: bench-personnel-rest
+    command: ["node", "--import", "tsx", "src/server/rest/serve.ts", "personnel"]
+    environment:
+      <<: *service-env
+      PAYLOAD_PROFILE: ${PAYLOAD_PROFILE:-fat}
+    ports: ["4003:4003"]
+    healthcheck:
+      <<: *graphql-healthcheck
+      test: ["CMD", "wget", "-qO-", "http://localhost:4003/__health"]
+
+  # ── Federated router ───────────────────────────────────────────────────────
+
+  router:
+    image: ghcr.io/apollographql/router:${ROUTER_VERSION:-v2.17.0}
+    container_name: bench-router
+    restart: "no"
+    depends_on:
+      scheduling-graphql: { condition: service_healthy }
+      fleet-graphql: { condition: service_healthy }
+      personnel-graphql: { condition: service_healthy }
+    # Composed on the host by `pnpm compose` — mounted read-only rather than baked
+    # in, so a schema change doesn't require an image rebuild.
+    volumes:
+      - ./services/generated/supergraph.graphql:/etc/apollo/supergraph.graphql:ro
+      - ./services/router.docker.yaml:/etc/apollo/router.yaml:ro
+    environment:
+      APOLLO_ROUTER_SUPERGRAPH_PATH: /etc/apollo/supergraph.graphql
+      APOLLO_ROUTER_CONFIG_PATH: /etc/apollo/router.yaml
+      APOLLO_ELV2_LICENSE: accept
+      APOLLO_ROUTER_LOG: ${ROUTER_LOG:-info}
+    ports: ["5000:5000", "8088:8088"]
+    # No container healthcheck: the official router image ships no HTTP client
+    # (no wget, curl, or busybox — only /usr/bin/sh), so it cannot probe its own
+    # /health. `depends_on` already gates startup on all three subgraphs being
+    # healthy, and the router is verified from the HOST by `pnpm health`, which
+    # checks :8088/health and is what run_benchmark.py calls before the matrix.
+    #
+    # Consequence: `docker compose up -d --wait` returns once the six app
+    # containers are healthy, NOT once the router is serving. Always follow it
+    # with `pnpm health`.

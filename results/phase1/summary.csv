@@ -1,0 +1,9 @@
+cell,condition,profile,task_id,n,n_reps,inference calls mean,inference calls sd,tool calls mean,tool calls sd,input tok mean,input tok sd,output tok mean,output tok sd,cache-read tok mean,cache-read tok sd,cache-create tok mean,cache-create tok sd,tool-payload tok mean,tool-payload tok sd
+A1,A1,,T1,,3,4,0.0,10,0.0,213,0.0,1750.33,2.31,46633.33,9186.22,46169.33,9183.05,26970,0.0
+A1,A1,,T2,,3,3,0.0,1,0.0,174,0.0,217,0.0,33924,0.0,3504,0.0,334,0.0
+A2,A2,,T1,,3,4,0.0,10,0.0,213,0.0,1734.33,14.43,21974.67,4477.93,42002.33,4477.93,26970,0.0
+A2,A2,,T2,,3,3,0.0,1,0.0,174,0.0,205.67,2.89,16158,0.0,2048,0.0,334,0.0
+B,B,,T1,,3,3,0.0,1,0.0,4373,0.0,899.33,0.58,0,0.0,0,0.0,419,0.0
+B,B,,T2,,3,3,0.0,1,0.0,3543,0.0,216,0.0,0,0.0,0,0.0,47,0.0
+B2,B2,,T1,,3,3,0.0,1,0.0,4470,0.0,902,0.0,0,0.0,0,0.0,419,0.0
+B2,B2,,T2,,3,3,0.0,1,0.0,3641,0.0,224,3.46,0,0.0,0,0.0,47,0.0

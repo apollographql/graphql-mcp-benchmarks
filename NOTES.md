@@ -184,3 +184,2310 @@ The 24-run clean matrix completed successfully; authoritative numbers are in `re
   GraphQL schema — zero search or validate calls, identical to B2. The schema discovery
   overhead in early B runs was entirely instruction-induced, not intrinsic to Apollo MCP
   or the GraphQL protocol.
+
+---
+
+# Phase 2 — synthetic multi-service backend
+
+Design and results live in [`PHASE2_PLAN.md`](PHASE2_PLAN.md); the stack lives in
+[`services/`](services/README.md). This section records what phase 2 has
+**pre-registered** and what **bit us during the build**, in the same spirit as the
+phase-1 notes above.
+
+## ⚠️ PRE-REGISTERED EXPECTATIONS (written before the matrix runs)
+
+Recorded up front so that if the results come in this way, it reads as a prediction
+rather than a post-hoc explanation.
+
+**The matrix has run. Every expectation below is scored in the next section — do not
+read one of these as an open question.** Nothing here has been edited to match the
+results; the corrections and sharpenings dated before 2026-09-03 all predate the runs.
+
+1. **Phase-2 GraphQL numbers will look WORSE than phase 1's.** In phase 1, B/B2 skipped
+   schema discovery entirely because the model already knew GitHub's schema from
+   training (see the phase-1 finding on recipe framing). Against a synthetic graph it
+   knows neither surface, so discovery becomes real and unavoidable on both sides. We
+   expect the GraphQL advantage to shrink relative to phase 1's 20×.
+
+2. **M1 will be close to a tie on `-lean` and a large GraphQL win on `-fat`.** Measured
+   payload ratios before any agent is involved: 3.5× and 28.6×. If the agent numbers
+   diverge sharply from those, the cause is agent behavior (tool-choice, retries), not
+   payload, and should be reported as such.
+
+   *Baseline re-measured 2026-09-02, prediction unchanged:* those two figures came from
+   M1 at N=12, a breadth no condition runs. Swept over the real cells, `-fat` climbs
+   23.9× → 29.5× (N=1 → 50) while `-lean` falls 4.9× → 3.4×, both driven by the fixed
+   ~400 B REST envelope amortizing. So the prediction now has a range to be judged
+   against rather than a point, and the "close to a tie on `-lean`" half is if anything
+   better supported at high N than the original number suggested.
+
+3. **The headline claim we expect to survive the steelman is the JOIN, not over-fetch.**
+   Prediction: on `-lean`, M1's advantage largely dissolves while M2/M3/M4 hold at
+   roughly 6–8×. If M1 also holds at 6×+ on `-lean`, something is wrong with the lean
+   profile and it must be investigated before publishing.
+
+4. **`backend_requests` will favor REST at N=1 and federation at N=20+.** The router
+   makes 4 backend calls for M2 (N=1) where REST makes 4 agent calls; at N=20 the router
+   still makes 4 while REST's payload grows ~10×. We are NOT predicting the router uses
+   fewer backend calls — only that its backend work stays flat while REST's context cost
+   does not.
+
+   **Retired, not resolved — 2026-09-02.** `backend_requests` was cut from the study
+   (PHASE2_PLAN.md §6): the question it answered — "did you just move the cost to the
+   infrastructure bill?" — is out of scope, since what is being measured is inference cost
+   and inference calls. So this expectation will not be scored. Its *substance* was already
+   confirmed by the harness rather than the matrix: `pnpm verify:federation` shows 4 backend
+   requests for M3 at N=20, identical to M2 at N=1 (§5.1). That is now design verification —
+   evidence the GraphQL side is not issuing a hidden N+1 — and not a result. Left in place
+   unedited because a prediction that gets descoped should be visibly descoped, not deleted.
+
+5. **M-G2 (pre-baked operations) may need MORE tool calls than M-G1 on some tasks.** A
+   frozen operation set sized to the domain will not perfectly fit every task; M2 is
+   expected to need two operations (roster + airworthiness) where M-G1 writes one ad-hoc
+   query. That is a real property of persisted-operation deployments, not a bug.
+
+   *Sharpened 2026-08-28, once the set was frozen and readable:* M4 is the worse case.
+   `FlightsByOrigin` returns `aircraftId` but no fleet data, so filtering departures by
+   airworthiness costs **one board read plus one detail read per flight** — the same
+   1+N shape as REST, against M-G1's single query. If M-G2 loses to M-G1 on M4, that is
+   this, and it was predicted before the task existed. See
+   `services/operations/README.md`.
+
+6. **Front-loading will cost M-R1 roughly 4× M-R2's prefix, and M-G2 roughly 2× M-G1's.**
+   Measured `tools/list` bytes, below. The prediction is that this fixed prefix cost is
+   repaid — or not — by fewer discovery round-trips, and that the repayment is better for
+   GraphQL because seven operations cover the domain where nine endpoints do not compose.
+   The 2×2 exists to test exactly that, so a result in either direction is a finding.
+
+7. **Model: `claude-haiku-4-5`** (decided 2026-08-31), the same task model as the phase-1
+   matrix, so phase-2 numbers sit on the same pricing and capability baseline. Note the open
+   question this leaves: a collaborator reproducing phase 1 on `claude-sonnet-4-6` could not
+   reproduce the zero-discovery finding for B2 (PR #3). If discovery behaviour is
+   model-dependent, expectation 1 above needs a model qualifier — worth resolving before
+   the results are written up, not after.
+
+8. **M3/M4 at N=50 on `-fat` will run close to the context window, and REST will hit a
+   ceiling before GraphQL does.** Measured payloads at N=50 `-fat`: ~423 KB (~121k tokens
+   at 3.5 B/token) against haiku's 200k window, and the payload is cumulative because every
+   inference call re-sends the conversation. Extrapolating ~8.5 KB per flight, REST-over-MCP
+   exhausts a 200k window somewhere around **N≈80**, where the federated query is still
+   using ~35k tokens.
+
+   Two things to watch, because they are different results: a clean API error is a
+   reportable ceiling, whereas Goose silently truncating tool results would produce a
+   plausible wrong answer that `answer_f1` scores as agent incompetence with no visible
+   cause. **Establish which happens with one deliberate high-N `-fat` run during the step-7
+   smoke test**, before committing to 200+ runs. They need different columns.
+
+   *Measured 2026-09-02, prediction unchanged:* M3@50 `-fat` is 424,863 B, confirming the
+   ~423 KB estimate this was written on. But the largest cell in the matrix is **M4@103
+   `-fat` at 446,234 B (~127k tokens)**, which this expectation did not name — M4's sweep
+   was extended after it was written. The deliberate high-N `-fat` smoke run should use
+   M4@103, not M3@50.
+
+## ✅ SCORED — the pre-registered expectations against the 180-run matrix (2026-09-03)
+
+A pre-registration nobody scores is worth nothing, so each expectation above gets a
+verdict here. Numbers are pass-through tokens against the best GraphQL condition on the
+same task unless stated otherwise.
+
+**1. "Phase-2 GraphQL numbers will look worse than phase 1's 20×." — UNSCOREABLE as
+written, and the reason matters.** Phase 1's 20× is a *cost* ratio (A1 $0.182 vs B2
+$0.009 on T1), and **96% of A1's cost is cache-creation tokens** — its 144,710-byte,
+54-tool schema rewritten on every one of four calls. Prompt caching never hit in either
+phase (surprise 51), which inflates cache-creation charges for whichever condition has
+the largest prefix, and that is A1 by two orders of magnitude over B2. So phase 1's 20×
+is not a protocol result at that magnitude, and comparing phase 2 against it would
+compare two numbers distorted by the same defect to different degrees. The payload
+column that *would* have been comparable is the one bug 42 made unrecoverable. **Two
+harness defects, between them, cost us this expectation.**
+
+**2. "M1 close to a tie on `-lean`, large GraphQL win on `-fat`." — CONFIRMED on both
+halves, with the divergence the expectation itself asked us to report.** At M1@50:
+`-fat` 15.6×, `-lean` **1.1×**. The tie is decisive. But `-fat` came in at 15.6× against
+a static projection of 29.5×, and the expectation said explicitly that a sharp
+divergence means agent behaviour rather than payload and must be reported as such. Two
+causes, both real: pass-through tokens are not served bytes (the metric discounts fields
+whose values *do* reach the answer), and at low N the agent stops narrowing fields at
+all — see 3.
+
+**3. "On `-lean`, M1 dissolves while M2/M3/M4 hold at 6–8×." — HALF FALSIFIED, and the
+guard clause earned its keep.** M1 dissolved (1.1×) ✓. But on `-lean`: M3@50 **8.2×** ✓
+in band, M4@50 **5.7×** just under, M2@1 **3.6×** well under. The 6–8× band does not
+hold across M2/M3/M4; only M3 sits in it.
+
+The guard — "if M1 also holds at 6×+ on `-lean`, something is wrong with the lean
+profile" — did not fire at N=50. **It fires at N=1**: M1@1 reads `-fat` 15.7× and
+`-lean` 15.7×, *identical*. The lean profile is not broken. The agent simply did not
+send `?fields=` there, exactly as it did not on M4@50 (46,665 fat against 46,599 lean).
+One explanation covers both: **the steelman only helps when the agent opts into it, and
+the agent opts in inconsistently** — reliably at high N on M1, not at all at N=1 or on
+M4. A well-designed guard caught something true that was not what it was looking for.
+
+**4. `backend_requests`** — remains retired, not scored (see above).
+
+**5. "M-G2 may need MORE tool calls than M-G1 on some tasks; M4 is the worse case."
+— CONFIRMED, and it predicted the study's headline finding before the tasks existed.**
+Tool calls, M-G1 against M-G2: M4@20 **7 vs 21**, M4@50 **9 vs 51** — the named task,
+the predicted 1+N shape, from the predicted cause (`FlightsByOrigin` returns
+`aircraftId` but no fleet data). M3 turned out worse still and was *not* named: M3@20 5
+vs 40, M3@50 **7 vs 100**. So the mechanism generalized beyond the task it was predicted
+for.
+
+This is the strongest result in the pre-registration and it reframed the whole study.
+What it establishes is that GraphQL is both the cheapest and the most expensive condition
+in the matrix, and that the split is **operation granularity, not protocol** — M-G2 needs
+1 call on M1@50 and 100 on M3@50 with no change to its surface. Being written down before
+the tasks were authored is what makes it a prediction rather than a story.
+
+**6. "M-R1 ≈ 4× M-R2's prefix, M-G2 ≈ 2× M-G1's." — CONFIRMED on the arithmetic**
+(9,601/2,439 = 3.94×; 4,040/2,159 = 1.87×, both pinned in
+`capture/expected-tool-surfaces.json`). **The repayment question it posed is answered,
+and not in the direction it framed.** It expected front-loading to be repaid by fewer
+discovery round-trips, better for GraphQL because seven operations cover the domain. On
+M1 that holds emphatically — M-G2 needs 1 tool call where M-G1 needs 3–6, all discovery.
+On M3/M4 it inverts: the frozen set does not compose over cardinality, so M-G2 pays 100
+calls where M-G1's discovery cost buys it the ability to write one query. **Front-loading
+is repaid when the frozen operation fits the question and catastrophically not when it
+does not**, which is a sharper answer than "better for GraphQL".
+
+**7. Model `claude-haiku-4-5`** — held for all 180 runs. The open question it flagged is
+still open: nobody has re-run phase 1 on `claude-sonnet-4-6` to test whether the
+zero-discovery finding is model-dependent, so expectation 1 would still need a model
+qualifier if it were ever scoreable.
+
+**8. "M3/M4 at N=50 `-fat` will run close to the context window; REST hits a ceiling
+first, around N≈80." — UNTESTED, and now deliberately out of scope.** The one run built
+to test it (M4@103 `-fat`) never reached a context limit: **the turn cap fired first** at
+26 calls and 14,485 payload tokens (surprise 50). Its two-outcome design — clean API error
+versus silent truncation — was the right question and remains unanswered. M4@103 is now
+`off_matrix` on cost and runnable by exact id whenever the answer is worth a dollar. The
+honest statement in any writeup is that **phase 2 never reached a context limit**, not
+that REST does not have one.
+
+---
+
+**Scoreboard: 3 confirmed (2, 5, 6), 1 half-falsified (3), 1 unscoreable (1), 1 untested
+(8), 1 retired (4), 1 held (7).** The two that mattered most — 5 and the guard clause in
+3 — were both written before the data existed, and both changed what the study concluded.
+Worth noting against the fifteen measurement bugs on the other side of the ledger: the
+pre-registration was more reliable than the instrumentation. It is worth saying plainly that
+**3 of the 4 scoreable predictions were confirmed** — untested (8), retired (4) and held (7)
+are neither confirmations nor failures, and any writeup that reports "three confirmed" out of
+five or six items is dropping rows. #7 is a model-selection decision, not a prediction about
+this matrix.
+
+## Measured tool surfaces (2026-08-28, `capture/M-*.json`)
+
+Real MCP `tools/list` responses, captured with `capture/capture_mcp.py`. These are the
+numbers §8.2 requires — the front-loaded-vs-on-demand comparison rests on these, not on
+the tool counts in the plan.
+
+| Condition | Packaging | Tools | `tools_list_bytes` |
+|---|---|---|---|
+| M-R1 | one tool per REST endpoint | 9 | 9,601 |
+| M-R2 | REST discovery (`rest_request` + 2) | 3 | 2,439 |
+| M-G1 | GraphQL discovery (`graphql_execute` + 2) | 3 | 2,159 |
+| M-G2 | 7 persisted operations | 7 | 4,040 |
+
+`capture/expected-tool-surfaces.json` owns these four numbers; this table is a copy and
+was wrong for a week (M-R1 read 9,440 after commit `14d8973` moved it to 9,601 — see
+surprise 40). If they disagree, the baseline file is right.
+
+**M-R2 and M-G1 land within 13% of each other (2,439 vs 2,159 B).** That near-symmetry is
+deliberate and load-bearing: those two conditions are the clean protocol comparison, so
+they were built with the same tool count, the same discover-then-execute shape, and the
+same query grammar (AND within a clause, OR across comma-separated clauses). Any large
+asymmetry there would show up in results as a protocol effect while actually being a
+tool-design effect.
+
+## Surprises during the phase-2 build
+
+1. **Apollo subgraphs enable inline tracing by default.** It appends an `extensions`
+   block to responses when the router requests it — bytes that would land in the agent's
+   context and inflate every payload measurement. Fixed with
+   `ApolloServerPluginInlineTraceDisabled()`. APQ is off on the router for the same
+   class of reason (a cache hit would change request shape between reps).
+
+2. **`graphql@17` breaks `@apollo/server`/`@apollo/subgraph`.** Both peer-depend on
+   `^16`. Pinned to `^16.11.0`.
+
+3. **The Apollo Router image cannot health-check itself.** It ships only `/usr/bin/sh` —
+   no wget, curl, or busybox. So `docker compose up -d --wait` returns when the six app
+   containers are healthy, **not** when the router is serving. `services: pnpm health`
+   checks all seven from the host and is the real gate; `run_benchmark.py` must call it.
+   This is the same failure shape as the phase-1 Docker-down incident: a half-up stack
+   yields confident wrong answers that score as cheap successes.
+
+4. **Router config: `apq.router.cache.in_memory.limit: 0` is rejected** (minimum 1). Use
+   `apq.enabled: false`.
+
+5. **Never run `pnpm` as a container entrypoint.** Corepack re-resolves the package
+   manager at runtime and tries to download it (fails as non-root), and pnpm 11's
+   dep-status check wants to write to `/app`. Containers invoke
+   `node --import tsx <script>` directly, and `packageManager` is pinned in
+   `package.json`.
+
+6. **`.dockerignore` needs an explicit negation for `fixtures/manifest.json`.**
+   `fixtures/*.json` excluded the very manifest the build verifies against.
+
+7. **The measurement tool must share code with the server, or it lies.** The REST
+   payload figures were running 65–135 B light per call because `app.ts` built HATEOAS
+   links and the measurement tool built none. Fixed by extracting
+   `services/src/server/rest/links.ts` and having both use it. `verify-federation --live`
+   found this; it now compares the `data` payload only, because the envelope legitimately
+   differs (the server knows the pre-pagination `total` and emits a `next` cursor, which
+   a projection cannot derive without reimplementing the server).
+
+8. **Unbatched subgraphs would have understated federation.** Without DataLoader, one M2
+   query cost 5 backend reads and M3 at N=20 would have cost ~85. Batching changes no
+   token count — it exists so `backend_requests` is representative of a production
+   subgraph rather than biasing a headline metric against the condition under test.
+   Loaders are per-request; sharing them would cache across reps.
+
+9. **M2 must be scoped to PILOTS, not all crew.** Requiring all four rostered crew to be
+   current is simply a stricter conjunction than requiring two, so "every assigned crew
+   member" pushed the answer toward "no". Measured over 2,000 flights: all-crew 30.9%
+   yes, pilots-only 56.6% yes. Only the latter discriminates.
+
+   *Corrected 2026-08-28:* this note previously justified the scoping by claiming cabin
+   crew hold no type ratings. The fixtures do not work that way — all 553 cabin-rank crew
+   members hold at least one rating (`src/entities/personnel.ts` gives every crew member
+   1–3 regardless of rank). The scoping decision stands on the conjunction argument; the
+   rationale was wrong. See surprise 13. Now that pilot slots hold pilot-rank crew, cabin
+   crew holding ratings is harmless — they never occupy a slot M2 examines.
+
+10. **Fixture determinism is verified across platforms, not assumed.** The Docker build
+    regenerates on linux/arm64 (node 22.23.2) and checks against the manifest generated on
+    darwin/arm64 (node 22.22.3). Hashes match; the build fails if they ever don't.
+
+11. **A REST spec that documents `?fields=` without listing the field names makes the
+    `-lean` steelman unusable.** `?fields=` takes canonical field names; an agent reading
+    only the OpenAPI doc had no way to learn them, so it would have over-fetched on lean
+    too — and the `-fat`/`-lean` bracket, the whole point of §3.1, would have collapsed
+    for a reason having nothing to do with the protocol. `fieldsParam()` in
+    `src/codegen/openapi.ts` now enumerates them. Cost: ~1.2 KB per service spec and
+    ~600 B per affected M-R1 tool description. That cost belongs to REST's ledger —
+    publishing a field list is what offering field selection actually requires.
+
+12. **The generated OpenAPI docs had no `servers` block.** Nothing told a client that
+    scheduling is on `:4001`, so `openapi_mcp.py` would have had to hardcode a
+    service-to-port map — the REST tool surface depending on knowledge the spec never
+    gave it. Now generated from `PORTS`. Docker publishes the same ports on localhost, so
+    one URL covers both run paths.
+
+13. **The fixture generator rosters crew into roles their rank contradicts.** 59.6% of
+    CAPTAIN/FIRST_OFFICER assignment slots are filled by crew whose `rank` is PURSER or
+    FLIGHT_ATTENDANT, because `Assignment.crewId` selects on type-rating currency and
+    never on rank. **This is an M2 grading hazard, not a cosmetic one:** "every assigned
+    pilot" can be read as `role ∈ {CAPTAIN, FIRST_OFFICER}` or as
+    `rank ∈ {CAPTAIN, FIRST_OFFICER}`, the two disagree on most flights, and an agent
+    that picks the reading the ground truth didn't would be scored wrong for a reason
+    unrelated to protocol or tooling. Found while smoke-testing M-G1 on 2026-08-28 (a
+    FLIGHT_ATTENDANT rostered as CAPTAIN, holding an A359 rating). **Must be fixed before
+    step 6 authors M2.**
+
+    *Fixed 2026-08-28.* `crewId` now selects from crew whose rank matches the roster slot,
+    keeping type-rating currency as a secondary bias, and throws rather than falling back
+    to the whole roster. 0 of 8,000 mismatch; M2 stays balanced at 56.6% yes. §5.1 was
+    re-measured (M2 17.9x/7.7x, M3 17.6x/6.4x; M1 and M4 unchanged, as they touch no crew
+    data). See PHASE2_PLAN.md §5.
+
+14. **The `bench-router` container prints `Healthy` under `--wait` despite having no
+    healthcheck.** `docker inspect` confirms `.State.Health` is `null`: compose reports a
+    healthcheck-less container as ready once it is running. So the reassuring word in the
+    output means "the process started", not "the router is serving" — which is exactly the
+    inference surprise 3 warns against. `pnpm health` remains the only real gate.
+
+15. **A stale container passes every liveness probe, and `--live` could not catch it.** The
+    Docker image bakes fixtures in at BUILD time, so regenerating fixtures on the host and
+    running `docker compose up -d` (no `--build`) leaves a stack that is fully healthy and
+    serving the previous dataset. This produced a §5.1 table that mixed stale GraphQL
+    figures (from containers) with fresh REST figures (from local projections) — caught
+    only by eyeballing a crew name.
+
+    The dangerous part: `verify:federation --live` is *designed* to catch exactly this, and
+    it reported a match. It compares payload **sizes**, and swapping one fixed-width id for
+    another serializes to the same number of bytes. Sizes agreeing is not values agreeing.
+
+    Now both `/__health` endpoints report per-entity fixture hashes from the manifest, and
+    `pnpm health` plus `verify:federation` refuse to proceed on a mismatch — including when
+    an endpoint reports no hashes at all, which is itself what a stale process looks like
+    (`src/tools/provenance.ts`).
+
+16. **`docker compose up -d --build` recreates the app containers but NOT the router.** Its
+    image and config are unchanged, so it keeps connections to container IPs that no longer
+    exist and every query fails with `SUBREQUEST_HTTP_ERROR` — while all seven liveness
+    probes, including the router's own `/health`, report a healthy stack. `/health` reports
+    that the router process is alive, which is not the same as the router being able to
+    reach its subgraphs.
+
+    `pnpm health` now probes the router with a real federated query touching all three
+    subgraphs. Fix when it fires: `docker compose restart router`.
+
+17. **`results/summary.md` was hand-edited, and `./bench.sh parse` silently reverted it.**
+    Three paragraphs of the stage-cost explainer had been rewritten by hand after the
+    2026-07-03 parse — better copy than the generator's — and existed nowhere else, because
+    `results/` is gitignored. Regenerating threw them away with no warning. They are now in
+    `parse_logs.py:_concepts_section()`, and the generator reproduces the file byte-for-byte.
+    **Edits to a generated report belong in the generator**; `results/` is downstream of
+    `runs/` and should be treated as disposable.
+
+18. **The phase-1 `capture/` evidence no longer exists.** `capture/{A1,A2,B,B2}.json` and
+    `capture/SUMMARY.md` are absent from disk and gitignored, yet notes 5 and 6 above cite
+    them as the raw evidence for the 22 / 17 / 4 tool counts and the 82,301-byte
+    `list_pull_requests` payload. `./bench.sh capture` cannot restore them faithfully — it
+    would measure today's MCP server image against today's GitHub API. Treat those figures
+    as historical and unverifiable from this checkout; phase-2's equivalents avoid the
+    problem by being synthetic, local, and hash-pinned (`capture/M-*.json`, and surprise 15).
+
+19. **`services/generated/` is committed, and needed its own freshness test.** The Python
+    MCP servers read those files from disk with no build step, so committing them lets a
+    fresh clone run all four phase-2 conditions without Node or rover. But every other test
+    renders in memory and the Docker build regenerates, so nothing looked at the on-disk
+    files: an entity change without `pnpm codegen` would ship a tool surface describing a
+    service that no longer exists, with a fully green suite. `src/test/codegen.test.ts` and
+    `pnpm verify:supergraph` now diff on-disk against freshly rendered, and both were
+    confirmed to FAIL when fed a stale file — an unfired guard is decoration. Writer and
+    checker share `src/codegen/artifacts.ts` for the same reason `links.ts` exists
+    (surprise 7).
+
+20. **A missing filter can be asymmetric, and the asymmetry ran the other way than expected.**
+    Neither surface had a `role` filter on assignments, and the pilot-scoped tasks (M2/M3)
+    therefore looked like they cost REST four crew records per flight. But REST splits the
+    join across calls, so it could fetch the full roster, filter client-side, and request
+    crew for the two pilots only. A single GraphQL traversal had no way to narrow and paid
+    for all four. **The missing filter was quietly favoring REST**, and modelling REST as
+    fetching all four crew was a strawman — an agent fetching flight attendants' type
+    ratings to answer a question about pilots.
+
+    Added `roles` to BOTH surfaces on 2026-08-31 (PHASE2_PLAN.md §3 records the reasoning,
+    since adding filters after tasks are sketched is what the anti-strawman rule watches
+    for). Effect: the M3 `-fat` ratio rose 17.6x -> 20.3x, and absolute payload fell 31% on
+    both sides. That second number is the useful one — it moved M3 at N=50 `-fat` from ~174k
+    tokens to ~121k, i.e. from probably-exceeds-context to comfortably measurable.
+
+    Two lessons worth keeping: an over-fetch that looks like it penalises one surface may be
+    penalising the other once you account for what the agent can do between calls; and
+    prompted by "seems like a huge token load for a contrived scenario" — that instinct was
+    right, and the cause was a missing filter rather than inflated fixtures. For the record
+    on fixture realism: a full `-fat` Flight is 2.8 KB, against the 16.5 KB per pull request
+    that GitHub's real API returned in phase 1.
+
+21. **Answer balance is a task property that needs a mechanical check.** Two tasks nearly
+    shipped with degenerate ground truth. M2 scoped to all four rostered crew answered "no"
+    69% of the time (surprise 9). M4 at N<=5 has NO qualifying flights, because only 11 of
+    300 airframes carry an open grounding advisory — so the correct answer is "none" and an
+    agent that issues no tool calls and says so scores a perfect `answer_f1`. Both are
+    invisible unless you compute the answer distribution and look at it.
+
+    Consequences: M4's sweep runs at N in {20, 50, 103} rather than {1, 5, 20, 50}, and its
+    prompt lost the date filter (14 fixture days at 7.4 SFO departures/day leaves ~10
+    candidates and zero hits on most days — the implementation never filtered by date, the
+    prompt sketch did, and the prompt was wrong). PHASE2_PLAN.md §7 now requires
+    `expected.ts` to fail generation on an empty or trivially skewed answer set.
+
+22. **M4's payload ratio DECLINES with N: 49.6x (N=20) -> 47.3x (N=50) -> 43.2x (N=103).**
+    Flights increasingly share airframes, so REST's deduped `?ids=` aircraft call grows
+    sublinearly while the GraphQL response grows linearly with flights. REST's batching
+    genuinely helps more at scale on this task, and only the sweep makes that visible — a
+    single-N measurement would have implied a flat multiple. Worth reporting as-is: it is a
+    real advantage of the client-side join and it costs nothing to disclose.
+
+23. **"Is this rating still current?" had no reference date — and 34% of the headline task's
+    graded answers depended on it.** M2 and M3 ask whether a pilot's type rating is still
+    current. The fixtures are dated 2026-03-14 and the generator itself uses that instant as
+    "now", but the prompt never said so, and an agent has no way to know: it would reasonably
+    use its own idea of today. 404 of the 1,490 type ratings expire between the fixture base
+    date and 2026-09-01 alone, and **17 of M3@50's 50 flights flip verdict across that gap**.
+
+    Nothing would have failed. The runs complete, the answers look plausible, the accuracy
+    column is quietly wrong — and it drifts further every month the benchmark stays runnable,
+    so a re-run next year would produce a different "finding" from identical code and data.
+
+    Fixed by putting the date in the prompt (`{{as_of}}`, supplied per cell), which is also
+    just what an operational question carries. `pnpm expected` now fails if a date-sensitive
+    task has no `{{as_of}}` placeholder, and `pnpm test` fails if the prompt does not use it.
+
+    The general lesson, and the reason to write it down: a benchmark over synthetic data has
+    a *second* clock — the data's — and every question about currency, recency, or "next" is
+    ambiguous between the two unless the prompt pins one.
+
+24. **M1 named flights by a key that is not unique, and the two surfaces disagreed about it.**
+    M1 quotes flight *numbers* rather than ids, deliberately — that is what a human says.
+    But airlines reuse a flight number across days, the fixtures span 14 days, and 49 of the
+    2,000 numbers are carried by two different flights. One of them (DL3432, on FL-0014 and
+    FL-1396, different gates and departure times) sat in the first 20, so it was in M1@20 and
+    M1@50 but not in the N=12 row that had already been published.
+
+    Worse than ambiguous — asymmetric. `flightsByNumbers` flat-maps every match, so GraphQL
+    returns 21 flights for 20 requested numbers, with two conflicting answers for DL3432.
+    REST's `?flightNumbers=...&limit=20` applies the limit after filtering and truncates the
+    same result set to a single DL3432. The two surfaces answer the same prompt differently
+    and the grader marks one of them wrong, for a reason that has nothing to do with protocol.
+
+    Fixed by sampling M1 only from flights whose number is unique across the fixtures. Keeping
+    numbers in the prompt was worth the extra filter; switching M1 to ids would have removed
+    the one task that exercises a human-quoted key.
+
+25. **A single-boolean task cannot be saved by a balance guard — only by asking for more.**
+    M2 grades one yes/no about one fixed flight, and that flight's answer is "yes", so an
+    agent that replies "yes" with zero tool calls scores 100%. The 80/20 skew guard cannot
+    catch it: skew is meaningless over one item. The fix had to change the task, not the
+    check — M2 now asks for each pilot's role, **name**, and per-pilot verdict, and the names
+    sit in the personnel service behind two dependent hops, so they cannot be guessed. It
+    cost nothing to measure: both surfaces already fetch `crew { name typeRatings }` for M2.
+
+    Related: M3 at N=1 was M2 with different wording about the same flight — same records,
+    same predicate, same answer, 18 runs of the matrix. Dropped; M2 *is* the N=1 point of
+    M3's slope. The duplicate-cell guard that catches it initially did not, because it keyed
+    on the whole `sample` object and M2 carries an extra `aircraftId` for the grader.
+
+26. **The skew guard was wrong for M4, and failing it was the right way to find out.** Its
+    first run failed all three M4 cells: 92-95% of candidates do not qualify. But M4 grades a
+    *set* — only the qualifying flights — so a small positive class is the realistic case
+    (8 of 103 is a plausible AOG rate) and F1 already punishes hedging (returning everything
+    scores precision 0.08). The skew rule belongs to per-item classification, which is M3.
+    Left as-is, it would have pushed the fixtures toward an unrealistic grounding rate to
+    satisfy a metric that does not apply. A guard that fires needs its premise re-read, not
+    just its threshold raised.
+
+27. **The measurement table described a cell no condition runs.** §5.1 reported M1 at N=12 —
+    a leftover breadth — while saying nothing about M1@50 or M3@50, two of the three largest
+    cells in the matrix. `verify:federation` now derives its task list from the same `SWEEP`
+    constant the ground truth uses, so the table covers exactly the eleven cells that run and
+    cannot drift from them again. The rows that appeared in both versions are byte-identical.
+
+28. **The same M1 payload was computed three different ways, and the plan quoted two of
+    them.** §3.1 reported M1's `-fat` ratio as 28.5× and §5.1 as 29.1× — same task, same
+    fixtures, same profile. The cause was two helper implementations: `measure.ts` sliced
+    its own twelve flights and passed a stub `self` link, while `verify-federation.ts` used
+    the real link builders and a differently-sized `generatedAt`. Neither was wrong on its
+    own terms and nothing could tell you which to believe.
+
+    Both now call one `src/tools/rest-payload.ts` and draw their sample from `sample.ts`, so
+    `pnpm measure`'s three M1 rows are byte-identical to §5.1's M1 (N=20) row. This is the
+    fourth instance of the same root cause in this project — after `links.ts` (surprise 7),
+    `codegen/artifacts.ts`, and now the samples — and the rule that keeps falling out of it
+    is worth stating plainly: **if two things must agree on a number, they have to share the
+    code that computes it.** A second implementation kept in step by discipline is a second
+    implementation that will drift, and the drift shows up as a published inconsistency
+    rather than a test failure.
+
+29. **A correct answer is not evidence of work, and phase 2 is where that starts to matter.**
+    In phase 1 the model knew GitHub's real data from training, so even an unretrieved answer
+    was plausibly *retrievable*. Against synthetic fixtures it can know nothing — but it can
+    still guess, and two cells are guessable in one shot: M2 is a single boolean, and M4@20
+    has a single qualifying flight.
+
+    The precedent is already in this file (Apollo stdout pollution, above): a broken stdio
+    handshake registered the extension with zero tools and **the agent hallucinated tool
+    calls from training data**. That run would now score as a cheap success — high accuracy,
+    near-zero tool calls — which corrupts both columns in the same direction.
+
+    So `parse_logs.py` gains a per-run `answer_grounded` check: every graded fact must appear
+    in a `tool_result` that entered the context before the answer, or the run is reported as
+    fabricated rather than averaged into accuracy. Two things make it the right instrument.
+    It is **per-run by construction** (`proxy.jsonl` is per run, unlike `/__metrics`), and it
+    is **protocol-neutral** — it asks whether the data arrived, not how many calls it took.
+    Call counts differ between REST and GraphQL by design; the measurement cannot also be
+    the validity gate.
+
+    Rejected alternative: naming the expected tools in the prompt. Tool discovery and
+    selection is precisely what the 2x2 measures, and the prompt must go into every
+    condition identical word-for-word. The tool surface is the condition, not the prompt.
+
+30. **`/__metrics` cannot attribute `backend_requests` per run, and nothing had been wired up
+    yet to reveal it.** The planned mechanism is reset-run-read against a global counter on a
+    single shared stack, while six conditions execute in parallel
+    (`ThreadPoolExecutor`, `run_benchmark.py:398`). One condition's `DELETE` zeroes another's
+    counter mid-run and every read sums all six.
+
+    Same shape as the Goose log race (PHASE2_PLAN.md §8.2), and worth noting how it was
+    found: not by reading the metrics code, but by asking what evidence proves an agent did
+    the work, then checking whether that evidence could be attributed to a run. The
+    "who performs the join" claim rests on this column answering a reviewer's question —
+    "did you just move the cost to the infrastructure bill?" — and an unattributable number
+    cannot answer it. Options in §8.2; the cheapest honest one is to measure it in a serial
+    pass, since backend fan-out is a property of the query plan rather than of the agent.
+
+    **Resolved 2026-09-02 — by deleting the metric, not by attributing it.** Asked whether
+    `backend_requests` was load-bearing before engineering a way to scope it: it is not. The
+    study measures inference cost and inference calls, both fully captured per run by the
+    proxy log, and speculating about an infrastructure bill from a synthetic local stack
+    would not have answered the reviewer's question anyway. The attribution problem
+    disappeared with the metric.
+
+    Worth keeping as a sequence: the race was found by asking what evidence proves the agent
+    did the work, and then it was *dismissed* by asking whether that evidence was needed. The
+    first question is the one that finds bugs; the second is the one that stops you fixing
+    them. Both of §8.2's races ended this way — see surprise 34.
+
+31. **A swept prompt is wrong at one end of its own sweep, and only rendering shows you.**
+    M1 was written as "For flight numbers {{ids}} … cover all {{n}}", which reads fine at
+    N=20 and reads *"For flight numbers AA5751, … cover all 1."* at N=1. It sat in
+    `tasks.yaml` through a review, a guard suite, and eleven generated ground-truth cells
+    without anyone noticing, because nothing that ran over it ever produced the literal
+    string a model would see. `run_benchmark.py` rendering all thirteen cells did, on its
+    first execution.
+
+    The fix is small — put the count in a parenthetical the sentence never has to agree
+    with, "the following flight numbers ({{n}} total)" — but the general rule is worth
+    keeping: **a prompt with a swept parameter has to be read at both ends of the sweep, not
+    at the middle.** English grammar is a hidden dependency on N.
+
+    This is also the argument for the runner rendering and validating every prompt *before*
+    the first run rather than lazily per run. It costs nothing, it turns three classes of
+    error (unresolved placeholder, missing cell, phase mismatch) into a startup failure
+    instead of a mid-matrix one, and it is the only step that puts the actual model-visible
+    text in front of a human.
+
+32. **The payload profile is a property of the stack, so it cannot be a condition.** §4 lists
+    six phase-2 condition cells, four of them `M-R*-fat` / `M-R*-lean`. But the REST services
+    read `PAYLOAD_PROFILE` at container start, so the runner cannot switch it per condition:
+    six cells are two passes over four conditions, and the `M-G*` pair runs in only one of
+    them because a GraphQL query names its own fields.
+
+    Two consequences worth writing down. The run **directory** has to carry the profile
+    (`runs/M-R1-fat/…`) or the second pass silently overwrites the first, while `meta.json`
+    keeps it a separate field so the report can keep it a column — §11 is right that baking
+    it into the condition id doubles every table, but storage and reporting want different
+    things here. And the gate needs `pnpm health --profile lean`: without it,
+    `PAYLOAD_PROFILE=lean ./bench.sh run` against a stack still up in `fat` produces 66 runs
+    labelled lean and measured fat, and **nothing downstream can detect it** — both profiles
+    answer every task correctly, only the byte counts differ, and the byte counts are the
+    finding. `--force-recreate` is the part that is easy to omit.
+
+33. **The recipes' `instructions` block is a measurement surface, so it is now enforced
+    identical.** It is the system prompt: it enters every run's cached prefix, so a sentence
+    present in one condition and absent from another shifts both the token counts and the
+    agent's strategy on one side of the comparison. Phase 1 did not treat it that way — B's
+    recipe says "do NOT call `introspect`", B2's carries a full schema-discovery workflow,
+    A's says neither — which is a real caveat on phase 1's protocol comparison that we
+    should state rather than repeat.
+
+    The four phase-2 recipes therefore share one block, generated once, and
+    `_assert_symmetric_instructions()` refuses to start a pass if they diverge. A comment
+    saying "keep these identical" is exactly the kind of instruction that loses over time.
+    They also share one Goose extension name (`airline`), because Goose namespaces tool
+    names by extension and a longer name on one side of the comparison would shift its
+    prefix bytes — a detail small enough to have gone unnoticed and systematic enough to
+    matter across 198 runs.
+
+    The one instruction the block does carry, identically everywhere: every fact must come
+    from a tool result, the data is synthetic, and an unavailable value should be reported as
+    unavailable rather than guessed. That is the fair form of surprise 29's concern — it
+    targets fabrication rather than tool choice, so it cannot bias the comparison, and it
+    turns an ungrounded answer into a measured failure instead of a missing instruction.
+
+34. **Two shared-resource races, both retired instead of fixed.** §8.2 listed two things to
+    fix before the matrix: Goose's shared log directory (which parallel conditions were
+    actively deleting from) and `/__metrics` (a global counter six parallel conditions would
+    have interleaved). Both were real, both were correctly diagnosed, and neither was fixed.
+    The Goose cross-check column was retired and `backend_requests` was descoped, so both
+    races are now gone by construction — `run_benchmark.py` no longer touches any path
+    outside its own run directory, and nothing reads `/__metrics` during a run.
+
+    The pattern is worth naming because the instinct runs the other way. Both had obvious
+    engineering fixes — per-run log isolation, a run-id header the request accounting buckets
+    on — and both fixes would have worked. The question that made them unnecessary was
+    "**what does this column let us claim, and do we need that claim?**" For the Goose
+    snapshot: a second opinion about the same API calls the proxy already records
+    authoritatively per run. For `backend_requests`: a rebuttal to a question about
+    infrastructure cost that this study is not making a claim about.
+
+    The corollary is the uncomfortable half. A diagnosed bug creates real pressure to fix it
+    — the analysis is done, the fix is clear, and *not* fixing it feels like leaving work
+    unfinished. But a column nobody needs is still maintenance, still a thing that can be
+    misread, and in the Goose case it was actively misleading: it looked like corroboration
+    while recording which condition cleared the directory last. Deleting it removed the race,
+    the maintenance, and the misreading at once.
+
+35. **The proxy records token counts and throws away the content, so three of the four
+    phase-2 metrics were unbuildable.** PHASE2_PLAN.md §11 asserted that
+    `pass_through_tokens` and `forced_serial_depth` were "derivable from `proxy.jsonl`" —
+    parser work only — and that `backend_requests` was the one needing runner changes. Both
+    halves were wrong. `backend_requests` got cut (surprise 34), and the proxy turns out to
+    log this and nothing more:
+
+        {"tool_result_tokens": 4212, "n_tool_use": 3, "input_tokens": 200, ...}
+
+    `_tool_result_tokens()` tokenizes each tool result, keeps the integer, and discards the
+    body; `tool_use` blocks are counted without their names or arguments. Every metric that
+    asks *what* was in a payload — pass-through tokens (which fields went unused), forced
+    serial depth (did call k consume an id from call k−1), per-fact grounding (did this fact
+    ever enter the context) — needs the content. Only `answer_f1` was buildable, because the
+    answer lives in `stdout.txt`.
+
+    Two things worth keeping from how this went. **The claim was plausible and specific,
+    which is why it survived.** "Derivable from proxy.jsonl by matching IDs across tool_use /
+    tool_result blocks" describes a real algorithm over a log that does not exist; nothing
+    about it reads as a guess. Confirming it took one `head -1` of a real log file, and that
+    check was never run because the sentence sounded like it had already been checked.
+
+    **The weak form was worth building anyway.** Zero tool calls means the answer was
+    fabricated, full stop — and that is not hypothetical, it is the phase-1 handshake failure
+    (Apollo's startup logs corrupted stdio, Goose registered zero tools, the agent answered
+    from training data). It returns `False` or `None` and never `True`, so an unassessed run
+    can never be read as a verified one. A partial gate that cannot lie about its own scope
+    beats waiting for the complete one.
+
+36. **Two reporting bugs that only a rendered report could show.** `parse_logs.py` was
+    exercised against 72 synthetic phase-2 runs, and the *code* looked right in both cases.
+
+    **Task ids sorted lexically**, so `M1@20` came before `M1@5` in every table and chart.
+    The sweep exists to show a slope; lexical order scrambles it while every individual
+    number stays correct. Two call sites still said `sorted(tasks)` after the ordering helper
+    was written — which is the ordinary way a fix half-lands.
+
+    **The concepts explainer printed phase-1 copy into a phase-2 report** — "REST conditions
+    (A1/A2)", "17–22 endpoint definitions", "~82 KB for 5 PRs" — naming conditions that do
+    not exist in that experiment and citing payloads from another one. §11 had explicitly
+    listed that section under "what carries over unchanged", and the *mechanism* does; the
+    illustrations embedded in it do not. This is the same bug as PR #3's stale T2 copy: prose
+    asserting a mechanism the data on the page does not show. It was found the same way, too
+    — by reading the output instead of the code.
+
+    Hence the synthetic runs. They cost nothing, they need no API key, and they exercise the
+    whole path from `meta.json` to rendered markdown with deliberate failures planted in
+    them: a truncated answer, an all-"yes" answer, an answer with zero tool calls. Every one
+    of those showed up in the report where it should — and the two bugs above showed up
+    beside them.
+
+37. **A tool call's arguments arrive as fragments that do not individually parse, and a naive
+    reader would have made `forced_serial_depth` read 1 everywhere.** The proxy's new
+    `tool_io.jsonl` sidecar has to record what each tool call asked for. In a streamed
+    response that is not one object — it is a `content_block_start` carrying the tool's id and
+    name with `input: {}`, followed by `input_json_delta` events whose `partial_json` strings
+    must be concatenated before they parse:
+
+        {"id": "toolu_a", "name": "getFlight", "input": {}}
+        partial_json: '{"id": "FL-'
+        partial_json: '0001"}'
+
+    Read one delta at a time and every argument fails to parse, so every call records
+    `input: {}`. Nothing errors. `forced_serial_depth` then finds no consumed values anywhere
+    and reports depth 1 for every condition — which is *exactly the result the GraphQL side
+    predicts*, so it would have read as a confirmed hypothesis rather than a bug. The accumulate-
+    per-block-index version is a few lines; the failure mode is what makes it worth a test.
+
+    Same shape as the `n_tool_use` count the proxy already had: it worked because
+    `content_block_start` is a single event. The moment a field is streamed rather than sent
+    whole, "read the event" stops being enough.
+
+38. **`forced_serial_depth` had to exclude ids the prompt supplied, or it rewards reading the
+    instructions.** The metric is the longest chain of calls where each consumed an identifier
+    the previous one returned. M1 hands the agent twenty flight numbers, and M3 hands it twenty
+    flight ids — so an agent that fetches a list and then calls per record *looks* chained: the
+    ids appear in the first call's response, and again in every following call's arguments.
+    They were never discovered, though. The agent could have issued all of those calls at once.
+
+    So the values in `task_prompt.txt` are subtracted from both sides before matching. The
+    correction is available because `run_benchmark.py` writes the rendered prompt per run —
+    written for reproducibility, useful here for something else entirely.
+
+    Two smaller guards in the same function, both for the same reason: strings under four
+    characters are ignored (short tokens collide across unrelated records constantly, and a
+    spurious match inflates the chain), and numbers and booleans are skipped entirely — a seat
+    count matching a crew id's digits is a coincidence, not a dependency.
+
+    Worth noting how both of these were found: by writing the test for the *negative* case.
+    "Four independent lookups of prompt-supplied ids are depth 1" passes trivially; the test
+    that mattered was "the same calls with a list fetch in front of them are still depth 1",
+    and getting that to fail first is what showed the correction was load-bearing. Two earlier
+    versions of that test passed for the wrong reason — the fixtures did not actually contain
+    the collision — which is its own lesson: a test asserting a guard works has to be watched
+    failing without the guard.
+
+39. **`pass_through_tokens` reports exact tokens without a tokenizer in the parser.** The
+    metric wants tool-result tokens whose values never reach the answer. Tokenizing in
+    `parse_logs.py` would mean a tiktoken dependency there (it runs under plain `python3`) and
+    a second implementation to keep in sync with the proxy's.
+
+    Instead: the proxy already records an exact `tool_result_tokens` per call, so the parser
+    computes the *fraction* of result bytes whose values never appear in the answer and applies
+    that fraction to the exact total. Token units stay consistent with every other column, no
+    tokenizer is needed downstream, and the approximation is confined to a ratio — which is far
+    more stable than absolute tokenization, since JSON keys and punctuation are spread evenly
+    through used and unused fields alike. The same "one owner per number" move as `sample.ts`
+    and `rest-payload.ts`: whoever owns the exact count keeps owning it.
+
+40. **A published tool-surface number had already drifted, and the check that would have said
+    so did not exist yet.** §8.1 recorded M-R1's `tools_list_bytes` as 9,440 on 2026-08-28.
+    The first time `./bench.sh capture` measured it (2026-09-02) it came back **9,601**.
+
+    The cause is legitimate: commit `14d8973` added a `roles` filter to the assignments
+    endpoint on both surfaces, which grew `listAssignment`'s `inputSchema` by 161 bytes. That
+    filter is *wanted* — it is what stopped pilot-scoped tasks carrying cabin crew and took
+    M3@50 `-fat` from ~610 KB to 425 KB. But it moved a published cost, in the one place where
+    a change is paid on every single run: a front-loaded condition's tool surface sits in the
+    cached prefix, so 161 bytes are billed 33 times per payload pass whether or not the agent
+    touches those nine tools.
+
+    What is worth keeping is *why* it went unnoticed for five days. The change was reviewed on
+    its merits — better payloads, both surfaces, a test for DataLoader batching — and it was
+    correct on all of them. Nothing in reviewing "does this filter work" prompts "what does
+    this do to the cached prefix of the front-loaded REST condition". The number lived in
+    prose in a plan document, so nothing could compare it to anything.
+
+    Now `capture/expected-tool-surfaces.json` owns the four surfaces and
+    `capture/check_surfaces.py` fails the capture on any difference — count, byte size, or
+    tool names — with §8.1 quoting the file rather than holding its own copy. Same "one owner
+    per number" move as `sample.ts` and `rest-payload.ts`, applied to a number that lived in
+    documentation.
+
+    Phase 1 deliberately gets no such baseline: A1/A2/B/B2 come from GitHub's live MCP server
+    and live schema, so re-measuring compares against today's upstream rather than June's.
+    Pinning a number you cannot reproduce would just be a test that fails for the wrong reason.
+
+    **And the baseline was gitignored on its first commit attempt.** `.gitignore` had
+    `capture/*.json` — correct, because everything in there had been run *output*. The
+    baseline is an *input*: it is what the gate compares against. Ignored, it would have
+    worked perfectly on this machine and pinned nothing anywhere else, and a fresh clone would
+    have had no baseline at all. Two related holes closed at the same time, both of which made
+    the gate report success while checking nothing: a missing baseline now errors instead of
+    crashing or passing, and `--require=M-R1,...` makes a capture that crashed before writing
+    its file a failure rather than a skip. The lesson is narrow and reusable — **a check whose
+    reference data can go missing needs to fail closed**, and "no data to compare" is the most
+    likely way for a gate to stop working without anyone noticing.
+
+    And the drift turned out to *illustrate* the 2x2 rather than threaten it. Adding an API
+    capability grew the front-loaded REST surface by 161 bytes and left the two on-demand
+    surfaces byte-identical, while M-G2 absorbed the same capability at zero prefix cost
+    because its tools are frozen operations, not generated endpoint schemas. That is a real
+    property of front-loading, measured by accident.
+
+41. **The stale-phase-1-copy bug, third instance.** `capture/SUMMARY.md`'s footer asserted
+    "GraphQL exposes only 4 tools" — true of phase-1 condition B, printed directly beneath
+    phase-2 rows where the GraphQL conditions have 3 and 7. The same generator also globbed
+    `capture/*.json`, picked up the new pinned-baseline file, and rendered it as a
+    `| None | ? | ? |` row in the published table.
+
+    Three for three now: PR #3's T2 copy explained a mechanism for a task that had changed
+    under it; `parse_logs.py`'s concepts explainer printed "REST conditions (A1/A2)" and
+    "~82 KB for 5 PRs" into a phase-2 report; and now this. Every one was **generated prose
+    with a fact baked into it**, every one kept rendering, and every one was found by reading
+    the output rather than the code.
+
+    The pattern to watch for is narrower than "stale comments": it is a *generator* that
+    hardcodes a measurement or a condition name in text it emits. Those facts have no owner
+    and nothing checks them, so they age silently while the numbers beside them stay live.
+    Both generators are now parameterised by phase, and the summary groups its table so a row
+    from one experiment is never printed as if comparable with the other.
+
+42. **The primary instrument was undercounting tool payloads by roughly an order of magnitude
+    whenever the agent fanned out — and had been since phase 1.** Found by the phase-2 smoke
+    run, in a way that only real data could produce.
+
+`_tool_result_tokens()` counted the tool_result blocks in the request's **last user
+    message**, on the reasoning that each API call resends the whole conversation so only the
+    newest message holds results not already logged.
+
+**It took three attempts, and the first two passed their own tests.**
+
+    *v1 — the parser drops blocks.* Disproved: phase 1's A1 counted 5 parallel results as
+    4,548 tokens, so several blocks in one message read fine.
+
+    *v2 — Goose appends each result as its own user message, so reading only the last drops
+    the rest.* I changed the rule to walk back over trailing user messages to the last
+    assistant message, wrote a regression test for that shape, watched it pass, and declared
+    it fixed. A real run then disagreed: the fix landed at 12:58:43, a re-run started at
+    13:01:28, and it **still recorded 1 result at a 4-way fan-out.**
+
+    *v3 — what actually happens*, from a captured message skeleton: when the model emits N
+    tool_use blocks in one response, **Goose serializes them into N separate assistant/user
+    turn pairs** in the history it sends next —
+    `assistant[tool_use:1] user[tool_result:1] assistant[tool_use:2] user[tool_result:2] ...`.
+    A single request adds 2N messages, and each of those N results genuinely does sit behind
+    its own assistant turn. So *any* rule phrased in terms of "the last turn" sees exactly
+    one, however wide the fan-out. Both v1 and v2 were rules of that form.
+
+    *v3 — index against the previous request's message count.* Better: a real 19-way fan-out
+    went from 2 results captured to 19. But still one short of 20 on every fan-out run, and
+    the reason is instructive. **The history is not reliably append-only.** When Goose
+    serialized the fan-out it also *restructured the prefix*, merging an `assistant[text]` and
+    an `assistant[tool_use]` into a single message; every later index shifted by one and the
+    diff lost whatever straddled the boundary.
+
+    *v4 — key on `tool_use_id`.* Position was the wrong key all along: the client is free to
+    rewrite the transcript, and does. An id appears exactly once however the history is
+    rearranged. Replayed over five live runs, v4 captures **every** result — 20/20, 9/9, 9/9,
+    3/3, 1/1 — where v3 lost one on each of the two fan-out runs. (A result block without a
+    `tool_use_id` cannot be deduplicated, so those fall back to the positional rule and are
+    counted once rather than never.)
+
+    Four versions, and the through-line is that **the first three were all positional**. Each
+    encoded a different guess about where new data sits in a transcript someone else
+    controls.
+
+    **A fix verified only against a shape you invented is not verified.** Three times a
+    passing test proved my parser handled my hypothesis, which was never the thing in doubt.
+    What broke the loop was recording the actual structure — roles and block types, no
+    content, a few KB per run — instead of reasoning about it again. That capture is now on by
+    default, because the next surprise of this kind will also be a shape question.
+
+    The deeper lesson is about choosing a key. Every positional rule is a bet on someone
+    else's serialization staying put. **When the upstream gives you a stable identifier, key
+    on the identifier** — it is not merely more robust, it removes the class of bug rather
+    than the instance.
+
+    The evidence is Anthropic's own accounting, which is what makes it airtight. On
+    `M-G1/M1@5/rep3`, call 7 emitted 4 parallel `graphql_execute` calls; call 8 recorded
+    **one** 113-byte result and 40 tool-payload tokens, while `cache_creation_input_tokens`
+    grew **613** tokens. One result plus 333 output tokens accounts for ~373. Four results
+    account for ~493–613. The delta fits four and cannot fit one.
+
+    Phase 1 is worse, because REST is where the fan-out lives. `A1/T1/rep1` recorded a total
+    of **6,401** tool-payload tokens across the run, while `cache_creation_input_tokens` grew
+    31,385 and then 63,240 tokens on the two calls that carried results — against
+    `output_tokens` of 440 and 439. `NOTES.md` already records `list_pull_requests` over five
+    PRs as 82,301 bytes, which alone is ~20k tokens. So the published `tool-payload tok`
+    column understates REST's payload by something like 10×, and **the exact figure is not
+    recoverable**: the count was computed in the proxy at request time and only the total was
+    stored, so re-parsing cannot fix it. Those runs would have to be re-run.
+
+    Three things worth keeping.
+
+    **The error was conservative for the thesis, which is why nothing looked wrong.** The
+    undercount hits REST conditions specifically — they are the ones making parallel calls —
+    so it *understated* the effect the study exists to measure. An error that flatters your
+    hypothesis gets caught; one that handicaps it does not. B and B2 show
+    `cache_creation` of 0 throughout and a single tool call each, so their 419 is right, and
+    the column looked internally consistent.
+
+    **Cost and call counts are unaffected.** Those come from Anthropic's `usage` verbatim —
+    input, output, cache_read, cache_creation — and never touched `tool_result_tokens`. The
+    headline phase-1 claims (inference calls, USD, the stage-cost split) all stand. One
+    column is wrong, and it is not one any published claim rests on.
+
+    **The set of new blocks is computed once per request and handed to both readers**, so
+    `tool_result_tokens` and the sidecar cannot disagree about which results belong to which
+    call. `proxy.jsonl` also gained `n_tool_results` and `n_messages`, which is what made the
+    v3 residual findable by arithmetic instead of another guess.
+
+    And a note on the fix itself: my first version reversed the flat block list to restore
+    chronological order, which put a batched message's own blocks backwards. An existing test
+    for the single-batched-message shape caught it immediately. The correct reversal is at
+    *message* granularity — blocks within a message are already in order.
+
+43. **The grounding gate's first real finding was a false positive, and that was the right
+    outcome.** The smoke run flagged `M-G1/M1@5/rep3` as fabricated: a perfect answer (F1
+    1.00) stating 15 facts, 9 of which appeared in no recorded tool result. Three of the five
+    flights' departure times and gates were nowhere in the corpus — not even their flight
+    numbers.
+
+    It was measurement loss, not fabrication (surprise 42): the results arrived — Anthropic's
+    own cache accounting says so — and the proxy did not record them, for a reason still
+    unestablished. But note what the gate did with an instrument that was quietly broken. It
+    did not average a suspect run into the accuracy column, it named the specific facts it
+    could not trace, and it forced someone to go and look — which is how the underlying bug
+    was found. A gate that had said "5 of 6 verified, looks fine" would have hidden both the
+    false positive *and* the ten-year-old undercount behind it.
+
+    The design choice that made this work is the three-state return: `True` / `False` /
+    `None`, never `True` by default. A binary gate would have had to guess, and the safe guess
+    (pass) is the one that hides bugs.
+
+44. **A bare `./bench.sh run` planned 156 runs across both phases, and only a down stack
+    stopped it.** After making `bench.sh` phase-aware I left `run_benchmark.py`'s condition
+    default as "every condition in `CONDITIONS`" — which now meant all eight, both phases.
+    `bench.sh` chose `RUNS_DIR=runs/phase1` (its default for an unfiltered selection), so the
+    132 phase-2 runs would have been written *inside* the phase-1 tree, producing something
+    `parse_logs.py` refuses to parse, after spending roughly $10-20.
+
+    It didn't happen because `services_up()` gated on the phase-2 stack and the stack was
+    down. That is luck, not design: the guard that saved it was checking something else
+    entirely. The runner now refuses a mixed-phase selection outright and defaults to phase 1
+    only, with phase 2 opt-in by naming its conditions.
+
+    The general shape is worth naming: **when you split a pipeline by some dimension, every
+    stage needs to agree on the default for that dimension.** I taught `bench.sh` and
+    `parse_logs.py` about phases and left the component in the middle — the one that spends
+    the money — with the old global default.
+
+45. **The fan-out I needed to diagnose was a recovery behaviour, not a structural one — so it
+    didn't reproduce.** The M-G1 runs that exposed the undercount fanned out because the agent
+    passed a comma-joined *string* to a list argument:
+
+        flightsByNumbers(flightNumbers: "AA5751,DL2753,AS4422,AS1452,AS1876")
+
+    GraphQL coerces a single value to a one-element list, so that asks for one flight whose
+    number is the whole comma-joined string. The router correctly returned `[]`. The agent
+    then recovered by issuing one query per flight — four in parallel — and that fan-out is
+    what revealed the dropped payloads.
+
+    Two things follow. **It is not reproducible on demand**: of three reps, two fanned out and
+    one did not, and a later run took an entirely different path (ten sequential calls, no
+    fan-out at all). Asking for "the same cells again" to diagnose a fan-out bug was therefore
+    a wasted run — my mistake, and an obvious one in hindsight. To diagnose a fan-out you have
+    to pick a task that *structurally requires* one, not one where it happens to arise.
+    `listAircraftAdvisories` takes a single required `id` with no batch form, so M4 forces one
+    detail call per aircraft; that is the reliable inducer.
+
+    And **the recovery itself is a real observation about GraphQL tool use** worth keeping for
+    the writeup: a list argument is the one place where a plausible-looking mistake returns
+    empty data rather than an error, because coercion makes it valid. The agent recovered
+    within one turn and still got the right answer, but it cost four extra calls — an
+    error-recovery cost that shows up as inference calls, which is exactly what this study
+    measures. Watch for it in the matrix rather than treating it as noise.
+
+46. **`forced_serial_depth` reported 1 for a genuinely 2-deep chain, and the test fixtures
+    shared the code's mistake.** M4's real shape, from the captured run: one `listFlight`, then
+    19 `listAircraftAdvisories` calls whose aircraft ids came out of that list's response. That
+    is a dependency — the agent could not have issued the 19 without the first — so depth 2.
+    It measured 1.
+
+    The cause is an attribution off-by-one. A sidecar record for call *i* holds the tool
+    results that **arrived with its request** together with the tool_use blocks that went out
+    in its **response**. Those arriving results answer call *i−1*'s tool calls, so they are
+    produced by *i−1*. I had attributed them to *i*, which put the fan-out's cause and effect
+    in the same record, and the depth walk only links strictly earlier records — so it saw
+    nothing.
+
+    What makes this worth writing down is that **my unit-test fixtures encoded the same
+    assumption.** The helper built each record with a call's own results in its own record,
+    which is not what the sidecar contains. Code and fixtures agreed, seven assertions passed,
+    and the metric was wrong. Only real data disagreed — and it took the *right* real data:
+    M1@5 never fans out, so it could not have shown this either.
+
+    And note the direction, again: depth 1 for REST is precisely what the GraphQL hypothesis
+    predicts. A metric that quietly confirms your thesis is the one to distrust — this is the
+    second time in one session that a bug produced the expected answer (surprise 42 was the
+    other), and both times the expectedness is why it survived.
+
+    The fixtures now mirror the sidecar's real shape, with the M4 fan-out as an explicit case.
+
+47. **The undercount was found by a human noticing an implausible grounding failure. That is
+    not a detection mechanism, so now there is one.** Four attempts at the tool-result
+    boundary (surprise 42) all produced plausible output: fewer payload tokens than reality,
+    with nothing in the report saying so. What finally surfaced it was `answer_grounded`
+    flagging a run as fabricated for an unrelated-looking reason, and somebody going to look.
+
+    The invariant that makes it self-detecting is trivial: **every tool call the model issues
+    gets a result back, so a completed run must record as many results as calls.** The proxy
+    now logs `n_tool_results` beside `n_tool_use`, and `parse_logs.py` compares them per run.
+    On the runs already on disk it flags exactly the three that fanned out — 9 calls / 8
+    results, 9/8, 20/19 — and passes the four that did not.
+
+    Three design points, each mirroring a decision made elsewhere in this pipeline:
+
+    - **Lossy runs are excluded from the join-tax means and listed separately**, not averaged
+      in. Their payload figures are a lower bound, and averaging a lower bound into a mean
+      hides the loss inside a plausible number. Same rule as fabricated runs in the accuracy
+      section.
+    - **`payload_complete` is True / False / None, never True by default.** Runs written by a
+      proxy predating the field report None with a note, because "unverifiable" must not read
+      as "verified". Same rule as `answer_grounded`.
+    - **A run cut short by a timeout or the budget killer is excused**, since a call really can
+      lack a result there. Distinguishing an expected gap from a measurement loss is the
+      difference between a useful check and one people learn to ignore.
+
+    The general shape: when a measurement can silently under-report, look for a *conservation
+    law* it has to obey — something countable on both sides of the pipeline — and assert it
+    per run. Four failed fixes cost far more than this check would have.
+
+48. **The health gate's first false positive, and why a false positive is the dangerous kind
+    of failure for a gate.** A phase-2 run was blocked by `rest/fleet  DOWN  timeout` while
+    Docker's own in-container healthcheck reported that container healthy, the container had
+    been up an hour without restarting, and the host reached the very same URL in **4 ms**
+    moments later. Docker Desktop's port forwarder stalling, not a down service.
+
+    The gate had one 3-second attempt per endpoint and no retry. Two consequences, and the
+    second is worse than the lost minute:
+
+    - The advice it prints is `docker compose up -d --wait --force-recreate`, which would have
+      recreated seven containers, "fixed" the problem by coincidence, and taught nobody
+      anything.
+    - **A gate that cries wolf gets bypassed.** This one exists to catch a half-up stack —
+      the case where an agent reaches two of three services and returns a confident wrong
+      answer that scores as a cheap success. Its value is entirely in being believed.
+
+    Now each endpoint gets up to `HEALTH_ATTEMPTS` (3) tries with a 400 ms backoff, and the
+    router's federated-query probe retries too, since issuing a real query makes it the most
+    likely of the seven to be caught by a stall. Retrying does not weaken the check — verified
+    by stopping `bench-fleet-rest` and watching it report `fetch failed (3 attempts)` and exit
+    non-zero.
+
+    The part worth keeping is that a probe needing more than one attempt is reported as
+    **FLAKY**, not silently passed. A stack that needs retries now will drop probes during a
+    198-run matrix, where each run starts its own proxy and a dropped request looks like an
+    agent error rather than a network one. Suppressing the symptom and reporting nothing would
+    have traded a false positive for a false negative.
+
+49. **`forced_serial_depth` was counting schema discovery as dependency depth, which would
+    have made it measure tool packaging instead of the join.** The first clean phase-2 data
+    showed M-G1 at depth 2 on M1@5 against M-R1's 1 — backwards for the thesis on the one task
+    deliberately built so REST wins. The chain was linked by `Query.flightsByNumbers`: a
+    coordinate `schema_search` returned and `schema_describe` consumed.
+
+    That is real serialization — the agent cannot describe a coordinate it has not searched
+    for — but it is not a data dependency, and crucially **it exists only in the on-demand
+    conditions** (M-R2, M-G1). Left in, the metric would have reported the two on-demand
+    surfaces as structurally deeper on every task regardless of join structure, which is
+    precisely the confound the 2x2 exists to remove: §4 exists because phase 1 conflated
+    protocol with tool packaging, and this would have smuggled that conflation back in through
+    a metric.
+
+    Both signals are real, so neither is discarded: `forced_serial_depth` now chains only
+    through **data** results and `discovery_depth` chains only through DISCOVERY_TOOLS
+    results, matched by the `tool_use_id` of the call that produced each result. The real runs
+    now read M-G1/M1@5 as data 1 / discovery 2, M-R1/M1@5 as 1 / 1, and M-R1/M4@20 as data 2
+    (via aircraft ids) / discovery 1 — which is the correct story for all three.
+
+    Worth noting how it surfaced: not from a test, but from **a number pointing the wrong way
+    on a task whose answer was already known.** M1 was designed as the batchable case where
+    REST does well; seeing GraphQL deeper there was the tell. Building tasks with predictable
+    directions is what makes a wrong metric visible — the three earlier bugs this session all
+    pointed the *predicted* way and survived far longer.
+
+    Which conflation to make headline is a reporting choice, not a measurement one: both
+    columns are now in `raw.csv` and the summary prints `disc` beside `depth` only when it
+    exceeds 1.
+
+50. **The M4@103 run never tested what it was designed to test — the turn cap fired first, and
+    Goose exited 0 while doing it.** The run existed to settle whether a ~127k-token tool
+    result errors cleanly or truncates silently. It answered a different question. At N=103,
+    REST needs roughly 1+103 calls; `--max-turns` stopped it at 26 inference calls / 56 tool
+    calls, having gathered 14,485 tokens of payload — an order of magnitude short of any
+    context limit. **The context-window question is still open**, and it is not reachable at
+    this cap.
+
+    The dangerous part is the exit code. Goose prints "I've reached the maximum number of
+    actions I can do without user input. Would you like me to continue?" and **exits 0**.
+    `goose_exit: 0`, `timed_out: false`, `budget_killed: false` — every completion signal in
+    `meta.json` says the run succeeded. What it actually produced was a partial answer that
+    the grader scored `answer_f1 = 0.00`, and `_accuracy_section` averaged that into the table
+    as **`M-R1 M4@103 → 0.00 ± 0.00`**, in a report arguing that agent-side joins struggle at
+    high N. A reader would have read the harness's turn limit as REST failing the task.
+
+    Two things caught it, both of them guards built for other reasons. `completed()` greps
+    stdout for the truncation banner, so the run was flagged. And the tool-result conservation
+    check read **56 tool calls, 55 results** — the missing one is the call that was in flight
+    when the cap hit, which is exactly the shape of a run stopped mid-turn. An invariant built
+    to catch a proxy bug identified a harness cap.
+
+    `completed` is now `stop_cause`: `None`, `turn cap (25)`, `timeout`, `budget kill`, or
+    `no output`. A bare boolean collapsed three causes that mean different things, and the
+    turn cap is the one that must never be read as accuracy — so capped runs are excluded from
+    the accuracy means and listed in their own table, the same treatment fabricated runs get,
+    for the same reason: an error in either direction corrupts a column. (An earlier draft
+    of this paragraph claimed "four of five measurement bugs this phase flattered the
+    hypothesis" — that tally was never checked and is wrong; see surprise 62 for the counted
+    version. Most of these errors were conservative for the thesis, not favourable to it.)
+
+    Also a plain documentation error found by reading the meta: STATUS said `MAX_TURNS=50`,
+    the repo default is 50, and the run recorded **25** — `.env` overrides it. The matrix
+    inherits that. M4@50 and M4@103 will both cap on the REST arm unless it is raised, and
+    a capped cell is not a cheap cell, it is a missing one.
+
+51. **Prompt caching has never once hit — in any run, on either arm — and the resulting cost
+    inflation scales with call count, which is the axis the whole experiment is about.**
+    `cache_read_input_tokens` is `0` for all 8 runs. Not because the runs are short:
+    M-G1/M1@5 wrote 4,584 / 4,752 / 4,923 / 5,085 / 5,235 / 5,385 / 5,535 tokens of cache on
+    seven consecutive calls and read back nothing. Each call rewrites the entire prefix from
+    scratch. M4@103 wrote **387,353 tokens** of cache across 26 calls for a conversation whose
+    final prefix is about 25k — a 15x inflation of input cost, all of it at the 1.25x write
+    rate, none of it at the 0.1x read rate.
+
+    Why this is not a footnote: cost under a never-hitting cache is roughly
+    `n_calls x mean_prefix`, where a hitting cache would pay `mean_prefix + n_calls x delta`.
+    The penalty is proportional to **call count**. REST's 1+N join makes many calls; a
+    federated query makes one. So the defect inflates the REST arm specifically, in the
+    direction the thesis predicts, and any cost ratio measured under it is partly a
+    measurement of the client rather than of the protocol. Fifth of five, same direction.
+
+    The proxy is not the cause: it forwards the body byte-for-byte (`content=body`), which the
+    module docstring says is deliberate for exactly this reason. Something the client sends
+    ahead of the cache breakpoint must differ per call — the system prompt (a clock or session
+    id), the tools array, or the transcript head, which Goose is already known to rewrite on
+    fan-out (surprise 42). Three candidates, one paid run per guess, and four such runs have
+    already been spent guessing at the tool-result boundary.
+
+    So: instrument instead of guessing. `_prefix_fingerprint` logs `sys_sha`, `tools_sha`,
+    `msg0_sha`, `n_tools` and `cache_breakpoints` on every request, with `cache_control`
+    stripped before hashing — the breakpoint legitimately walks to the end of the transcript
+    each call, and counting that as drift would report drift always and explain nothing. The
+    next run of any size names the moving part. Its tests assert the hashes **move** on a
+    changed clock, a reordered tools array and a rewritten first message, because a hash
+    function that returned a constant would report "the prefix is stable" while meaning "I
+    did not look" — the same trap as the three test fixtures that passed for the wrong reason
+    earlier this session.
+
+    `parse_logs.py` now warns on it every parse: 4+ calls, zero reads, nonzero writes. Across
+    the full matrix it prints **0 of 181 runs read a single cached token** against 32,216,643
+    written.
+
+    **And it is not new.** Re-parsing `runs/phase1` prints the same warning: **6 of 6
+    multi-call runs, 817,596 tokens written, zero read.** The defect predates phase 2 by
+    months, which means it is in every cost number this project has ever published — phase 1's
+    committed report included. That does not invalidate either comparison, because the
+    inflation applies to both arms.
+
+    > **RESOLVED and PARTLY RETRACTED — see 69 and 70.** Two things above are wrong. The cause
+    > is not the client: Anthropic's minimum cacheable prefix is **4,096 tokens on Haiku 4.5**
+    > (model-dependent and non-monotone in model size), every phase-2 prefix is 1,491–4,053, so
+    > no phase-2 run was ever *eligible* to cache its tool surface. There is no client-side fix
+    > and there never was. And the phase-1 claim is false as stated: those 6 multi-call runs
+    > are the pre-re-run tree; the current `runs/phase1` reads back **356,070 tokens**, all in
+    > A1/A2, while B/B2 write and read zero. So the inflation does **not** apply to both arms
+    > — in phase 1 caching *helped* REST, which is the opposite of what this entry assumed.
+    > The reason this took two months is 68: the prefix was believed to be 2,525, and a
+    > 2,525-token prefix should cache at the ~1,000 threshold the report also had wrong.
+
+    **Decided against modelling it** (2026-09-03). The tempting move is a second cost column
+    showing what a cache-respecting client would pay. Rejected: it is a conjecture dressed as
+    a measurement, and it would age against three moving targets at once — Anthropic's
+    pricing, the cache's matching semantics, and Goose's breakpoint placement. It would also
+    need an assumption that changes the answer by a lot on exactly the 100-call cells the
+    finding rests on, with nothing to check the assumption against. Everything this repo does
+    is built on measuring rather than asserting, and a modelled column is an assertion with
+    decimal places.
+
+    What replaces it costs nothing and cannot rot: **lead on the cache-independent numbers.**
+    Tool calls and pass-through tokens are unaffected by the defect and carry the whole
+    finding — 1 call against 100, 2,352 tokens against 36,598. Dollars stay in the report as
+    measured, with the disclosure that they are inflated by a client defect and that their
+    direction is the only quotable part. That is already what the key-findings lede says.
+
+    **The fingerprints came back and killed all three hypotheses.** M-G1/M1@5 rerun, 11 calls:
+    from call 3 onward `sys_sha`, `tools_sha` and `msg0_sha` are **byte-identical every call**
+    and `cache_breakpoints` holds at 4, while reads stay 0 and each call rewrites the whole
+    growing prefix (4,584 / 4,752 / 4,923 / 5,085 / 5,235 / 5,385 / 5,535). The system prompt
+    carries no clock, the tools array is not reordered, the transcript head is not rewritten.
+    The cached *content* is stable, so the cause is the *boundaries*.
+
+    That is a genuine narrowing rather than a dead end, and it points somewhere specific.
+    Anthropic allows 4 breakpoints and Goose uses all 4 — it added one per turn (2, 3, 4) and
+    then saturated. A read can only hit at a boundary some earlier request also wrote. If the
+    four markers slide forward with the conversation tail, then once the count saturates
+    Goose must evict its oldest marker to place a new one, and the oldest is the one on the
+    stable head — leaving four boundaries that have never existed before, on every call. That
+    would explain a zero read rate exactly, including why calls 1-4 wrote nothing at all (the
+    prefix ahead of a tail marker sits under the per-model minimum cacheable length).
+
+    Hypothesis, not conclusion. `_breakpoint_positions` now logs `bp_at` — `"system"` /
+    `"tools"` for a marker on the stable head, an integer for a message index — so the next
+    run of any size says whether the head markers vanish when the count hits 4. Its tests
+    check that a head marker is named and a tail marker is indexed, for the usual reason: a
+    position finder that returned `[]` would report "no markers" while meaning "I did not
+    look".
+
+    **Worth separating the two questions this raises.** Whether Goose can be made to cache is
+    a client question and may have no answer we control. Whether the *published* cost ratio
+    should depend on it is ours, and the answer is no — but not by modelling a second cost
+    column (see the 2026-09-03 note above, which rejects that). By leading on the numbers the
+    defect cannot touch: tool calls and pass-through tokens, which carry the finding on their
+    own and need no counterfactual to be true.
+
+52. **The fix for the turn cap was to remove a cell, and the interesting part is that removing
+    it correctly is not the same as deleting it.** N=103 was excluded on **cost**, not on
+    correctness: its ground truth is computed, checked against the fixture manifest, and
+    right. Deleting the cell would have discarded that and left the repo looking as though
+    N=103 had never been designed — when in fact it was designed, measured, priced, and set
+    aside. So `off_matrix: [103]` keeps the cell in `tasks.yaml`, in `expected.json`, in the
+    §7.1 ground-truth table and in every guard, while leaving it out of the default plan.
+
+    One detail in `select_tasks` matters more than it looks: an `off_matrix` cell is reachable
+    by exact id (`TASKS=M4@103`) but **not** through its base id. `TASKS=M4` is what someone
+    types when they want the M4 sweep, and having that quietly re-add the expensive cell would
+    spend precisely the money the exclusion exists to save. An exclusion that any convenient
+    spelling bypasses is not an exclusion.
+
+    The cap number came from the data rather than from picking a comfortable round figure, and
+    that mattered: M4@20 needed 4 inference calls for 20 tool calls, but M4@103 managed only
+    56 tool calls in 26 calls, because **Haiku's parallel fan-out degrades as context grows**
+    — the last twelve turns of that run issued exactly one tool call each. At that degraded
+    ~2.15 calls/turn, M4@50's ~51 tool calls need ~24 turns, so the old cap of 25 was about to
+    clip M4@50 too, by a single turn, and would have produced one more low-f1 REST cell that
+    looked like a finding. That degradation is itself worth reporting: it is a real cost of the
+    agent-side join that has nothing to do with token counts.
+
+53. **There was no way to see the run plan without starting to pay for it.** `run_benchmark.py`
+    prints `Matrix: reps=3 → 120 runs` and the per-condition breakdown, and then goes straight
+    into run 1 — no confirmation prompt anywhere. So the standing instruction to keep manual
+    control over every inference cost was, in practice, unenforceable for the one command that
+    spends the most: the only way to check whether `off_matrix` had really removed a cell was
+    to launch 120 runs and read the header as they started.
+
+    `DRY_RUN=1` now prints the plan and returns. It skips the phase-2 stack gate — a plan
+    check should not require a running backend — and says so, because a dry run that printed
+    nothing about the gate would invite reading its silence as "the stack is fine".
+
+    Verified both passes: fat plans **120**, lean plans **60**, ten tasks per condition,
+    M4@103 absent from both, and lean correctly announces `Skipping M-G1,M-G2`. The dry run
+    also surfaced something invisible until the plan was printed: **`SMOKE=1` is set in
+    `.env`**, so every phase-2 run is labelled `[SMOKE MODE]`. With `REPS=3` also set
+    explicitly its only real effect is defaulting `MODEL` to Haiku, which is what phase 2
+    wants anyway — but the label is wrong on a production matrix and nobody would have looked.
+
+54. **The whole report averaged the fat and lean payload brackets together, and that bracket
+    IS the headline claim.** Every table grouped on `condition`, so `M-R1` was the mean of six
+    runs — three fat, three lean. On M1@50 the two differ by **3.13x** ($0.079 vs $0.025), and
+    the printed figure was $0.052: a number matching no configuration anyone can run, sitting
+    in the row a reader would quote as "what REST costs". Twelve grouping sites, one bug.
+
+    §4 has described the matrix as **six condition cells** (`M-R1-fat`, `M-R1-lean`, …) since
+    it was written, and `run_benchmark.py` has always written them to separate directories.
+    Only the report folded them — and §11's "profile is a column, never part of the condition
+    id" reads like a licence for exactly that, when what it means is that the 2x2 in
+    `meta.json` and `CONDITIONS` must stay a 2x2. The design was right and unimplemented.
+
+    Note the direction, because it breaks the run of five: fat costs more than lean, so
+    averaging them **understated** the fat REST arm and flattered the thesis's opponent. The
+    first bug this phase to point away from the hypothesis — and it was found by reading the
+    accuracy table for something else entirely, not by any guard.
+
+    What the fold hid, now visible: M-R1 on M3@50 read `0.76 ± 0.39`, which is really **fat
+    0.97 ± 0.03 against lean 0.54 ± 0.49** — two different results, one of them unstable. And
+    M-R1/M1@20 pass-through goes 14,637 tokens fat to **1,107 lean**, a 13x improvement that
+    the average had turned into a shrug.
+
+    The fix keys every table on `cell` = condition + profile, with `cell_cond()` to recover
+    the condition. That last part was needed immediately: `mcp = [c for c in conds if c in
+    MCP_CONDS]` silently dropped every cell until it existed — the precise failure
+    `resolve_conditions` was written to make loud, reappearing one level down.
+
+55. **Every M3 cell in the matrix scored recall 0.5 on answers that were exactly correct.**
+    M3@5 read 0.67 ± 0.00 in four of six cells, across both protocols and all three reps —
+    which cannot be a condition effect, and that uniformity is what gave it away. The models
+    were right: `FL-0001 yes, FL-0002 no, FL-0003 yes, FL-0004 no, FL-0005 yes` matches
+    `expected.json` exactly.
+
+    The grader read a **pilot's** currency instead of the **flight's** verdict. `_YES` matches
+    `current`, `_yes_no` takes the first marker in a segment, and M3's prompt asks the agent
+    to reason per pilot — so for
+
+        **FL-0004** (Aircraft: B739)
+        - Captain Morgan Gallego: B739 rating expires 2026-12-08 ✓ Current
+        - First Officer Devon Duarte: No B739 rating ✗ Not rated
+        - **Result: NO**
+
+    the captain's "Current" at offset 88 outvoted "No" at 126, and `**Result: NO**` at 165 was
+    never reached. **The grader mis-read precisely the shape its own prompt requested.**
+
+    `_key_verdict` now prefers an explicit statement — a labelled `Result:`/`Verdict:`, or the
+    key followed by a bare yes/no — and takes the **last** one, because a model that narrates
+    and then summarises states its conclusion at the end, and `segments` only ever returns a
+    key's *first* mention. With no explicit verdict anywhere it falls back to the old reading,
+    so every answer shape that already graded correctly still does.
+
+    **Verified against all 54 real M3 answers, not against fixtures I wrote:** 23 improved, 1
+    changed for the better in the other direction, mean f1 **0.773 → 0.950**. The one that
+    dropped (M-G1/M3@50/rep3, 0.755 → 0.741) is a correction — the old `True` came from
+    `segments` anchoring FL-0001 to a **GraphQL query-argument echo** (`FL-0001", "FL-0002",
+    …`), while the model's actual verdict sat in a markdown table row `| FL-0001 | no |`. The
+    truth is `True`, so the model was wrong and the new grader says so. F1 fell because the
+    grader got more accurate.
+
+    The new tests transcribe the five answer shapes the matrix actually produced — `FL: no`,
+    `FL, no`, `FL no`, `| FL | no |`, and the narrated `Result: NO`. Writing them from
+    imagination is how this survived the first 63 assertions; the punctuation-free shape in
+    particular is one I would never have guessed.
+
+56. **One run took seven consecutive HTTP 400s and Goose responded by silently restarting the
+    task.** M-R2-lean/M3@50/rep1: calls 12-18 all returned 400, call 19 began a fresh
+    conversation, and calls 20-25 redid the work. `goose_exit` is 0, `stop_cause` is clear,
+    `timed_out` is false — and the run's cost covers **both attempts** while its f1 (0.69) is
+    the worst of its three reps. HTTP status is not a token count, so no metric in the report
+    had any reason to look at it.
+
+    One run in 181, which is why it is worth a permanent check rather than a shrug: at this
+    rate a future matrix has a handful, each one inflating a cost cell and depressing an
+    accuracy cell with nothing to mark it. `parse_logs.py` now counts non-200 responses per
+    run and warns.
+
+    It also explains the second lossy run: the sidecar dedupes tool results on `tool_use_id`,
+    and a restarted conversation re-sends results it has already sent, so 15 calls recorded 14
+    results. The conservation law held at the proxy level (15 uses, 15 results) — the mismatch
+    is between two counters that disagree only when a conversation is replayed.
+
+57. **"Isn't the GraphQL win just an unbatched backend?" — asked, and measurable, and no.**
+    The obvious objection to M-G1 resolving a 50-flight join in one query is that the router is
+    quietly making 150 entity reads and the benchmark is not counting them. Two answers, and
+    the second is the one that settles it.
+
+    First, per-request DataLoaders are already on every `__resolveReference`
+    (`server/graphql/context.ts`), so the batching exists. That was done for honesty rather
+    than for speed — it changes no token count, it only lets the writeup say "same backend
+    work, less agent context" instead of conceding the point.
+
+    Second, the harness can check whether the join is being paid for in latency instead, and it
+    is not. Non-inference wall time on M3@50: **M-G1 19.7s for one query, M-G2 24.5s for a
+    hundred, M-R1-fat 31.1s for four REST list calls.** The single federated join is the
+    *cheapest* of the three outside inference. M-G2's hundred calls add ~5s of server time over
+    M-G1 while adding **45s of agent-active time** — which is the finding compressed to one
+    line: agent-side fan-out costs inference, not backend.
+
+    The caveat the writeup owes a reader: this is an in-memory backend with no network between
+    router and subgraphs, so absolute latencies mean nothing at all. The relative claim is what
+    the objection was about, and the relative claim holds.
+
+    Worth noting *why* DataLoader cannot rescue M-G2, since it looks like the same N+1 problem:
+    it batches within one execution, and M-G2 issues 50 separate operations from 50 separate
+    agent turns, each with its own request context and its own fresh loaders. There is nothing
+    to batch — every query honestly asks about one flight. The canonical server-side fix for
+    N+1 is installed and correct, and the N+1 has moved **up a layer** into the agent's control
+    flow, where no resolver-level technique reaches it. That is the argument for caring about
+    operation granularity in a tool surface.
+
+58. **The cell refactor rendered a totals table of `0.0 ± 0.0` for every condition, and it
+    shipped.** Fixing the fat/lean fold (surprise 54) meant changing twelve grouping sites
+    from `condition` to `cell`. Eleven were `==` comparisons and got rewritten together. The
+    twelfth was `if r["condition"] != c: continue` — a negated filter, so it did not match the
+    pattern, and with `c` holding `M-R1-fat` while rows held `M-R1` it skipped every row. The
+    table then summed nothing and printed a full grid of zeros.
+
+    Zeros are the worst possible failure here: an empty join renders as a measurement. Nothing
+    errored, the table had the right shape and the right number of rows, and I read the report
+    afterwards and did not notice, because a zero in a token column looks like a small number
+    rather than like an absence.
+
+    Two lessons, one general. The general one is that a mechanical rewrite across N call sites
+    should be verified by *counting* the sites, not by re-running and reading the output — the
+    output looked fine. The specific one: `mcp` is derived from the rows, so a cell in it has
+    rows by construction, and the totals loop now exits rather than printing a row it could
+    not populate. An impossible state deserves a crash, not a plausible number.
+
+59. **Phase 1's `tool-payload tok` column is now suppressed rather than footnoted.** It
+    understates REST by roughly 10x (surprise 42) and cannot be recomputed, and it had been
+    sitting in the committed `results/phase1/summary.md` in three tables with **no disclosure
+    at all** while phase-2 work went on around it.
+
+    Suppressed, not annotated, and the reason is `summary.csv`: the same number lands in
+    columns 18 and 19 where no prose can travel with it. A markdown caveat does not stop
+    someone reading the CSV, and an order-of-magnitude error in a column labelled
+    "tool-payload tok" is exactly the figure a reader of this study would pull. **A blank cell
+    asks a question; a wrong number answers one.** So the markdown reads `n/a`, the CSV cells
+    are empty, and a `> ` note above the tables explains why and points at NOTES 42.
+
+    The mechanism is a small registry — `UNRECOVERABLE = {1: {"tool_result_tokens"}}` — rather
+    than an `if phase == 1` at each print site, because there are four print sites and the
+    next unrecoverable metric should be one line, not four. Phase 2's copy of the same metric
+    is correct and unaffected.
+
+60. **The model dimension was the same trap as the phase mix and the fat/lean fold, found
+    before it cost anything.** Both phases ran entirely on `claude-haiku-4-5`, and
+    expectation 7 flagged the open question: a collaborator could not reproduce phase 1's
+    zero-discovery finding for B2 on `claude-sonnet-4-6`. It said the question was "worth
+    resolving before the results are written up, not after" — and `FINDINGS.md` shipped
+    without it.
+
+    Before recommending that comparison run, I checked what the parser would do with a
+    mixed-model tree. **Nothing groups on `model`.** Two runs of the same cell and task on
+    different models would average into one row; the chart title takes
+    `rows[0]["model"]`; and worst, `_mean_stage` and the stage-cost table did
+    `model = sub[0]["model"]` and then priced *every* row in the group off that one price
+    list — a silent **3x mispricing** between haiku and sonnet, in the cost decomposition
+    that the report leads with.
+
+    Third instance of one bug class: a dimension that exists in `meta.json`, is honoured by
+    the runner, and is invisible to the report's grouping. Phases were guarded, profiles
+    became part of the cell key, and models are now refused with a message naming the
+    `PARSE_MODEL=` escape hatch. Per-row pricing is fixed unconditionally, since
+    `sub[0]["model"]` was wrong even in the single-model case that made it look right.
+
+    Verified the way this repo has learned to verify guards — by forging the failure shape
+    rather than trusting the code. A relabelled sonnet copy of `M-G1` in a tree with haiku
+    runs: the parse refuses and prints both `PARSE_MODEL` commands, `PARSE_MODEL` selects
+    30 of 60 runs and proceeds, and a `PARSE_MODEL` matching nothing exits rather than
+    reporting an empty matrix as a success.
+
+    **The science is deferred by decision (2026-09-03), and the plumbing is fixed.** The
+    sonnet comparison was offered and declined on cost; the limitation is disclosed inline in
+    `FINDINGS.md` instead, which is the honest resolution rather than a gap. The structural findings are
+    model-independent by construction: `FlightRoster($flightId: ID!)` cannot accept fifty
+    flights, so any model must loop, and fat REST returns all 46 fields regardless of who
+    is asking. The findings **at risk** are the agent-behaviour half of tax one — "`?fields=`
+    erases it" and "the agent opts in inconsistently" — because those depend on the model
+    choosing to send `?fields=`, which is exactly the kind of behaviour the collaborator
+    found to be model-dependent. `FINDINGS.md` states them as claims about agents; they are
+    currently claims about one agent.
+
+61. **The module that renders every published number was the only major one with no tests.**
+    `parse_logs.py` is 1,731 lines — the largest in the repo — and had **zero** assertions,
+    while `grade.py` (851 lines) had 75 and the proxy (696) had 55. That inversion explains
+    the shape of this whole list: surprises 50, 54, 56, 58, 59 and 60 all lived in
+    `parse_logs.py`. The tested modules stayed correct; the untested one kept shipping wrong
+    figures into committed reports.
+
+    `test_parse_logs.py` now covers it, 44 assertions, and **every case is a bug that
+    actually shipped**, transcribed from this file rather than imagined — the fat/lean fold,
+    the model dimension and its 3x mispricing, phase mixing, the phase-1 metric suppression,
+    capped runs counted as accuracy, `_ratio`'s "1.1x more of GraphQL", the lexical task
+    sort, and the zero-cache-read predicate.
+
+    **Then mutation-tested, because 44 passing assertions prove nothing on their own** — the
+    single most repeated failure in this project is a test that passes for the wrong reason
+    (three separate fixtures did exactly that). Reverting `cell_id` to ignore the profile
+    turns 3 red; making `metric_ok` always allow turns 1 red; putting capped runs back in the
+    accuracy mean turns 3 red. Each mutation reproduces the original bug and each is caught.
+    A guard nobody has watched fail is not a guard.
+
+    One detail worth keeping: `exits()` distinguishes a clean `SystemExit` from a crash and
+    from a normal return. All three read as "not working" to a human skimming output, but
+    only the first is the intended behaviour, and a guard that raises `KeyError` instead of
+    exiting would otherwise pass a naive `assert raises`.
+
+62. **The "most of these bugs flattered the thesis" claim was wrong, and I propagated it into
+    four documents including a published post.** Counted properly, by which arm each error
+    favoured:
+
+    | Bug | Effect | Direction |
+    |---|---|---|
+    | Fan-out payload undercount (42) | understated REST's payload ~10x | **countered** |
+    | Depth off-by-one (46) | read 1 for REST's genuine 2-hop chain | **countered** |
+    | Discovery counted as data depth (49) | made GraphQL look structurally deeper | **countered** |
+    | Fat/lean fold (54) | averaged the steelman into fat, understating fat REST | **countered** |
+    | Turn-capped f1 averaged in (50) | a REST cell scored 0.00 as if wrong | flattered |
+    | Silent API 400s (56) | inflated one REST-lean cell's cost, depressed its f1 | flattered |
+    | Prompt caching never hits (51) | inflates by call count — worst for M-G2, a *GraphQL* condition, in phase 2; worst for A1, a REST one, in phase 1 | mixed |
+    | M3 verdict misparse (55) | recall 0.5 in every condition at once | neutral |
+    | Totals table of zeros (58) | no arm favoured | neutral |
+
+    **Four countered, two flattered, one mixed, two neutral.** So the majority of these errors
+    were *conservative* — they understated the effect the study exists to measure.
+
+    Where the wrong claim came from: surprise 42 got this right on the day
+    ("the error was conservative for the thesis, which is why nothing looked wrong"), and then
+    surprise 50 asserted "four of five measurement bugs this phase flattered the hypothesis"
+    without recounting. That sentence was never checked against 42's own analysis, and from
+    there it went into `PHASE2_PLAN.md` §11, `README.md`, `FINDINGS.md` and a published blog
+    post. **A tally is a number and needed sourcing like any other number in this repo** — the
+    one class of claim I never applied that rule to was a claim about my own errors.
+
+    **The real lesson survives, and it is better than the one I had.** Direction is not what
+    determines survival — look at the catch times. Discovery depth (49) *countered* the thesis
+    and was caught in minutes; the fan-out undercount (42) also countered it and survived
+    since phase 1. What separates them is not bias but **collision with a written-down
+    expectation**: M1@5 was deliberately built as the task where REST wins, so GraphQL reading
+    deeper there contradicted a prior and got investigated within minutes. Nobody had a prior
+    for the absolute magnitude of a payload column, so a 10x error in it sat unquestioned for
+    months.
+
+    So: **a bug is caught when it contradicts something you predicted, not when it is large
+    and not when it is biased.** That is the argument for pre-registration and for tasks with
+    predictable directions — and it explains why the pre-registration (3 confirmed, 1 half
+    wrong) turned out more reliable than the instrumentation.
+
+    **Postscript, 2026-09-03.** Six more bugs (67–72) bring the total to fifteen, and the
+    tally above is now a tally of the first nine. It is also no longer the interesting number:
+    five of the six new ones sit in the caching and prefix instrumentation, the one area with
+    nothing pre-registered, which is this entry's own conclusion arriving as evidence. Two of
+    the six run against the thesis (72's discovery-payload finding, 67's fold), two run for it
+    (70's phase-1 caching direction, 68's prefix comparison), and two are neutral. The 4-vs-2
+    count over the first nine is honest **across the whole metric set** and does not certify
+    any published figure — two of the four conservative ones are `forced_serial_depth` bugs,
+    and `WRITEUP.md` publishes no depth metric at all. It said "so the gap reported above is,
+    if anything, conservative"; that inference does not follow and has been removed.
+
+63. **Two claims about phase 1's tool surfaces were wrong, and a third was too pessimistic.
+    All three were caught by one reader asking "is this truly tools/list?"** The writeup had
+    said the trivial GitHub task's 4× cost gap sat entirely in tool descriptions, citing the
+    captured 144,710 bytes for A1's 54-tool surface. Decomposing the run says otherwise.
+
+    **The advertised surface does not match the prefix — but I explained it wrongly.** A1's
+    `tools/list` is 144,710 B, roughly 40,000 tokens, and its observed prefix is **4,431
+    tokens**. I concluded the client was not forwarding the advertised surface. Every other
+    condition lines up (advertised tools + ~1,500 tokens of system prompt): `M-R1` advertises
+    9,601 B and shows 3,830, `M-G1` 2,159 B and 2,517.
+
+    > **RETRACTED — see 68.** The mismatch was arithmetic, not client behaviour. Every "observed
+    > prefix" in this entry, and the 2,525 that replaced 4,431 after the re-run, is
+    > `input + cache_creation` with `cache_read` dropped. On a warm call that is a cache-write
+    > delta, not a prompt. A1's real prefix is **18,438** (18,471 on a cold replicate), which
+    > lines up with 144,710 B at 7.85 B/token — the same ratio as every other condition. The
+    > client forwards all 54 tools and always did. The conclusion this entry drew, and the
+    > "measurement warning" the writeup ended on, were both built on the dropped term.
+
+    **The real cause is dates, and it is embarrassing.** The phase-1 *runs* are from
+    2026-06-26 and 2026-07-03. The phase-1 *captures* are from 2026-09-02. A June run paid for
+    ~15 KB of tool schema; the September capture measured 141 KB. **GitHub's MCP server grew
+    about 9x in between**, and I compared two measurements ten weeks apart of a service §11
+    explicitly warns is not reproducible. Same failure class as everything else in this file:
+    two numbers that were never contemporaneous, presented as one comparison.
+
+    A second flaw surfaced by the same check: **phase 1 is not internally contemporaneous
+    either.** A1, A2 and B2 ran on 26 June; B ran on 3 July. One condition of four was
+    measured a week later against a live API. That is a real internal-validity problem for any
+    B-versus-others comparison, and it was never recorded until now.
+
+    **The payload, not the schema, is where the trivial task's difference lives.** One tool
+    call each, so it decomposes cleanly: REST's single result is **4,459 tokens** against
+    GraphQL's **47** — 95x — while the schema-plus-system prefix is 4,431 against 1,851, only
+    2.4x. Comparable in absolute size, nothing like the same ratio. That is the
+    payload-precision effect T2 was designed to measure, and the writeup had been asserting
+    the opposite mechanism.
+
+    **And it kills the "phase 2 understates real-world REST" claim, in both directions.**
+    Against what GitHub charged in June, phase 2's REST prefix (3,830 tokens) is within 16% of
+    A1's 4,431 — not 15x apart. But against what GitHub advertises *today*, the comparison is
+    unknown, because we have not re-run phase 1 since June. Either way the claim as published
+    was unsupported.
+
+    **What this costs: phase 1 needs re-running before any of its numbers are published.** All
+    24 runs cost $1.27 originally. A re-run would make the runs contemporaneous with the
+    captures, remove the one-week internal split, and settle the 9x question definitively. It
+    would also probably strengthen the GraphQL result rather than weaken it, since the REST
+    tool surface has grown.
+
+64. **The blanket phase-1 suppression was withdrawing data that was provably exact.** Surprise
+    59 suppressed `tool_result_tokens` for all of phase 1 because the fan-out undercount made
+    it unrecoverable. But the undercount only misreports a request carrying **more than one**
+    tool result — so a run that made at most one tool call in total has no fan-out, and its
+    figure is exact by construction. No stored field needed to prove it; `proxy_n_tool_calls`
+    is enough.
+
+    **Six of phase 1's eight condition/task cells are single-call**, including all four
+    conditions on T2 — the task built to measure payload precision, whose number is the single
+    most useful figure phase 1 produced. The blanket rule had thrown it away. Only A1/T1 and
+    A2/T1 (ten tool calls each) remain suppressed, and the phase-1 report now shows `n/a` for
+    exactly those two rows and real figures for the rest.
+
+    Worth naming the failure mode, because it is the mirror of the one this project keeps
+    hitting: **withdrawing sound data is its own kind of wrong answer.** A blanket rule is
+    safe against reporting a bad number and unsafe against reporting nothing, and I reached
+    for it because the conservative direction felt free. It was not — it cost the one number
+    that answered the question the task existed for.
+
+65. **Phase 1 re-run 2026-09-03, and the re-run overturned the parts of it I had just finished
+    writing up.** The trigger was one question — "are our phase-1 numbers accurate? we re-ran
+    them recently?" — which they had not been. The runs were from 26 June (A1, A2, B2) and
+    3 July (B): ten weeks stale, against a live API, and not even internally contemporaneous.
+    All 24 re-ran for **$0.53**, captures taken the same morning.
+
+    **The tool-filtering finding is real, and my retraction of it was the error.** With run and
+    capture an hour apart, the gap holds: GitHub's server advertises 54 tools and 144,710 B —
+    about 40,000 tokens — and the prefix the model receives is **2,525**. So surprise 63 got it
+    right the first time and I talked myself out of it when the dates looked like a simpler
+    explanation. Two wrong calls in sequence on the same question, in opposite directions,
+    and only the re-run could separate them.
+
+    **The fan-out bug is now visible in a before/after on the same task.** A1/T1 issues five
+    parallel tool calls, twice. The old proxy recorded **6,401** tokens of tool results; the
+    fixed one records **26,970** — a 4.2x undercount, measured rather than argued, on the exact
+    shape (`n_tool_use 5, n_tool_results 5`) that broke it.
+
+    **What replicated, and what did not:**
+
+    | | June | Sept | why |
+    |---|--:|--:|---|
+    | T1 REST tool calls | 10 | 10 | structure is structural |
+    | T1 GraphQL calls | 1 | 1 | |
+    | T1 REST payload | 6,401 | **26,970** | old proxy undercounted the fan-out |
+    | T1 cost ratio | 20x | **7.9x** | |
+    | T2 REST payload | 4,459 | **334** | GitHub now returns filtered responses |
+    | T2 cost ratio | 4x | **1.9x** | |
+
+    **The trivial task no longer supports a protocol claim and has been cut from the writeup.**
+    At 1.9x cost and 334 tokens against 47, REST and GraphQL are near parity on a one-call
+    lookup — GitHub's MCP server improved materially in ten weeks. The 4x gap I had built a
+    section around was a fact about June's server. Phase 1 now carries only the N+1 result,
+    which is the part that held: 10 calls against 1, **64x the payload** (26,970 against 419),
+    7.9x the cost. That is a decision about scope, recorded so nobody re-adds the section:
+    a finding that evaporates on re-measurement was never a finding about protocols.
+
+66. **The suppression rule was wrong three times, and the third failure was caused by fixing
+    the data.** `tool_result_tokens` was suppressed for phase 1 (surprise 59), then for
+    phase-1 runs with more than one tool call (surprise 64) — and then the phase-1 re-run
+    produced *correct* fan-out figures with the fixed proxy, which the rule promptly hid.
+
+    Every revision was keyed on the wrong thing. **The defect never belonged to the phase; it
+    belonged to the code that wrote the log.** So the rule now asks the log: a record carrying
+    `n_tool_results` came from the revision that keys on `tool_use_id`, so its figure is exact
+    however much fan-out there was; an older log is exact only if the run made at most one tool
+    call. `payload_exact` is computed per run in `collect()` and the report suppresses a group
+    only if some run in it is inexact.
+
+    The lesson is about where a guard's condition should live. A guard keyed on a proxy for the
+    real cause — phase, in place of proxy version — works until the proxy and the cause come
+    apart, and then it fails silently in whichever direction nobody is watching. Twice it
+    withheld sound data; once it would have published a lower bound as a measurement.
+
+67. **The fat/lean fold was still live in the accuracy table — bug 54, second instance, in the
+    one place the report claims it never happens.** `_accuracy_spread` keyed its cell count on
+    `cell_cond(r["cell"])`, so `M-R1-fat` and `M-R1-lean` collapsed back into `M-R1` and the
+    published figure was **28 of 40 condition/task cells perfect**. Keyed on `cell`, where 54's
+    fix put every other grouping site, it is **41 of 60**.
+
+    ```
+    $ python3 - <<'PY'   # in repo root, against results/phase2/raw.csv
+    by 6 brackets   41 of 60 perfect
+    folded          28 of 40 perfect
+    PY
+    ```
+
+    What makes this worse than 54 itself: `FINDINGS.md` has said *"six cells, reported as six
+    rows and never averaged together"* since it was written, and README and PHASE2_PLAN both
+    printed the folded number underneath that sentence. The document asserted the invariant on
+    the same page where it violated it. 54's fix touched twelve grouping sites and missed the
+    thirteenth, and nothing failed, because **nothing asserted the denominator** — the one
+    number a fold always changes. `test_parse_logs.py` now builds six brackets over two tasks
+    and asserts `_accuracy_spread` reports twelve cells, plus that one bad rep in one bracket
+    costs exactly one cell rather than its sibling's score too.
+
+    The direction is the same as 54's and still uncomfortable: the fold **understated** how
+    much of the matrix is accuracy-neutral, which is a claim the study leans on.
+
+68. **A cache-write delta was published as a prompt prefix, and three claims were built on
+    it.** `WRITEUP.md`, `PHASE2_PLAN.md` §STATUS and `NOTES.md` 63 all reported GitHub's
+    54-tool surface as a **2,525-token** prefix and concluded that *"the client does not
+    forward the advertised surface"*. 2,525 is `cache_creation_input_tokens` on
+    `runs/phase1/A1/T2/rep1` call 2. That same call reads **15,911** tokens back from cache:
+
+    ```
+    call 1  n_tools=0   in=167  cr=0       cc=0        -> prefix    167
+    call 2  n_tools=54  in=2    cr=15,911  cc=2,525    -> prefix 18,438
+    ```
+
+    The prefix is `input + cache_read + cache_creation`. On a cold call the read term is zero
+    and `cache_creation` alone happens to be the prefix, which is exactly why this survived:
+    the formula is right on the first call of a run and wrong on every call after it, and
+    nothing recorded which calls were cold. The cold replicate of the identical condition
+    settles it — `runs/phase1/A1/T1/rep1` call 2: `cr=0, cc=18,469`, prefix **18,471**, within
+    0.02% of the warm figure.
+
+    All three dependent claims fail. (a) Every tool-bearing request logs `n_tools: 54`; all 54
+    are forwarded. (b) The prefix tracks advertised bytes closely — across A1/A2/B/B2
+    (144,710 / 60,886 / 2,900 / 2,253 B) it fits `prefix ≈ 1,381 + bytes/8.43` to within 8.3%
+    on every point, r = 0.9998. Tool count is not a loose upper bound on cost; it is roughly
+    the answer, which inverts the "measurement warning" the writeup ended on. (c) *"Every
+    condition sits between 1,851 and 3,830 tokens"* — measured, they run **1,491 to 18,471**,
+    and phase 2's REST prefix (3,874 mean) is **4.8× cheaper** than GitHub's (18,454), so phase
+    2 understates real-world tool-surface cost rather than flattering itself.
+
+    `prefix_tokens` and `prefix_n_tools` are now columns in `raw.csv`, and
+    `results/*/summary.md` carries a prefix table with the model's cache minimum beside it.
+    `test_parse_logs.py` asserts the sum against the real warm call — the existing tests never
+    exercised a call with `cache_read > 0`, which is the whole reason this lived.
+
+69. **The wrong cache threshold is what made surprise 51 unsolvable, and 68 is what hid it.**
+    The report generator has said *"Anthropic's caching system writes this description to a
+    server-side cache once it exceeds ~1 000 tokens"* since phase 1. ~1,000 is Sonnet's
+    minimum. **Haiku 4.5's minimum cacheable prefix is 4,096 tokens**, and the minimum is
+    model-dependent and *not monotone in model size* — 512 on Opus 5, 1,024 on Sonnet 5, 2,048
+    on Opus 4.7, 4,096 on Haiku 4.5 and Opus 4.6/4.5 — so it cannot be guessed from the name.
+
+    ```
+    condition      prefix (min-max)   cache write on the first tools-bearing call
+    M-G1            1,491-1,754              0 of 30
+    M-G2            1,823-2,086              0 of 30
+    M-R2-fat/lean   1,586-1,849              0 of 60
+    M-R1-fat/lean   3,790-4,053              0 of 60
+    ```
+
+    **Every phase-2 prefix is below 4,096, so no phase-2 run ever writes its tool surface to
+    cache at all.** The first `cache_creation` charge fires several turns later, when the
+    *conversation* crosses the minimum. That is the answer to surprise 51, and it was
+    unreachable while the prefix was believed to be 2,525: a 2,525-token prefix *should* cache
+    at a 1,000-token threshold, so the only remaining explanation was a client bug, and I spent
+    two months instrumenting `bp_at`, `sys_sha`, `tools_sha` and `msg0_sha` looking for prefix
+    drift that was never there. One error made the other undiagnosable.
+
+    Two consequences beyond the diagnosis. **Stage 1 is misnamed** wherever the tool surface
+    does not clear the minimum on its own: it is the first cache write, not schema injection,
+    and in every phase-2 cell it measures conversation growth. Both are now relabelled and the
+    prose says which case a row is. And **"prompt caching never hit in either phase" is false
+    for phase 1** — see 70.
+
+    `cache_min_tokens()` owns the thresholds, the parser warns per model when prefixes fall
+    below, and the wrong-diagnosis docstrings in the proxy are kept with a RESOLVED note rather
+    than rewritten, because they are what ruled the hypothesis out.
+
+70. **"Prompt caching never hit once in either phase" was false, and the truth runs the other
+    way.** Published in five documents. Measured:
+
+    ```
+    A1  read 241,672   create 149,020
+    A2  read 114,398   create 132,151
+    B   read       0   create       0
+    B2  read       0   create       0
+    phase 2 (181 runs)  read 0   create 32,617,100
+    ```
+
+    Phase 1 read back **356,070 tokens**, all of it in the REST conditions. Phase 2 read zero,
+    which is the part that was right. And the direction matters: A1 read 241,672 tokens at 0.1×
+    while B2, too small to cache, paid full input rate on every token of every call. **Caching
+    helped REST in phase 1.** Charge A1's reads at the uncached rate and T1 goes from 7.9× to
+    **12.6×** (A2 from 7.1× to 9.3×), so phase 1's cost gap is *understated*, not inflated —
+    the opposite of what caveat 5 claimed for it.
+
+    Also corrected in passing: the 46,169 that four documents called *"a conversation that grew
+    to 46,169 tokens"* is the mean of A1/T1's cache-write charges summed over four calls. The
+    largest request any A1/T1 run actually sent was **52,871** tokens of context. And the
+    "32.2M written" figure was the subtotal for the 134 runs the blindness warning names, not
+    the total, which is 32.6M for phase 2 and 32.9M across both phases.
+
+71. **`FINDINGS.md` was never regenerated by the commit that re-ran phase 1.** `git diff
+    f9a3ccf^ f9a3ccf -- FINDINGS.md` is **empty**. The commit is titled *"Improve writeup;
+    re-run phase-1 for up-to-date results"* and it updated NOTES, PHASE2_PLAN, README and
+    WRITEUP. FINDINGS went on publishing three figures that entry 65 retracts in the same
+    tree: T2 REST payload **4,459 tok** (actual 334, so 7.1× not 95×), *"phase 1's 20×"*
+    (7.9×), and *"96% is cache-creation"* (80.9%). It also went on reasoning from the trivial
+    task and calling it *exact*, which 65 records as **cut from the writeup**. `WRITEUP.md`
+    points readers at FINDINGS as authoritative.
+
+    This is the stale-number class the whole `_key_findings` design exists to prevent —
+    computed at render time, never asserted — and it reappeared one layer up, in the
+    hand-written document that quotes the generated one.
+
+    **The guard is `doclint.py`**, and it runs at the end of `./bench.sh parse`. Every
+    distinctive numeric literal — thousands separator, or four decimal places — in
+    `WRITEUP.md`, `FINDINGS.md` and `README.md` must appear somewhere in `results/**`, or be
+    listed in `ALLOWED` with the reason it cannot. It is deliberately dumb: a match is not
+    proof of correctness and a miss is not proof of error, so what it produces is a list of
+    figures to justify, and the allowlist is where each one gets justified in writing. The
+    cost of keeping a number that no longer derives from the data is now a line in a file,
+    which is more than the zero it cost before.
+
+    `PHASE2_PLAN.md` and this file are excluded on purpose. The plan is full of pre-run static
+    projections and the ledger's whole job is quoting retracted figures; linting either would
+    produce enough noise to get the check switched off, which is worse than not having it.
+
+    It found four real misses on its first run, one of them a number in no generated table at
+    all: `WRITEUP.md`'s table cell for `M-R2-lean/M3@50` was the mean of three replicates
+    where the join-tax table reports the mean of two, because one is the lossy run the
+    documented exclusion rule drops. The document and the report disagreed by 21% on one cell
+    and nothing said so. Both figures are now printed with the rule beside them.
+
+72. **Two metrics faced the same question about discovery payload and answered it opposite
+    ways, silently.** `forced_serial_depth` excludes `DISCOVERY_TOOLS` with four paragraphs of
+    rationale — a chain through schema lookups is real serialization but not a *data*
+    dependency, and counting it would make the metric track tool packaging instead of who
+    performs the join. `pass_through_tokens` iterated every `tool_result` unconditionally, so
+    the same SDL and OpenAPI text counted as payload-carried-and-unused at ~100%.
+
+    It is not a rounding difference. Excluding discovery, **`M-G1`'s ten-cell mean falls from
+    6,172 to 889** — the headline metric was charging the query-language condition for 86% of
+    its measured waste — while `M-R2` moves ~2% and `M-R1`/`M-G2` not at all. Direction:
+    **against** the thesis, and it is the second-largest correction in this audit.
+
+    Resolved by reporting both rather than picking one, because which one a reader wants is
+    editorial: `pass_through_fraction` charges an agent for the schema it read to find its way
+    around, `pass_through_fraction_ex_discovery` does not, and they share a denominator so both
+    apportion the one exact token total. The `ex-disc` figure prints in the join-tax table
+    wherever it changes the number.
+
+    Same entry, smaller and unambiguous: the proxy's tokenizer comment asserted *"cl100k_base
+    is the BPE encoding Anthropic uses for Claude models."* It is OpenAI's. Cross-checked
+    against per-call context growth over 429 consecutive-call pairs it runs **~15% low** (median
+    implied/counted 1.18; 14–22% by condition, and the implied side carries per-result message
+    framing too, so 15% is an upper bound on the tokenizer's own error). So
+    `parse_logs.py`'s footnote — *"they share units with every other token column here"* — was
+    false: every other token column is Anthropic `usage` verbatim, and this one is not. The
+    sign is stable, so ratios survive and absolute counts are conservative. Comment, footnote
+    and docstrings corrected; the encoding is unchanged, since Anthropic publishes no local
+    tokenizer and the alternative is a `count_tokens` call per payload.
+
+    ---
+
+    **The pattern across 67–72, which is the uncomfortable part.** Five of these six sit in the
+    caching and prefix instrumentation. That is the one area of this study with **no
+    written-down prediction** — the pre-registration has eight expectations and not one of them
+    is about caching, prefixes or thresholds. Entry 62 and the writeup both argue that a bug is
+    caught when it contradicts something you predicted, not when it is large or biased. Six
+    bugs then survived in precisely the region with nothing to contradict, and were found by an
+    adversarial read of the writeup rather than by any guard, any test, or any of the fifteen
+    parse runs that rendered them. The thesis confirmed itself on its author, which is a worse
+    outcome than being wrong would have been.
+
+    Bug count for any document that cites it: **fifteen**, not nine.
+
+---
+
+73. **Both discovery conditions' search tools required every term to match, so about half of
+    every search in the matrix returned nothing — and the two conditions recovered from that
+    at very different prices.** Found 2026-09-03 by asking a plain question of the run logs:
+    *did the agents use the search tools?* They did, heavily — `openapi_search` was 19% of
+    `M-R2`'s tool calls and `schema_search` was **30%** of `M-G1`'s. Then:
+
+    | | search calls | zero-match | median response |
+    |---|--:|--:|--:|
+    | `M-R2-fat` | 66 | **45%** | 344 B |
+    | `M-R2-lean` | 67 | **48%** | 343 B |
+    | `M-G1` | 58 | **55%** | 122 B |
+
+    Not terse hits — literal `{"matched": 0, "results": []}`, on entirely reasonable
+    phrasings: `flight number departure gate`, `advisory grounding`, `type rating`,
+    `pilot captain first officer`. Two independent causes, one in each tool and both mine:
+
+    - **Terms were AND'd.** `openapi_search` did `any(all(term in haystack ...))`;
+      `schema_search` shelled out to `rover schema search` with `query.split()` as argv,
+      which rover AND's. `rover` was never at fault — every failing query succeeds as a
+      single term (`gate` → 7 hits including `Flight.gate`; `advisories` → 6 including
+      `Aircraft.advisories`). The AND was **deliberate**, and documented as such in
+      `openapi_mcp.py`: *"Same query grammar as rover schema search … keeping the two
+      discovery surfaces ergonomically symmetric is part of what makes M-R2 vs M-G1 a
+      protocol comparison rather than a UX comparison."* The symmetry reasoning was right
+      and the grammar was unusable, which is a combination worth remembering: a fair
+      comparison between two broken instruments is still a broken measurement.
+    - **No stemming.** `advisory` is not a substring of `advisories`, so
+      `openapi_search("advisory")` matched nothing in a catalog whose every relevant
+      response field is `advisories`.
+
+    **Why it is a measurement error and not just a bad tool.** The handicap was symmetric;
+    the *recovery* was not. When `M-R2`'s search missed, the agent guessed a path — REST
+    paths are guessable, and one run opened with an unprompted `GET /v2/flights` that
+    worked — or described a single operation for ~4,760 B. When `M-G1`'s search missed it
+    could not guess a query, so it fell back to `schema_describe(Query)`: **18,410 B**, the
+    largest single response in those runs. Same bug, **~3.9× the cost on the GraphQL side.**
+
+    There was a second, quieter asymmetry underneath it. `openapi_search` returned parameter
+    names all along, so a REST hit was actionable — search → request. `rover schema search`
+    returns `coordinate`, `kind`, `description`, `via` and **no signature**, so a GraphQL hit
+    could not tell the agent that `Query.flightsByNumbers` takes `flightNumbers: [String!]!`.
+    `M-G1` therefore needed search → describe → execute even when search *worked*. That
+    extra hop is most of what `WRITEUP.md` caveat 2 reported as "the query-language approach
+    has a floor". **The floor is real — a hit still leaves you needing a selection set — but
+    we published it at 4–7 calls when its structural minimum is about 3.**
+
+    **Direction: conservative.** Both faults made `M-G1` look worse, which is the fifth
+    instance of that pattern in this ledger and the fourth on a headline metric. It is also
+    the second time a bug hid inside a decision that was *documented and defended* — see 62
+    on `forced_serial_depth`. Reading the defence is not the same as testing the behaviour.
+
+    **Fixed** by moving the grammar into `servers/_search.py`, used by both tools, so they
+    cannot drift apart again: OR within a clause with results ranked by matched-term count,
+    comma still separating alternatives, light stemming so `advisory` finds `advisories`, and
+    stop words dropped so OR over `the` does not return the catalog. Then the two
+    asymmetries: `schema_search` now matches in-process against an index parsed from the same
+    SDL and returns each field's **full signature**, and `openapi_search` now indexes
+    **response field names** so `type rating` finds `listCrewMember` — without that second
+    change the fix would have handed GraphQL an index covering 153 fields against REST's
+    nine endpoints, which is an advantage the protocols do not have. `rover` still backs
+    `schema_describe`, the tool it was always right for.
+
+    Verified: every zero-match query from the logs is a regression case in
+    `servers/test_search.py` (61 checks), pasted from `tool_io.jsonl` rather than invented.
+    `flight number departure gate` now returns `Query.flightsByNumbers(flightNumbers:
+    [String!]!): [Flight!]!` **first**, with `Flight.gate` in the same result set — enough to
+    answer M1 in one search plus one execute. The failure path shrank from 18,410 B to
+    1.8–3.5 kB and mostly disappears.
+
+    **Consequences that are not yet paid.** The tool descriptions changed, so the measured
+    surfaces moved: `M-R2` 2,439 → **2,652 B**, `M-G1` 2,159 → **2,270 B**, `M-R1` unchanged
+    at 9,601 (it has no search tool). Near-symmetric, and slightly *against* GraphQL on
+    prefix. `capture/expected-tool-surfaces.json` is updated so the drift gate reflects the
+    code; **the 180 published runs used the pre-fix surfaces**, so every surface byte figure
+    in `FINDINGS.md`, `PHASE2_PLAN.md` §8.1 and the tables above still correctly describes
+    those runs and legitimately differs from the pinned file until the affected cells are
+    re-run. The cells at risk are the low-N ones where discovery dominates — `M1@1`,
+    `M1@5`, `M2@1` on `M-G1`, `M-R2-fat` and `M-R2-lean`. The join result does not depend on
+    any of this: `M-G1`'s data query on `M3@50` was one request before the fix and is one
+    after, and neither `M-R1` nor `M-G2` has a search tool at all.
+
+74. **The condition that won the whole matrix was a hand-rolled substitute for a shipping
+    tool that already did the job, and did it better.** Raised 2026-09-03, by the plainest
+    possible objection to the previous entry: *Apollo MCP Server has a `search` tool.* It
+    does. Phase-1 condition `B` enabled all four of its dynamic tools —
+    `search` / `introspect` / `validate` / `execute` — which is precisely the shape `M-G1`
+    exists to test. `servers/supergraph_mcp.py` is 225 lines reimplementing it.
+
+    So the phase-2 design put a bespoke server in the slot where a product was available,
+    that server then beat every other condition on all ten task instances, and the previous
+    entry spent its effort **fixing the substitute's search rather than measuring the real
+    one**. Two things follow, and neither was intended:
+
+    - **The GraphQL axis was the confounded one.** `M-R1` vs `M-R2` is one binary in two
+      modes, so it varies packaging alone. `M-G1` vs `M-G2` was two different servers, so it
+      varied packaging *and* implementation, with nothing in the matrix to separate them. The
+      6.7×-apart claim in `WRITEUP.md` said the two GraphQL conditions differed only in the
+      shape of their operations. They also differed in who wrote them.
+    - **Apollo MCP Server appeared only with every dynamic tool switched off** (`M-G2`,
+      which is its worst configuration here), so its `search` was never measured. The one
+      place it was ever enabled is phase-1 `B`, where the agent never called it — all six
+      runs are a single `execute` on training knowledge of GitHub's schema, after the recipe
+      framing that had been driving 7–12 `search` calls was removed.
+
+    **Measured, not assumed.** Apollo's `search` against this same supergraph, probed through
+    the real MCP transport:
+
+    | terms | result |
+    |---|--:|
+    | `flight number departure gate` | 995 B |
+    | `typeRating current` | 2,739 B |
+    | `captain first officer` | 1,828 B |
+    | `advisory grounding` | 986 B |
+
+    Every one of those is a query our `schema_search` returned **zero** results for. Two
+    design differences explain it, and both are the ones entry 73 had to build by hand:
+    `terms` is an **array**, so the AND-a-whole-phrase failure cannot arise; and it returns
+    **SDL fragments** — real type blocks with field signatures, plus the `Query` root — rather
+    than bare coordinates, so a hit is actionable without a second lookup. That second
+    property is exactly what `M-G1` lacked and what `WRITEUP.md` caveat 2 reported as
+    GraphQL's discovery floor.
+
+    **Added `M-G3`**: Apollo MCP Server, four dynamic tools, no persisted operations, same
+    supergraph. 4 tools / **2,900 B** — identical to phase-1 `B`, since it is the same four
+    tools from the same binary, and between `M-R2` (2,652) and `M-G2` (4,040), so the
+    on-demand pair is closer on prefix than `M-R2`/`M-G1` was. Its value is the two pairings:
+    same implementation as `M-G2` with different packaging, same packaging as `M-G1` with a
+    different implementation. `phase 1`'s `introspect` ban is deliberately **not** carried
+    over — that was a cost-control decision about GitHub's live schema, and this supergraph
+    is 12 KB.
+
+    **What this does to entry 73.** The search fix stands: `M-R2`'s half of it is needed
+    regardless, because REST discovery has no vendor equivalent to swap in, and both tools
+    had to move together or the fix would itself have been the bias. But the framing was
+    wrong. 73 called the AND'd grammar a flaw in the instrument; the deeper flaw is that the
+    instrument existed at all in a slot a product could have filled, and `M-G1`'s 55%
+    zero-match rate is a property of code we wrote for this study rather than of anything a
+    reader can install.
+
+    **Direction: unknown, and that is the point.** Every other error in this ledger has a
+    sign. This one does not, until `M-G3` runs. `M-G1` may have been a weak stand-in that
+    understated on-demand GraphQL, or a hand-tuned one that flattered it; the honest position
+    is that the matrix cannot currently tell. **Until `M-G3` has run, `M-G1` should be read as
+    "a small MCP server we wrote", never as "GraphQL on-demand".**
+
+    **RESOLVED 2026-09-04 — the direction is *both*, on different metrics.** `M-G3` ran, 30
+    runs, all ten instances. Against `M-G1`, same packaging, different implementation:
+
+    | | M-G3 better | so M-G1 was |
+    |---|--:|---|
+    | pass-through tokens | **9 of 10** | a weak stand-in — the study **understated** on-demand GraphQL's payload efficiency |
+    | cost per task | 4 of 10 | a flattering stand-in — it **overstated** its cost efficiency |
+    | tool calls | 4 of 10 | same |
+
+    So the substitute was wrong in both directions at once, and no single sign covers it.
+    Apollo's `search` returns SDL fragments, which buys payload efficiency; it also makes more
+    calls, and in a regime where no prefix reaches the cache minimum, calls dominate cost. A
+    reader who had taken `M-G1` as "GraphQL on-demand" would have been wrong about the payload
+    gap in GraphQL's disfavour and wrong about the cost gap in its favour.
+
+    **The headline survived and widened.** Best GraphQL still beats best REST on all ten
+    instances on both metrics, with `M-G3` taking the win in 5 of 10 cells. `M3@50`
+    pass-through went from 8.2x to **11.9x** and its cost gap from 6.0x to **7.0x**. `M-G3` is
+    also the flattest condition in the matrix: 1,021 to 1,376 pass-through tokens from N=1 to
+    N=50 on M1.
+
+    `M-G1` **stays a reported condition**, relabelled as what it is. "We wrote our own MCP
+    server and it was wrong in both directions against the product" is a finding about
+    hand-rolling, and deleting it would hide the error rather than record it.
+
+75. **`M-G3` runs with `introspect` disabled, and the three remaining Apollo tools still tell
+    the agent to use it.** Decided 2026-09-03. `introspect` is the tool that can walk a type
+    tree wholesale — `introspect(Query, depth: N)` approaches a whole-schema dump at large N —
+    and the condition exists to measure *targeted* discovery. Apollo's own `search` advertises
+    itself as sufficient without it: *"Returns complete type definitions including all related
+    types needed to construct GraphQL operations."* So `M-G3` exposes `search` + `validate` +
+    `execute`, and the question it asks is whether search alone is enough.
+
+    Phase-1 condition `B` reached the same conclusion by the other route: it left `introspect`
+    enabled in the config and banned it **in the recipe prompt** — *"Do NOT call `introspect`
+    — it loads entire type trees and is too expensive."* That is condition-specific coaching,
+    which is precisely the phase-1 weakness phase 2 was built to remove; the M-* recipes carry
+    a byte-identical instruction block and a hint in one recipe measures the hint. Disabling
+    the tool is the only way to express the same intent in phase 2.
+
+    **The hazard, verified rather than assumed.** With `introspect` off, all three remaining
+    tools still reference it, twice unconditionally: `execute` says *"Use the `introspect` tool
+    to get information about the GraphQL schema"*, `validate` says *"Use the `introspect` tool
+    first"*, and `search` hedges with *"If the introspect tool is also available"*. So the
+    surface instructs the agent to reach for a tool that is not on it. That is Apollo's text,
+    not ours, and it is a real property of shipping this configuration — but it is also exactly
+    the kind of thing that would arrive in a results table as *"GraphQL discovery is
+    expensive"*.
+
+    So this entry comes with an instrument rather than a caveat. `grade.tool_errors()` counts
+    tool results the API returned with `is_error` set and attributes them by `tool_use_id`, and
+    `parse_logs.py` now carries **`tool_errors`** and **`tool_error_tools`** on every row. The
+    proxy has recorded `is_error` per result since it was written; nothing had ever read it. An
+    error result is payload the agent paid for and could not use, and no column named it. **Read
+    `M-G3`'s `tool_errors` before reading its cost** — and if the count is non-trivial, the
+    honest fix is a `search`-only surface with the descriptions taken as given, not a quiet
+    footnote.
+
+    Surface: 3 tools / **1,940 B**, the smallest in the matrix, against `M-R2`'s 2,652 and the
+    post-fix `M-G1`'s 2,270. With `introspect` enabled it is 4 tools / 2,900 B — identical to
+    phase-1 `B`, since it is the same four tools from the same binary.
+
+    **And the drift gate caught its own author, which is the third time.** This was first
+    pinned at 1,857 B, measured with `json.dumps(..., separators=(",", ":"))`, while
+    `capture_mcp.py` uses `len(json.dumps(...))` with default separators. Same surface, 83
+    bytes apart, purely units. `check_surfaces.py` failed the capture and printed both numbers.
+    A byte count is not a byte count unless the serializer is stated — the same class of error
+    as reading `cache_creation` as a prompt size (68).
+
+76. **The mixed-model guard refused a tree that was not mixed, because `meta.json` records
+    the `MODEL` env var verbatim.** Hit 2026-09-04 on the first parse after `M-G3` ran. The 180
+    existing runs were launched with `MODEL=claude-haiku-4-5-20251001`; I told the operator to
+    launch `M-G3` with `MODEL=claude-haiku-4-5`. Same model — the alias resolves to that exact
+    snapshot, and both sets of proxy logs record `claude-haiku-4-5-20251001` as the model the
+    API actually served — but the guard compares the configured strings, saw two, and stopped
+    (correctly, given what it could see).
+
+    My error twice over: the run command I handed over used a different label from the runs it
+    had to sit beside, and `README.md`'s own repro block says `claude-haiku-4-5` while every
+    published run used the dated form.
+
+    **Fixed by grouping on what the API served, not on what someone typed.**
+    `parse_logs.observed_model()` reads the model off the proxy log and falls back to the
+    configured value; the row now carries both (`model` observed, `model_configured` for
+    provenance). Call selection is unchanged — `parse_proxy` still filters on the configured
+    prefix, which matches an alias and its snapshot alike.
+
+    This is strictly stronger than normalising the label, and that is the reason to prefer it:
+    **an alias is a moving target.** If `claude-haiku-4-5` is ever repointed upstream, two
+    genuinely different models arrive under one configured name, and a guard reading the env
+    var cannot see it — the exact failure it exists to prevent, inverted. Reading the served
+    snapshot makes the guard able to detect the case it was written for.
+
+77. **The report printed today's tool surfaces against yesterday's runs.** Caught 2026-09-04
+    while parsing `M-G3` in, and it had already rendered once. `capture/expected-tool-surfaces.json`
+    tracks what the servers expose **now**; `runs/` holds whatever they exposed **then**. Those
+    are the same file until something changes, and the search fix (73) changed two: `M-R2`
+    2,439 → 2,652 B and `M-G1` 2,159 → 2,270 B, while 180 runs on the old surfaces stayed in
+    the tree. `_surface_bytes_for()` read the pinned file, so the prefix table asserted 2,652 B
+    for runs that had carried 2,439.
+
+    A tool surface sits in the cached prefix of every call, so this is a published cost stated
+    wrongly — the same class as 54 and 63, and it arrived by the same route: a number that was
+    true when it was written, read from a file whose job is to be current.
+
+    **Fixed** by giving the pinned file a `superseded` list per condition — the previous
+    surface plus the timestamp it stopped applying — and making `_surface_bytes_for()` pick by
+    each run's `started`. Runs entirely before a change print the surface they actually carried,
+    marked `(as run)`. Runs that **straddle** a change print no single figure at all: that is
+    not a footnote, it is two experiments in one row, and the table says `mixed`.
+    `test_parse_logs.py` covers all four cases, the straddle included.
+
+    The general lesson, which this repo keeps relearning: **a pinned baseline and a
+    measurement are different kinds of fact.** The baseline answers "what does the code do
+    today", the measurement answers "what did this run see". Reading one for the other is how
+    both 63 and this happened, and the fix is always to key the lookup on the run.
+
+78. **An empty result is not an error, and nothing in the report counted it.** Found
+    2026-09-04 in `M-G3`'s worst cell. `M2@1`'s prompt says *"For flight FL-0001"* and supplies
+    an **id**, while `M1`'s says *"the following flight numbers"* and supplies `AA5751`-style
+    values. So `M-G3` called `flightsByNumbers(flightNumbers: ["FL-0001"])` — three times
+    across one run — got valid, well-formed, **empty** results, and burned six `search` calls
+    around them before reaching `flightsByIds`. 12, 15 and 8 tool calls across its three
+    replicates, against `M-G1`'s 8, 6, 7.
+
+    `tool_errors` is **0** for every one of those runs, and that is correct: nothing errored.
+    Which is the finding. The instrument added in 75 counts errors, and error-free waste is
+    invisible to it — so `tool_errors: 0` must not be read as "no wasted calls". Both readings
+    of that column are now written next to it.
+
+    **One replicate gave up and answered wrong.** `M-G3/M2@1/rep2`, f1 0.00: *"flight FL-0001
+    does not exist in the system"*, with a helpfully confident list of the carrier codes it had
+    seen. Its grounding reads **unassessed**, not failed, because the answer states no
+    checkable fact — the three-state design behaving exactly as intended, and the first time
+    that branch has fired on a completed run.
+
+    **The asymmetry it exposes was not in the pre-registration.** A query-language condition
+    has to *guess the entry point*, and an empty result is indistinguishable from "no such
+    record". `M-G2` cannot make that mistake: `FlightRoster($flightId: ID!)` names the
+    identifier type in its signature, and it answered `M2@1` in **2 calls** — the best of any
+    condition. So the frozen-operation packaging that costs 100 round-trips on `M3@50` buys
+    something real here, and `WRITEUP.md` caveat 1 previously argued only the cost side of it.
+
+79. **`M-G3`'s discovery/data split was silently disabled for its whole run, and the numbers
+    looked like measurements.** Caught 2026-09-04, hours after publishing them, and only
+    because the operator asked whether a proposed 90-run re-run was really necessary — the
+    scoping that answered "no" walked through `grade.DISCOVERY_TOOLS` and found `M-G3`'s tool
+    names absent from it.
+
+    `DISCOVERY_TOOLS` classifies by tool **name**. `M-G1` contributes `schema_search` /
+    `schema_describe` and `M-R2` contributes `openapi_search` / `openapi_describe`; Apollo MCP
+    Server's are `search`, `introspect` and `validate`, and none of the three was in the set.
+    So every schema read `M-G3` made was counted as **data**, with no error anywhere:
+
+    - `pass_through_tokens_ex_discovery` came out **identical to `pass_through_tokens` in all
+      ten cells**. Corrected, `M1@1` goes from 1,021 to **0** and the ten-cell mean from 1,376
+      to **1,308** — the raw figure was almost entirely schema text.
+    - `discovery_depth` read 0 and the schema chain fell into `forced_serial_depth`.
+
+    Both columns rendered as plausible numbers. One `M-G3` row whose ex-disc equals its
+    pass-through is unremarkable; ten of them is a bug, and only the parser sees all ten.
+
+    **The same shape as 54 and every registry bug in this ledger:** a new condition added to
+    four lists and not the fifth. `parse_logs.py` already refuses an unknown *condition* — that
+    guard is why `M-G3` was registered in `PHASE_CONDS`, `MCP_CONDS`, `COND_LABEL` and
+    `COND_SHORT` at all. Nothing guarded the *tool-name* registry, which is the one that fails
+    by returning a wrong number rather than by stopping.
+
+    **Fixed** by adding the three names, and by `parse_logs.assert_discovery_classified()`:
+    every condition in the new `grade.DISCOVERY_CONDS` must show at least one run where the
+    ex-discovery figure differs from the raw one, or the parse exits naming the likely cause.
+    Verified by reverting `DISCOVERY_TOOLS` and confirming it fires.
+
+    **A finding fell out of the correction.** `M-G3`'s `discovery_depth` is **1 in every
+    cell**, where `M-G1`'s runs 1–3. `M-G1` chains `schema_search` → `schema_describe`, because
+    a coordinate found by search is the input to describe. `M-G3` has no describe — `introspect`
+    is disabled — so its searches are independent and nothing serializes. **Disabling
+    `introspect` removed the discovery chain, not just a tool**, which is a better outcome than
+    the decision was argued for (75).
+
+80. **The generated report asserted "0 fabricated" while `FINDINGS.md` was explaining, in its
+    own words, that the grounding check cannot support it.** Found 2026-09-04 by sweeping every
+    registry that names a condition, after the operator asked what else was broken. Three
+    defects in the computed lede of `results/phase2/summary.md`, which is the document that is
+    supposed to *outrank* the hand-written ones:
+
+    - **`with 0 fabricated`.** `FINDINGS.md`: *"'Zero fabricated' claims more than it can
+      support."* `WRITEUP.md`: *"a retrieval-happened check, narrower than 'nothing was
+      fabricated'."* Both retractions were written; the generator kept asserting the claim.
+    - **`all 209 were fact-verified`** against 210 graded runs. The passing count printed as
+      though it were the total, so the one run whose grounding is *unassessed* — `M-G3`/`M2@1`/
+      rep2, which states no checkable fact (78) — vanished into a sentence beginning "all".
+    - **`M-G2 is the best condition on M1@50 and the worst on M3@50`.** Two problems in one
+      clause. It silently switched metric between halves — best by pass-through, worst by cost
+      — and it was **asserted rather than computed**, so it went stale the moment `M-G3` beat
+      `M-G2` on M1@50 payload (1,376 against 2,352). The parser's founding rule is *compute at
+      render time, never assert*, and its own headline bullet broke it.
+
+    **Fixed** by computing all three. The accuracy bullet now reports the grounding split
+    three ways — passed / failed / could-not-be-assessed — and states what the check does and
+    does not license. The control bullet computes the argmin and argmax, names the metric for
+    each, and falls back to *"second only to X"* when `M-G2` is not the extreme; the part of
+    that finding which is metric-free — the same seven tools going from 1 call to 100 — is now
+    what the bullet leads with.
+
+    **And a guard, because this is the second time.** `doclint.py` now checks `results/**/*.md`
+    as well as the three published documents against a list of **retracted claims**, matched by
+    regex on the *assertive* form only — naming a retracted claim in order to retract it has to
+    stay legal, and the new lede does exactly that. Mutation-tested: reinserting `with **0
+    fabricated**` fails the lint with the file and line.
+
+    The pattern worth keeping: **a generated document can be stale too.** Every guard in this
+    ledger assumed the risk ran from prose toward the data. Here it ran the other way, and the
+    hand-written documents were right for a week while the machine-generated one was wrong.
+
+81. **Every REST condition in the matrix had spec access, and the caveat about GraphQL's
+    discovery floor was measured against them.** Found 2026-09-05, not by a test, by the
+    operator reading the setup sections and asking: *did we test any REST without OpenAPI?*
+    Same shape as 74 — a plain-language question about what the conditions actually are,
+    finding a hole no guard was watching.
+
+    The answer was "phase 1 yes, phase 2 no", and the phase-2 half is the one that matters.
+    `M-R1` spends the OpenAPI document at startup, authoring its nine tool schemas from the
+    spec's summaries and parameter descriptions; `M-R2` spends it at run time through
+    `openapi_search` / `openapi_describe`. So *both* REST cells had a spec in some form, while
+    `WRITEUP.md`'s caveat 2 — the query-language approach pays a discovery floor and loses on
+    small questions — compared GraphQL against exactly those two. Phase 1's A1/A2 are REST with
+    no spec anywhere, but on a live API we do not control.
+
+    **Added `M-R3`: `openapi_mcp.py --mode bare`, one tool, 786 B** — the smallest surface in
+    the study, 2.5× under `M-G3` and 12× under `M-R1`. Built and run 2026-09-05, 30 runs.
+    Three things worth recording about how it is built:
+
+    - **Its description is derived, not restated.** `build_bare_tools()` deep-copies `M-R2`'s
+      `rest_request` and removes one sentence — the pointer at the two discovery tools this
+      mode does not expose — and raises if that sentence is ever absent. Restating it would let
+      the two drift, and `M-R2` vs `M-R3` isolates one variable only while they cannot.
+      Keeping the pointer would ship the defect Apollo's `execute` carries under `M-G3`, except
+      there it is the vendor's text and a real property of the product; here it would be ours.
+    - **Fat bracket only, and that is a result rather than an omission.** `?fields=` is
+      documented in the spec and nowhere else, so an agent that never sees the spec cannot
+      learn the parameter exists, and advertising it in the tool description re-imports the
+      spec. REST's cheapest surface and REST's steelman are mutually exclusive. `run_benchmark`
+      now carries a per-condition `profile_note` so the lean-pass skip states *that* reason
+      instead of the GraphQL one it would otherwise have inherited.
+    - **The condition's floor is not zero, and it is disclosed.** What survives the cut still
+      names the three services, their resource families and two example paths. A usable generic
+      HTTP tool cannot say nothing, and whatever it says is a miniature spec. Any path-guessing
+      success also has to be read against the fact that we designed these paths and designed
+      them conventionally — a confound that can be stated and not removed.
+
+    `servers/test_modes.py` (17 checks) guards the two failures that would be invisible: a
+    surface that still names `openapi_search`, and `fields` reappearing in the description,
+    which would silently invalidate the fat-only decision. Both mutation-tested.
+
+    **It ran, and it finished last of eight on pass-through — 45,280 against `M-R2-fat`'s
+    35,873.** Removing 8,815 B from the prefix cost far more than it saved, in two ways that
+    neither `tool_errors` nor `http_errors` records:
+
+    - **`M1@1`: guessed the resource shape, got a clean 404, stopped.** All three replicates
+      issued `GET /v2/flights/AA5751` — flight *number* as *id* — received
+      `404 · flight "AA5751" does not exist`, and reported that the flight did not exist. f1
+      0.00 × 3, at $0.0034 a run and 58 pass-through tokens: **the cheapest cell and the
+      smallest payload in the whole matrix, and a wrong answer.** No replicate tried the
+      collection endpoint.
+    - **`M1@5`: guessed a parameter name, and the server ignored it.** `?flight_numbers=`
+      against a `flightNumbers` parameter. Unknown query params are dropped — normal REST
+      behaviour — so one call returned **122,549 B of unfiltered collection**. f1 1.00, and
+      38,478 pass-through tokens against fat REST-with-a-spec's 3,720 on the same question.
+
+    `tool_errors` is 0 for all thirty runs, because `rest_request` returns HTTP errors as
+    *successful* tool results carrying an error body. So a 404 is as invisible to the error
+    count as `M-G3`'s empty result was (78). The counter added in 75 counts what a tool
+    reports as an error, and neither of these is one.
+
+    **Predictions, scored.** Four were written down before the run. *`M1@1` cheapest or
+    near-cheapest* — right, and useless: it is cheapest because it failed. *`M1@50` ≈
+    `M-R1-fat`'s 36,598* — 49,048, right in direction, 34% understated. *Joins ≈ `M-R1-fat` or
+    worse* — mixed: `M3@50` came in slightly better (119,987 against 131,011), `M4@50` much
+    worse (70,897 against 46,665). *Wins low-N, loses the joins* — **wrong**, and the most
+    useful of the four for being wrong: it lost low-N hardest, at `M1@5`, by 10×. The exposure
+    was never path guessing. Paths are conventional. **Parameter names are not**, and that was
+    named before the run as the sharper risk without being carried into the predictions.
+
+    The pattern: **a condition can be missing without anything failing.** Every guard in this
+    ledger checks that what ran was measured correctly. Nothing checks that the set of things
+    that ran covers the claim being made, and two of the last three findings here (74, 81) are
+    that same hole.
+
+## How the audit's figures were re-derived (2026-09-03)
+
+Ground rule for the fix work: **every number that changed had to come back out of `runs/` or
+`results/`, with the command recorded.** The two worst defects in 67–72 were both figures
+copied forward without re-derivation, so the rule is the direct response to them. Where a
+figure is now a column, the column is the record; where it is a prose aggregate, the command
+is here.
+
+**Now columns, so no command is needed again:** `prefix_tokens`, `prefix_n_tools`,
+`prefix_note`, `pass_through_tokens_ex_discovery`, `pass_through_fraction_ex_discovery` in
+`results/*/raw.csv`, plus the *Prompt prefix and the cache minimum* table in both
+`summary.md`s. `cache_min_tokens()` in `parse_logs.py` owns the thresholds.
+
+**Prose aggregates**, all against `results/*/raw.csv` after `./bench.sh parse` on both phases:
+
+```python
+# the accuracy fold (67): 41 of 60 by bracket, 28 of 40 folded
+rows = [r for r in csv.DictReader(open('results/phase2/raw.csv')) if r['task_id'] != 'M4@103']
+for key in (lambda c: c, lambda c: c.rsplit('-',1)[0] if c.endswith(('-fat','-lean')) else c):
+    by = collections.defaultdict(lambda: collections.defaultdict(list))
+    for r in rows: by[r['task_id']][key(r['cell'])].append(float(r['answer_f1']))
+    print(sum(1 for c in by.values() for v in c.values() if all(x==1.0 for x in v)),
+          'of', sum(len(v) for v in by.values()))
+
+# phase-1 caching, per condition (70)
+for c in ('A1','A2','B','B2'):
+    s = [r for r in csv.DictReader(open('results/phase1/raw.csv')) if r['condition']==c]
+    print(c, sum(int(r['proxy_cache_read_input_tokens']) for r in s),
+             sum(int(r['proxy_cache_creation_input_tokens']) for r in s))
+
+# 7.9x -> 12.6x: charge A1's cache reads at the uncached rate (70)
+#   cost_usd + cache_read * (1.00 - 0.10) / 1e6   on T1, then / B2's T1 cost
+
+# prefix vs advertised bytes, r = 0.9998 (68)
+#   least-squares fit of mean prefix_tokens against capture/{A1,A2,B,B2}.json
+#   tools_list_bytes -> prefix ~ 1381 + bytes/8.43
+
+# the tokenizer undercount, ~15% (72)
+#   for consecutive task-model calls a,b in each runs/phase2/*/*/rep*/proxy.jsonl with
+#   b.tool_result_tokens >= 500 and b.n_tool_results > 0:
+#     implied = total(b) - total(a) - a.output_tokens      # total = in + cr + cc
+#     ratio   = implied / b.tool_result_tokens
+#   median over 429 pairs = 1.181 (per condition 1.168-1.278). The implied side also
+#   carries per-result message framing, so this is an UPPER bound on tokenizer error.
+
+# the averaging critique (WRITEUP "what we are no longer claiming")
+#   per-cell means over reps, then: share of the M-R1-lean numerator by task
+#   (M3@50 46.6%, three N=50 cells 70.2%); median bestREST/M-G1 = 1.60x;
+#   best-REST beats M-G1 on 5 of 10; best-GraphQL wins 10/10 on tokens and cost,
+#   4/10 on tool calls. The lean-costs-more-than-fat result is ONE replicate
+#   (M-R1-lean/M3@20/rep2, 34 inference calls against its siblings' 6, $1.192 against
+#   $0.109) — excluded, lean is cheaper on the mean too, and cheaper by median either way.
+```
+
+**Instruction-block asymmetry (C5), against `recipes/`:** dedent the `instructions: |` block
+and measure it — A1/A2 **237 B**, B **336 B**, B2 **983 B**, and all four phase-2 M-* recipes
+**670 B** with one sha (`766b07b1ad3f`), byte-identical.
+
+**What was NOT re-derived, and is therefore not published:** anything needing a re-run. The
+Haiku cache-minimum finding suggests re-running on a model whose minimum sits below the tool
+surface — that would remove the largest cost artifact in phase 2 — but it is new money and new
+runs, not a fix. `runs/phase1`'s `capture/` artifacts for the June runs are gone
+(gitignored), so those specific numbers remain unreproducible from this repository.

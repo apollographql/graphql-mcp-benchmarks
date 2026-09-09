@@ -1,0 +1,21 @@
+# Is one crew member current on their qualifications?
+#
+# The narrow currency check, separate from CrewDetail because it is asked far
+# more often than the full record and answers a yes/no question: which airframes
+# is this person rated on, and has any of it lapsed. Medical certificate rides
+# along because it grounds a pilot just as surely as an expired type rating.
+query CrewCurrency($crewId: ID!) {
+  crewMember(id: $crewId) {
+    id
+    name
+    rank
+    status
+    medicalCertExpiresAt
+    typeRatings {
+      model
+      certifiedAt
+      expiresAt
+      checkRideAt
+    }
+  }
+}
